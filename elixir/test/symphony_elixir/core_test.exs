@@ -149,6 +149,39 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.settings!().tracker.assignee == env_assignee
   end
 
+  test "github config resolves defaults and validates required fields" do
+    previous_github_token = System.get_env("GITHUB_TOKEN")
+    on_exit(fn -> restore_env("GITHUB_TOKEN", previous_github_token) end)
+    System.put_env("GITHUB_TOKEN", "github-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      tracker_project_number: 42
+    )
+
+    settings = Config.settings!()
+    assert settings.tracker.endpoint == "https://api.github.com/graphql"
+    assert settings.tracker.api_key == "github-token"
+    assert settings.tracker.owner == "openai"
+    assert settings.tracker.repo == "symphony"
+    assert settings.tracker.project_number == 42
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_owner: nil,
+      tracker_repo: "symphony",
+      tracker_project_number: 42
+    )
+
+    assert {:error, :missing_github_owner} = Config.validate!()
+  end
+
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 
@@ -883,7 +916,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on an issue."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias Ecto.Changeset
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
+  alias SymphonyElixir.GitHub.Client, as: GitHubClient
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -369,6 +370,85 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
     refute issue.assigned_to_worker
+  end
+
+  test "github client normalizes blockers from issue dependencies" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_owner: "your-org",
+      tracker_repo: "your-repo",
+      tracker_project_number: 7
+    )
+
+    raw_issue = %{
+      "id" => "issue-node-1",
+      "number" => 42,
+      "title" => "Blocked GitHub task",
+      "body" => "Wait for blocker",
+      "state" => "OPEN",
+      "url" => "https://github.com/your-org/your-repo/issues/42",
+      "labels" => %{"nodes" => [%{"name" => "backend"}]},
+      "assignees" => %{"nodes" => [%{"login" => "worker-1"}]},
+      "blockedBy" => %{
+        "nodes" => [
+          %{
+            "id" => "blocker-node-1",
+            "number" => 7,
+            "state" => "OPEN",
+            "repository" => %{
+              "name" => "your-repo",
+              "owner" => %{"login" => "your-org"}
+            }
+          },
+          %{
+            "id" => "blocker-node-2",
+            "number" => 8,
+            "state" => "CLOSED",
+            "repository" => %{
+              "name" => "platform",
+              "owner" => %{"login" => "other-org"}
+            }
+          }
+        ]
+      },
+      "projectItems" => %{
+        "nodes" => [
+          %{
+            "id" => "item-1",
+            "project" => %{"id" => "project-7", "number" => 7},
+            "fieldValueByName" => %{
+              "name" => "Todo",
+              "field" => %{
+                "id" => "field-1",
+                "options" => [
+                  %{"id" => "opt-todo", "name" => "Todo"}
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "createdAt" => "2026-01-01T00:00:00Z",
+      "updatedAt" => "2026-01-02T00:00:00Z"
+    }
+
+    issue = GitHubClient.normalize_issue_for_test(raw_issue)
+
+    assert issue.blocked_by == [
+             %{id: "blocker-node-1", identifier: "your-org/your-repo#7", state: "Open"},
+             %{id: "blocker-node-2", identifier: "other-org/platform#8", state: "Closed"}
+           ]
+
+    assert issue.state == "Todo"
+    assert issue.identifier == "your-org/your-repo#42"
+  end
+
+  test "github client derives REST base URLs for dotcom and enterprise GraphQL endpoints" do
+    assert GitHubClient.rest_api_base_url_for_test("https://api.github.com/graphql") ==
+             "https://api.github.com"
+
+    assert GitHubClient.rest_api_base_url_for_test("https://ghe.example.com/api/graphql") ==
+             "https://ghe.example.com/api/v3"
   end
 
   test "linear client pagination merge helper preserves issue ordering" do

@@ -1,6 +1,170 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "app server preserves shell-style codex.command semantics for local runs" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-shell-command-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1002")
+      codex_binary = Path.join(test_root, "fake-codex")
+      fake_shell = Path.join(test_root, "fake-shell")
+      previous_fake_codex = System.get_env("SYMP_TEST_FAKE_CODEX")
+      previous_shell = System.get_env("SHELL")
+
+      on_exit(fn ->
+        if is_binary(previous_fake_codex) do
+          System.put_env("SYMP_TEST_FAKE_CODEX", previous_fake_codex)
+        else
+          System.delete_env("SYMP_TEST_FAKE_CODEX")
+        end
+
+        if is_binary(previous_shell) do
+          System.put_env("SHELL", previous_shell)
+        else
+          System.delete_env("SHELL")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_FAKE_CODEX", codex_binary)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-shell"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-shell"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      File.write!(fake_shell, "#!/bin/sh\nexit 97\n")
+      File.chmod!(fake_shell, 0o755)
+      System.put_env("SHELL", fake_shell)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "$SYMP_TEST_FAKE_CODEX app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-shell-command",
+        identifier: "MT-1002",
+        title: "Validate shell codex command",
+        description: "Ensure local app-server honors shell expansion",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1002",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate shell command", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server launches simple local codex.command values without a shell wrapper" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-direct-command-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1003")
+      codex_binary = Path.join(test_root, "fake-codex")
+      fake_shell = Path.join(test_root, "fake-shell")
+      previous_shell = System.get_env("SHELL")
+
+      on_exit(fn ->
+        if is_binary(previous_shell) do
+          System.put_env("SHELL", previous_shell)
+        else
+          System.delete_env("SHELL")
+        end
+      end)
+
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-direct"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-direct"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      File.write!(fake_shell, "#!/bin/sh\nexit 97\n")
+      File.chmod!(fake_shell, 0o755)
+      System.put_env("SHELL", fake_shell)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-direct-command",
+        identifier: "MT-1003",
+        title: "Validate direct codex command launch",
+        description: "Ensure app-server avoids the shell when command parsing does not need it",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1003",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate direct command", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -428,14 +592,41 @@ defmodule SymphonyElixir.AppServerTest do
 
                  payload["id"] == 2 and
                    case get_in(payload, ["params", "dynamicTools"]) do
-                     [
-                       %{
-                         "description" => description,
-                         "inputSchema" => %{"required" => ["query"]},
-                         "name" => "linear_graphql"
-                       }
-                     ] ->
-                       description =~ "Linear"
+                     dynamic_tools when is_list(dynamic_tools) ->
+                       Enum.any?(dynamic_tools, fn
+                         %{
+                           "description" => description,
+                           "inputSchema" => %{"required" => ["query"]},
+                           "name" => "linear_graphql"
+                         } ->
+                           description =~ "Linear"
+
+                         _ ->
+                           false
+                       end) and
+                         Enum.any?(dynamic_tools, fn
+                           %{
+                             "description" => description,
+                             "inputSchema" => %{"required" => ["operation", "issueId"]},
+                             "name" => "github_issue"
+                           } ->
+                             description =~ "GitHub"
+
+                           _ ->
+                             false
+                         end)
+                         and
+                         Enum.any?(dynamic_tools, fn
+                           %{
+                             "description" => description,
+                             "inputSchema" => %{"required" => ["operation"]},
+                             "name" => "github_pr"
+                           } ->
+                             description =~ "GitHub pull request"
+
+                           _ ->
+                             false
+                         end)
 
                      _ ->
                        false

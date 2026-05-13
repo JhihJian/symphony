@@ -46,9 +46,13 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:owner, :string)
+      field(:repo, :string)
+      field(:project_number, :integer)
+      field(:project_status_field_name, :string, default: "Status")
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -59,9 +63,22 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :owner,
+          :repo,
+          :project_number,
+          :project_status_field_name,
+          :assignee,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
+      |> validate_number(:project_number, greater_than: 0)
     end
   end
 
@@ -366,10 +383,23 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    tracker_endpoint =
+      settings.tracker.endpoint
+      |> resolve_secret_setting(default_tracker_endpoint(settings.tracker.kind))
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | endpoint: tracker_endpoint,
+        api_key:
+          resolve_secret_setting(
+            settings.tracker.api_key,
+            System.get_env(tracker_api_key_env_var(settings.tracker.kind))
+          ),
+        assignee:
+          resolve_secret_setting(
+            settings.tracker.assignee,
+            System.get_env(tracker_assignee_env_var(settings.tracker.kind))
+          )
     }
 
     workspace = %{
@@ -465,6 +495,15 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp env_reference_name(_value), do: :error
+
+  defp default_tracker_endpoint("github"), do: "https://api.github.com/graphql"
+  defp default_tracker_endpoint(_kind), do: "https://api.linear.app/graphql"
+
+  defp tracker_api_key_env_var("github"), do: "GITHUB_TOKEN"
+  defp tracker_api_key_env_var(_kind), do: "LINEAR_API_KEY"
+
+  defp tracker_assignee_env_var("github"), do: "GITHUB_ASSIGNEE"
+  defp tracker_assignee_env_var(_kind), do: "LINEAR_ASSIGNEE"
 
   defp resolve_env_token(env_name) do
     case System.get_env(env_name) do

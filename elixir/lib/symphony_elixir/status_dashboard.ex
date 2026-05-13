@@ -394,12 +394,10 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_project_link_lines do
     project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
-
-        _ ->
-          colorize("n/a", @ansi_gray)
+      project_url()
+      |> case do
+        url when is_binary(url) and url != "" -> colorize(url, @ansi_cyan)
+        _ -> colorize("n/a", @ansi_gray)
       end
 
     project_line = colorize("│ Project: ", @ansi_bold) <> project_part
@@ -427,7 +425,31 @@ defmodule SymphonyElixir.StatusDashboard do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
 
-  defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
+  defp project_url do
+    tracker = Config.settings!().tracker
+
+    case tracker.kind do
+      "github" -> github_project_url(tracker.owner, tracker.repo, tracker.project_number)
+      _ -> linear_project_url(tracker.project_slug)
+    end
+  end
+
+  defp linear_project_url(project_slug) when is_binary(project_slug) and project_slug != "",
+    do: "https://linear.app/project/#{project_slug}/issues"
+
+  defp linear_project_url(_project_slug), do: nil
+
+  defp github_project_url(owner, _repo, project_number)
+       when is_binary(owner) and owner != "" and is_integer(project_number) and project_number > 0 do
+    "https://github.com/users/#{owner}/projects/#{project_number}"
+  end
+
+  defp github_project_url(owner, repo, _project_number)
+       when is_binary(owner) and owner != "" and is_binary(repo) and repo != "" do
+    "https://github.com/#{owner}/#{repo}/issues"
+  end
+
+  defp github_project_url(_owner, _repo, _project_number), do: nil
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
@@ -546,6 +568,19 @@ defmodule SymphonyElixir.StatusDashboard do
           String.t() | nil
   def dashboard_url_for_test(host, configured_port, bound_port),
     do: dashboard_url(host, configured_port, bound_port)
+
+  @doc false
+  @spec project_url_for_test(map()) :: String.t() | nil
+  def project_url_for_test(%{
+        "kind" => "github",
+        "owner" => owner,
+        "repo" => repo,
+        "project_number" => project_number
+      }),
+      do: github_project_url(owner, repo, project_number)
+
+  def project_url_for_test(%{"project_slug" => project_slug}), do: linear_project_url(project_slug)
+  def project_url_for_test(_tracker), do: nil
 
   defp snapshot_payload do
     if Process.whereis(Orchestrator) do

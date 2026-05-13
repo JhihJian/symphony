@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -36,6 +37,33 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeGitHubClient do
+    def fetch_candidate_issues do
+      send(self(), :github_fetch_candidate_issues_called)
+      {:ok, [:github_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:github_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:github_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:github_create_comment_called, issue_id, body})
+      Process.get({__MODULE__, :create_comment_result}, :ok)
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:github_update_issue_state_called, issue_id, state_name})
+      Process.get({__MODULE__, :update_issue_state_result}, :ok)
     end
   end
 
@@ -79,12 +107,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    github_client_module = Application.get_env(:symphony_elixir, :github_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(github_client_module) do
+        Application.delete_env(:symphony_elixir, :github_client_module)
+      else
+        Application.put_env(:symphony_elixir, :github_client_module, github_client_module)
       end
     end)
 
@@ -181,7 +216,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     WorkflowStore.force_reload()
   end
 
-  test "tracker delegates to memory and linear adapters" do
+  test "tracker delegates to memory, linear, and github adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -203,6 +238,15 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      tracker_project_number: 1
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == GitHubAdapter
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -317,6 +361,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "github adapter delegates reads and writes" do
+    Application.put_env(:symphony_elixir, :github_client_module, FakeGitHubClient)
+
+    assert {:ok, [:github_candidate]} = GitHubAdapter.fetch_candidate_issues()
+    assert_receive :github_fetch_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = GitHubAdapter.fetch_issues_by_states(["Todo"])
+    assert_receive {:github_fetch_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["12"]} = GitHubAdapter.fetch_issue_states_by_ids(["12"])
+    assert_receive {:github_fetch_issue_states_by_ids_called, ["12"]}
+
+    assert :ok = GitHubAdapter.create_comment("12", "hello")
+    assert_receive {:github_create_comment_called, "12", "hello"}
+
+    Process.put({FakeGitHubClient, :update_issue_state_result}, {:error, :boom})
+    assert {:error, :boom} = GitHubAdapter.update_issue_state("12", "Done")
+    assert_receive {:github_update_issue_state_called, "12", "Done"}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

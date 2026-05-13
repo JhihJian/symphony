@@ -1025,6 +1025,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              "http://[::1]:4000/"
   end
 
+  test "status dashboard links GitHub trackers to the configured project when available" do
+    assert StatusDashboard.project_url_for_test(%{
+             "kind" => "github",
+             "owner" => "octocat",
+             "repo" => "hello-world",
+             "project_number" => 12
+           }) == "https://github.com/users/octocat/projects/12"
+
+    assert StatusDashboard.project_url_for_test(%{
+             "kind" => "github",
+             "owner" => "octocat",
+             "repo" => "hello-world",
+             "project_number" => nil
+           }) == "https://github.com/octocat/hello-world/issues"
+  end
+
   test "status dashboard renders next refresh countdown and checking marker" do
     waiting_snapshot =
       {:ok,
