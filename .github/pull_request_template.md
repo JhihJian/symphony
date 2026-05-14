@@ -1,22 +1,18 @@
-#### Context
+## 变更说明
 
-<!-- Why is this change needed? Length <= 240 chars -->
+- <!-- 用具体行为说明这次改了什么；不要只列文件名 -->
 
-#### TL;DR
+## 影响范围
 
-*<!-- A short description of what we are changing. Use simple language. Assume reader is not familiar with this code. Length <= 120 chars -->*
+- <!-- 写明受影响的页面、模块、数据流或配置 -->
 
-#### Summary
-
-- <!-- Details of the changes in bullet points -->
-- <!-- Keep them high level -->
-- <!-- Each item <= 120 chars -->
-
-#### Alternatives
-
-- <!-- What alternatives have been considered? Why not? -->
-
-#### Test Plan
+## 验证
 
 - [ ] `make -C elixir all`
-- [ ] <!-- Additional targeted checks (list below) -->
+- [ ] <!-- 其他实际运行的目标检查；没有就删除本行 -->
+
+## 风险与限制
+
+- <!-- 无 / 已知限制或风险控制 -->
+
+Linear: JIE-<!-- issue number -->

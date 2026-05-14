@@ -243,9 +243,7 @@ defmodule SymphonyElixir.GitHub.Client do
       :ok
     else
       {:error, reason} -> {:error, reason}
-      %{status: status} -> {:error, {:github_api_status, status}}
       status when is_integer(status) -> {:error, {:github_api_status, status}}
-      _ -> {:error, :comment_create_failed}
     end
   end
 
@@ -667,14 +665,8 @@ defmodule SymphonyElixir.GitHub.Client do
       {:error, reason} ->
         {:error, reason}
 
-      %{status: status} ->
-        {:error, {:github_api_status, status}}
-
       status when is_integer(status) ->
         {:error, {:github_api_status, status}}
-
-      _ ->
-        {:error, :issue_update_failed}
     end
   end
 

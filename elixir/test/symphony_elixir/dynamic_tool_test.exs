@@ -15,8 +15,11 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "type" => "object"
                },
                "name" => "linear_graphql"
-             } -> description =~ "Linear"
-             _ -> false
+             } ->
+               description =~ "Linear"
+
+             _ ->
+               false
            end)
 
     assert Enum.any?(specs, fn
@@ -468,8 +471,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:github_upsert_workpad_comment_called, "42",
-                     "## Codex Workpad\n\nUpdated body", "## Codex Workpad"}
+    assert_received {:github_upsert_workpad_comment_called, "42", "## Codex Workpad\n\nUpdated body", "## Codex Workpad"}
 
     assert response["success"] == true
 
@@ -538,8 +540,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
-               "message" =>
-                 "Symphony's tracker is not configured for GitHub, so `github_issue` is unavailable."
+               "message" => "Symphony's tracker is not configured for GitHub, so `github_issue` is unavailable."
              }
            }
   end
@@ -565,8 +566,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(missing_body["output"]) == %{
              "error" => %{
-               "message" =>
-                 "`github_issue` requires a non-empty `body` for `upsert_workpad_comment`."
+               "message" => "`github_issue` requires a non-empty `body` for `upsert_workpad_comment`."
              }
            }
 
@@ -608,8 +608,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert Jason.decode!(missing_token["output"]) == %{
              "error" => %{
-               "message" =>
-                 "Symphony is missing GitHub auth. Set `tracker.api_key` in `WORKFLOW.md` or export `GITHUB_TOKEN`."
+               "message" => "Symphony is missing GitHub auth. Set `tracker.api_key` in `WORKFLOW.md` or export `GITHUB_TOKEN`."
              }
            }
 

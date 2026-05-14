@@ -115,6 +115,34 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
+  test "delivery guidance requires concise Chinese handoff summaries" do
+    Workflow.clear_workflow_file_path()
+    assert {:ok, %{prompt: prompt}} = Workflow.load()
+
+    commit_skill = File.read!(Path.expand("../.codex/skills/commit/SKILL.md", File.cwd!()))
+    push_skill = File.read!(Path.expand("../.codex/skills/push/SKILL.md", File.cwd!()))
+    pr_template = File.read!(Path.expand("../.github/pull_request_template.md", File.cwd!()))
+
+    assert prompt =~ "### 完成摘要"
+    assert prompt =~ "详细执行过程继续保留"
+    assert prompt =~ "详细日志不能替代完成摘要"
+
+    assert commit_skill =~ "变更："
+    assert commit_skill =~ "原因："
+    assert commit_skill =~ "验证："
+    assert commit_skill =~ "禁止非微小改动只有一行 commit message"
+
+    assert push_skill =~ "## 变更说明"
+    assert push_skill =~ "## 影响范围"
+    assert push_skill =~ "## 风险与限制"
+
+    assert pr_template =~ "## 变更说明"
+    assert pr_template =~ "## 影响范围"
+    assert pr_template =~ "## 验证"
+    assert pr_template =~ "## 风险与限制"
+    assert pr_template =~ "Linear: JIE-"
+  end
+
   test "linear api token resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     env_api_key = "test-linear-api-key"
@@ -576,15 +604,17 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    retry_window_start_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
     Process.sleep(50)
     state = :sys.get_state(pid)
+    retry_window_end_ms = System.monotonic_time(:millisecond)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 1_000)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -617,14 +647,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    retry_window_start_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
+    retry_window_end_ms = System.monotonic_time(:millisecond)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 40_000)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -656,14 +688,16 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    retry_window_start_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
+    retry_window_end_ms = System.monotonic_time(:millisecond)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 10_000)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -783,11 +817,9 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp assert_due_scheduled_after(due_at_ms, window_start_ms, window_end_ms, delay_ms) do
+    assert due_at_ms >= window_start_ms + delay_ms
+    assert due_at_ms <= window_end_ms + delay_ms
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
