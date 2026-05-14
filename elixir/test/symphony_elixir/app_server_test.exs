@@ -614,8 +614,7 @@ defmodule SymphonyElixir.AppServerTest do
 
                            _ ->
                              false
-                         end)
-                         and
+                         end) and
                          Enum.any?(dynamic_tools, fn
                            %{
                              "description" => description,

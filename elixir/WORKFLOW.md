@@ -93,6 +93,36 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
 
+## Human-readable delivery requirements
+
+These requirements make Linear, commit history, and PRs readable for maintainers
+who need the result first and execution details second.
+
+- Immediately below the workpad environment stamp, maintain a short Chinese
+  `### 完成摘要` section before `### 计划`.
+- Keep `### 完成摘要` current throughout the run. At kickoff use honest
+  placeholders such as `待完成`; before handoff replace them with final facts.
+- The summary must use this shape:
+
+  ```md
+  ### 完成摘要
+
+  - 业务结果：<一句话说明用户或项目现在获得了什么>
+  - 关键变化：<1-4 条主要改动>
+  - 影响范围：<页面、模块、数据流或配置>
+  - 验证结果：<核心验证命令和结果>
+  - PR：<PR URL 或 暂无>
+  - Commit：<最终 commit SHA 和标题>
+  ```
+
+- 详细执行过程继续保留在 `### 计划`、`### 验证`、`### 备注`、
+  `### 阻塞` 或 `### 疑问` 中，但详细日志不能替代完成摘要。
+- Commit message for non-trivial changes must include a readable body with
+  Chinese `变更`、`原因`、`验证` sections. Do not create one-line commit
+  messages unless the change is genuinely tiny.
+- PR body must use the repository PR template's Chinese structure so reviewers
+  can quickly understand change behavior, impact, verification, and risk.
+
 ## Related skills
 
 - `linear`: interact with Linear.
@@ -152,6 +182,8 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - Format: `<host>:<abs-workdir>@<short-sha>`
     - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
     - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
+    - Immediately follow it with `### 完成摘要` using the required Chinese summary fields from
+      `Human-readable delivery requirements`.
 6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
@@ -220,8 +252,11 @@ Use this only when completion is blocked by missing required tools or missing au
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
+    - Refresh `### 完成摘要` with final business result, key changes, impact, validation,
+      PR URL or `暂无`, and final commit SHA/title.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
-    - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
+    - Keep PR linkage on the issue via attachment/link fields when available; the
+      `### 完成摘要` may include the PR URL as a human-readable cross-reference.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
 11. Before moving to `Human Review`, poll PR feedback and checks:
@@ -299,6 +334,15 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 ```text
 <hostname>:<abs-path>@<short-sha>
 ```
+
+### 完成摘要
+
+- 业务结果：<一句话说明用户或项目现在获得了什么>
+- 关键变化：<1-4 条主要改动>
+- 影响范围：<页面、模块、数据流或配置>
+- 验证结果：<核心验证命令和结果>
+- PR：<PR URL 或 暂无>
+- Commit：<最终 commit SHA 和标题>
 
 ### Plan
 

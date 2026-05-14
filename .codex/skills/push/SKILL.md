@@ -45,9 +45,15 @@ description:
    - For branch updates, explicitly reconsider whether current PR title still
      matches the latest scope; update it if it no longer does.
 6. Write/update PR body explicitly using `.github/pull_request_template.md`:
+   - Use the Chinese structure exactly: `## 变更说明`, `## 影响范围`,
+     `## 验证`, `## 风险与限制`, and `Linear: <issue id>`.
    - Fill every section with concrete content for this change.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
+   - In `## 变更说明`, describe behavior changes, not just changed files.
+   - In `## 影响范围`, name affected pages, modules, data flow, or config.
+   - In `## 验证`, list only commands or checks actually run.
+   - In `## 风险与限制`, write `无` or concise known limitations.
    - If PR already exists, refresh body content so it reflects the total PR
      scope (all intended work on the branch), not just the newest commits,
      including newly added work, removed work, or changed approach.
@@ -94,6 +100,12 @@ else
 fi
 
 # Write/edit PR body to match .github/pull_request_template.md before validation.
+# Required sections:
+# ## 变更说明
+# ## 影响范围
+# ## 验证
+# ## 风险与限制
+# Linear: <issue id>
 # Example workflow:
 # 1) open the template and draft body content for this PR
 # 2) gh pr edit --body-file /tmp/pr_body.md

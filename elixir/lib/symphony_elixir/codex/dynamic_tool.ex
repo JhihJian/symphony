@@ -371,7 +371,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           trimmed -> trimmed
         end
 
-      _ -> "## Codex Workpad"
+      _ ->
+        "## Codex Workpad"
     end
   end
 
@@ -905,13 +906,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         %{
           "error" => %{
             "message" => "Unsupported `github_issue.operation`: #{inspect(operation)}.",
-              "supportedOperations" => [
-                "get_issue",
-                "list_comments",
-                "upsert_workpad_comment",
-                "set_status",
-                "add_labels"
-              ]
+            "supportedOperations" => [
+              "get_issue",
+              "list_comments",
+              "upsert_workpad_comment",
+              "set_status",
+              "add_labels"
+            ]
           }
         }
 
