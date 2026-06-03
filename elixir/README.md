@@ -26,6 +26,11 @@ skills can make raw Linear GraphQL calls.
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 
+If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
+issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
+entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
+Linear issue can become a dispatch candidate again after restart.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
@@ -119,6 +124,9 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
+- Workflows that run package managers or other commands that resolve external hosts should set
+  `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
+  by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
