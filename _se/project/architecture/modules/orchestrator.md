@@ -6,7 +6,7 @@
 
 Orchestrator 是 Symphony 的调度核心。它维护唯一的内存调度账本，并把外部状态、worker 结果和重试计时转换为明确的调度动作。
 
-Orchestrator 不解析 workflow 文件，不直接写 ticket，不实现 tracker API，不管理文件系统细节，不解释 Codex 协议，也不提供 dashboard 状态本身。它调用这些模块，接收它们返回的事实和事件，然后统一修改调度账本。
+Orchestrator 不解析 workflow 文件，不直接写 ticket，不实现 tracker API，不管理文件系统细节，不解释 Codex 协议，也不提供 dashboard 状态本身。它调用这些模块，接收它们返回的事实和事件，然后统一修改调度账本。Linear、GitHub、GitLab 的差异必须在 tracker 适配器和配置层处理完毕，不能泄漏为 orchestrator 分支逻辑。
 
 ## 核心实体
 
@@ -21,7 +21,7 @@ Orchestrator 不解析 workflow 文件，不直接写 ticket，不实现 tracker
 - 启动时初始化调度账本，并安排第一轮轮询。
 - 每轮先 reconciliation 正在运行的工作，再派发新的候选工作。
 - 根据当前配置和运行状态判断并发容量。
-- 从 tracker 候选集中选择仍可运行且未被占用的工作。
+- 从 tracker 适配器返回的规范化候选集中选择仍可运行且未被占用的工作。
 - 在启动 worker 前建立 claim，避免重复派发。
 - 接收 agent runner 的会话事件，更新最近事件、用量和限流摘要。
 - 处理 worker 正常结束、异常结束、取消、超时和无响应。
@@ -33,6 +33,8 @@ Orchestrator 不解析 workflow 文件，不直接写 ticket，不实现 tracker
 
 - Orchestrator 是唯一可以修改调度账本的组件。
 - 启动 worker 前必须确认 issue 未在运行、未被占用、仍处于活动范围内，并且没有违反阻塞规则。
+- Orchestrator 只比较规范化调度状态和配置中的 active/terminal sets；不得直接解释 GitHub `open`、GitLab `opened`、Linear workflow state 或 provider label。
+- Claim、running 和 retry map 的 key 必须使用 tracker 适配器提供的 provider-scoped issue ID。
 - 新工作派发前必须先处理正在运行工作的 tracker 状态和 agent 活性。
 - 外部 tracker 的当前状态决定一个工作是否还应运行；本地 completed 记录只用于 bookkeeping。
 - 正常完成一轮 worker 不代表 issue 永久结束，仍可能需要继续检查或继续运行。

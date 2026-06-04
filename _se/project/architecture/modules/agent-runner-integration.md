@@ -12,7 +12,7 @@ Agent Runner 集成模块负责把一个已派发的 issue 转换成实际的 co
 
 - `运行尝试`：worker 对某个 issue 的一次执行上下文。
 - `Agent 会话`：Codex app-server 进程、thread、turn 和最近事件的运行时记录。
-- `任务说明`：由 workflow 模板、issue 信息和 attempt 信息渲染出的 prompt。
+- `任务说明`：由 workflow 模板、规范化 issue 信息、tracker provider/scope 和 attempt 信息渲染出的 prompt。
 - `Continuation`：同一工作上下文中的后续 agent turn。
 - `运行策略`：approval、sandbox、用户输入和可用工具的实现记录。
 
@@ -21,6 +21,7 @@ Agent Runner 集成模块负责把一个已派发的 issue 转换成实际的 co
 - 为运行尝试请求 workspace 创建或复用。
 - 在 agent 启动前执行运行前 hook。
 - 使用严格模板渲染 issue prompt。
+- 在 prompt context 中提供规范化工作项，并保留足够 provider 上下文，例如 tracker kind、provider scope、issue URL、provider-scoped identifier 和可用的原生状态摘要。
 - 在当前 issue 的 workspace 中启动配置好的 Codex app-server。
 - 按目标 Codex app-server 协议创建或恢复 agent thread。
 - 第一次 turn 发送完整任务说明，后续 continuation 复用同一工作上下文。
@@ -37,7 +38,7 @@ Agent Runner 集成模块负责把一个已派发的 issue 转换成实际的 co
 - target Codex protocol 是协议形状的权威来源；SPEC 中的描述不能替代目标版本 schema。
 - approval、sandbox、动态工具和用户输入策略由实现记录，但不得让运行无限期等待。
 - unsupported dynamic tool call 应被明确拒绝或返回失败，避免会话卡住。
-- 可选 tracker 工具属于 agent toolchain，不属于 orchestrator 业务写入逻辑。
+- 可选 tracker 工具属于 agent toolchain，不属于 orchestrator 业务写入逻辑。GitHub/GitLab 工具如果启用，必须继承当前 issue 的 provider scope 和凭据限制，不能默认获得组织级或 group 级写入范围。
 - app-server 诊断输出应与协议流分离，除非目标协议另有要求。
 - 各类超时、取消和进程退出必须形成 operator 可见的失败原因。
 

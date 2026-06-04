@@ -15,11 +15,13 @@ Observability 与运维模块负责让 operator 在不 attach debugger 的情况
 - `状态界面`：可选的人类可读运行视图。
 - `运维入口`：可选的只读调试接口和即时刷新触发。
 - `失败信号`：配置、tracker、workspace、hook、agent 和观测 sink 的 operator 可见错误。
+- `Tracker 可见性`：展示 provider、scope、规范化状态、原生状态摘要、状态映射结果和 adapter 能力降级。
 
 ## 功能清单
 
 - 输出启动、配置校验、候选读取、派发、workspace、hook、agent、重试和 reconciliation 日志。
 - 为工作相关日志附加稳定的 issue 上下文。
+- 为 tracker 相关日志附加 provider kind、provider scope、provider-scoped issue ID 和规范化状态。
 - 为 agent session 生命周期日志附加稳定的 session 上下文。
 - 控制日志体量，避免记录大型 raw payload 或 secret。
 - 在日志 sink 失败时尽可能保持服务运行，并通过其他可用通道报告。
@@ -28,10 +30,13 @@ Observability 与运维模块负责让 operator 在不 attach debugger 的情况
 - 可选提供同步运行快照。
 - 可选提供人类可读状态界面或 HTTP 扩展。
 - 可选提供即时 refresh 触发，用于加快一次 poll 与 reconciliation。
+- 暴露状态映射错误、GitHub pull request payload 过滤、GitLab project scope 冲突、阻塞关系能力缺失等 tracker adapter 诊断。
 
 ## 业务规则
 
 - startup、validation 和 dispatch failures 必须对 operator 可见。
+- tracker provider、scope、规范化状态和状态映射来源必须能在日志或状态界面中追踪，避免 operator 只看见一个脱离外部系统上下文的 issue 编号。
+- GitHub/GitLab adapter 的能力降级必须可见，例如 blocker 读取失败、只能本地过滤状态、跨项目链接无权限或 API schema 不匹配。
 - 状态界面只能从 orchestrator state 和 metrics 绘制，不能驱动 orchestrator logic。
 - humanized agent event summary 如果实现，只能作为展示文本，不能成为状态判断依据。
 - token 和 runtime 统计需要避免把重复上报或不同形态的 usage payload 当成累计事实。
@@ -41,6 +46,6 @@ Observability 与运维模块负责让 operator 在不 attach debugger 的情况
 
 ## 用户交互流程
 
-operator 通过 logs、状态界面或可选 API 观察 service health、running sessions、retry delays、token usage、rate limits 和 recent failures。遇到失败时，operator 可以修复 `WORKFLOW.md`、tracker credentials、issue state、workspace filesystem、hook scripts、Codex executable 或部署安全策略。
+operator 通过 logs、状态界面或可选 API 观察 service health、running sessions、retry delays、token usage、rate limits 和 recent failures。遇到失败时，operator 可以修复 `WORKFLOW.md`、tracker credentials、provider scope、状态映射、issue state、workspace filesystem、hook scripts、Codex executable 或部署安全策略。
 
 如果实现了 HTTP/API 扩展，operator 可以读取整体状态、查看单个 issue 的调试信息，并请求一次即时刷新。该入口只是运维辅助，不改变调度模型。
