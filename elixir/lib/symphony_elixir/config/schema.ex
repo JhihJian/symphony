@@ -54,6 +54,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_number, :integer)
       field(:project_status_field_name, :string, default: "Status")
       field(:assignee, :string)
+      field(:required_labels, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -73,12 +74,18 @@ defmodule SymphonyElixir.Config.Schema do
           :project_number,
           :project_status_field_name,
           :assignee,
+          :required_labels,
           :active_states,
           :terminal_states
         ],
         empty_values: []
       )
       |> validate_number(:project_number, greater_than: 0)
+      |> update_change(:required_labels, fn labels ->
+        labels
+        |> Enum.map(&(String.trim(&1) |> String.downcase()))
+        |> Enum.uniq()
+      end)
     end
   end
 
