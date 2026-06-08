@@ -1215,6 +1215,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }) == "https://github.com/octocat/hello-world/issues"
   end
 
+  test "status dashboard links GitLab trackers to project issues" do
+    assert StatusDashboard.project_url_for_test(%{
+             "kind" => "gitlab",
+             "endpoint" => "https://gitlab.example.com/api/v4",
+             "project_slug" => "platform/symphony"
+           }) == "https://gitlab.example.com/platform/symphony/-/issues"
+
+    assert StatusDashboard.project_url_for_test(%{
+             "kind" => "gitlab",
+             "endpoint" => "https://gitlab.com/api/v4",
+             "project_slug" => "12345"
+           }) == "https://gitlab.com/dashboard/issues?scope=all&state=opened"
+  end
+
   test "status dashboard renders next refresh countdown and checking marker" do
     waiting_snapshot =
       {:ok,

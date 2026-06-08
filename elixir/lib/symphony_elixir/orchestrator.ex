@@ -274,8 +274,12 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("GitHub repo missing in WORKFLOW.md")
         state
 
-      {:error, :missing_github_project_number} ->
-        Logger.error("GitHub project_number missing in WORKFLOW.md")
+      {:error, :missing_gitlab_api_token} ->
+        Logger.error("GitLab API token missing in WORKFLOW.md or GITLAB_TOKEN")
+        state
+
+      {:error, :missing_gitlab_project_slug} ->
+        Logger.error("GitLab project slug missing in WORKFLOW.md")
         state
 
       {:error, :missing_tracker_kind} ->

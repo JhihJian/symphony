@@ -181,8 +181,38 @@ defmodule SymphonyElixir.GitHub.Client do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
+    fetch_candidate_issues(&graphql/2)
+  end
+
+  @doc false
+  @spec fetch_candidate_issues_for_test((String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_test(graphql_fun) when is_function(graphql_fun, 2) do
+    fetch_candidate_issues(graphql_fun)
+  end
+
+  @doc false
+  @spec normalize_issue_for_test(map()) :: Issue.t() | nil
+  def normalize_issue_for_test(issue) when is_map(issue) do
+    normalize_issue(issue)
+  end
+
+  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(state_names) when is_list(state_names) do
+    fetch_issues_by_states(state_names, &graphql/2)
+  end
+
+  @doc false
+  @spec fetch_issues_by_states_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states_for_test(state_names, graphql_fun)
+      when is_list(state_names) and is_function(graphql_fun, 2) do
+    fetch_issues_by_states(state_names, graphql_fun)
+  end
+
+  defp fetch_candidate_issues(graphql_fun) do
     with :ok <- validate_tracker_config(),
-         {:ok, issues} <- fetch_all_issues(["OPEN"]) do
+         {:ok, issues} <- fetch_all_issues(["OPEN"], graphql_fun) do
       active_states =
         Config.settings!().tracker.active_states
         |> Enum.map(&normalize_state/1)
@@ -195,16 +225,9 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  @doc false
-  @spec normalize_issue_for_test(map()) :: Issue.t() | nil
-  def normalize_issue_for_test(issue) when is_map(issue) do
-    normalize_issue(issue)
-  end
-
-  @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
-  def fetch_issues_by_states(state_names) when is_list(state_names) do
+  defp fetch_issues_by_states(state_names, graphql_fun) do
     with :ok <- validate_tracker_config(),
-         {:ok, issues} <- fetch_all_issues(["OPEN", "CLOSED"]) do
+         {:ok, issues} <- fetch_all_issues(["OPEN", "CLOSED"], graphql_fun) do
       wanted_states =
         state_names
         |> Enum.map(&normalize_state/1)
@@ -236,9 +259,25 @@ defmodule SymphonyElixir.GitHub.Client do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
+    create_comment(issue_id, body, &rest_request/3)
+  end
+
+  @doc false
+  @spec create_comment_for_test(
+          String.t(),
+          String.t(),
+          (atom(), String.t(), map() | nil -> {:ok, map()} | {:error, term()})
+        ) ::
+          :ok | {:error, term()}
+  def create_comment_for_test(issue_id, body, rest_fun)
+      when is_binary(issue_id) and is_binary(body) and is_function(rest_fun, 3) do
+    create_comment(issue_id, body, rest_fun)
+  end
+
+  defp create_comment(issue_id, body, rest_fun) do
     with {:ok, issue_number} <- parse_issue_number(issue_id),
          {:ok, response} <-
-           rest_request(:post, issue_comments_path(issue_number), %{body: body}),
+           rest_fun.(:post, issue_comments_path(issue_number), %{body: body}),
          201 <- response.status do
       :ok
     else
@@ -361,20 +400,25 @@ defmodule SymphonyElixir.GitHub.Client do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
+    update_issue_state(issue_id, state_name, &graphql/2, &rest_request/3)
+  end
+
+  @doc false
+  @spec update_issue_state_for_test(
+          String.t(),
+          String.t(),
+          (String.t(), map() -> {:ok, map()} | {:error, term()}),
+          (atom(), String.t(), map() | nil -> {:ok, map()} | {:error, term()})
+        ) :: :ok | {:error, term()}
+  def update_issue_state_for_test(issue_id, state_name, graphql_fun, rest_fun)
+      when is_binary(issue_id) and is_binary(state_name) and is_function(graphql_fun, 2) and is_function(rest_fun, 3) do
+    update_issue_state(issue_id, state_name, graphql_fun, rest_fun)
+  end
+
+  defp update_issue_state(issue_id, state_name, graphql_fun, rest_fun) do
     with {:ok, issue_number} <- parse_issue_number(issue_id),
-         {:ok, details} <- fetch_issue_details(issue_number),
-         {:ok, project_item} <- find_project_item(details),
-         {:ok, field_id, option_id} <- resolve_status_option(project_item, state_name),
-         {:ok, response} <-
-           graphql(@update_project_status_mutation, %{
-             projectId: get_in(project_item, ["project", "id"]),
-             itemId: project_item["id"],
-             fieldId: field_id,
-             optionId: option_id
-           }),
-         :ok <- validate_project_status_update(response),
-         :ok <- sync_issue_open_closed(issue_number, state_name) do
-      :ok
+         :ok <- validate_tracker_config() do
+      update_issue_state_for_tracker_mode(issue_number, state_name, graphql_fun, rest_fun)
     end
   end
 
@@ -401,15 +445,15 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp fetch_all_issues(issue_states) do
-    do_fetch_all_issues(issue_states, nil, [])
+  defp fetch_all_issues(issue_states, graphql_fun) do
+    do_fetch_all_issues(issue_states, graphql_fun, nil, [])
   end
 
-  defp do_fetch_all_issues(issue_states, after_cursor, acc) do
+  defp do_fetch_all_issues(issue_states, graphql_fun, after_cursor, acc) do
     tracker = Config.settings!().tracker
 
     with {:ok, body} <-
-           graphql(@list_issues_query, %{
+           graphql_fun.(@list_issues_query, %{
              owner: tracker.owner,
              repo: tracker.repo,
              statusFieldName: tracker.project_status_field_name,
@@ -421,7 +465,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
       case page_info do
         %{"hasNextPage" => true, "endCursor" => next_cursor} when is_binary(next_cursor) ->
-          do_fetch_all_issues(issue_states, next_cursor, merged)
+          do_fetch_all_issues(issue_states, graphql_fun, next_cursor, merged)
 
         _ ->
           {:ok, Enum.reverse(merged)}
@@ -437,10 +481,14 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp fetch_issue_details(issue_number) do
+    fetch_issue_details(issue_number, &graphql/2)
+  end
+
+  defp fetch_issue_details(issue_number, graphql_fun) do
     tracker = Config.settings!().tracker
 
     with {:ok, body} <-
-           graphql(@issue_by_number_query, %{
+           graphql_fun.(@issue_by_number_query, %{
              owner: tracker.owner,
              repo: tracker.repo,
              issueNumber: issue_number,
@@ -475,7 +523,7 @@ defmodule SymphonyElixir.GitHub.Client do
     assignees = get_in(issue, ["assignees", "nodes"]) || []
     labels = get_in(issue, ["labels", "nodes"]) || []
     project_item = matching_project_item(issue)
-    state = project_state_name(project_item, issue["state"])
+    state = project_state_name(project_item, issue["state"], tracker)
     issue_number = issue["number"]
 
     if is_integer(issue_number) do
@@ -503,22 +551,41 @@ defmodule SymphonyElixir.GitHub.Client do
   defp matching_project_item(issue) do
     tracker = Config.settings!().tracker
 
-    issue
-    |> get_in(["projectItems", "nodes"])
-    |> List.wrap()
-    |> Enum.find(fn item ->
-      get_in(item, ["project", "number"]) == tracker.project_number
-    end)
-  end
+    case tracker.project_number do
+      project_number when is_integer(project_number) ->
+        issue
+        |> get_in(["projectItems", "nodes"])
+        |> List.wrap()
+        |> Enum.find(fn item ->
+          get_in(item, ["project", "number"]) == project_number
+        end)
 
-  defp project_state_name(nil, github_issue_state), do: normalize_github_issue_state(github_issue_state)
-
-  defp project_state_name(project_item, github_issue_state) do
-    case get_in(project_item, ["fieldValueByName", "name"]) do
-      value when is_binary(value) and value != "" -> value
-      _ -> normalize_github_issue_state(github_issue_state)
+      _ ->
+        nil
     end
   end
+
+  defp project_state_name(nil, github_issue_state, %{project_number: nil} = tracker),
+    do: scheduling_state(github_issue_state, tracker)
+
+  defp project_state_name(nil, github_issue_state, _tracker), do: normalize_github_issue_state(github_issue_state)
+
+  defp project_state_name(project_item, github_issue_state, tracker) do
+    case get_in(project_item, ["fieldValueByName", "name"]) do
+      value when is_binary(value) and value != "" -> value
+      _ -> scheduling_state(github_issue_state, tracker)
+    end
+  end
+
+  defp scheduling_state("OPEN", tracker), do: first_configured_state(tracker.active_states, "Open")
+  defp scheduling_state("CLOSED", tracker), do: first_configured_state(tracker.terminal_states, "Closed")
+  defp scheduling_state("open", tracker), do: first_configured_state(tracker.active_states, "Open")
+  defp scheduling_state("closed", tracker), do: first_configured_state(tracker.terminal_states, "Closed")
+  defp scheduling_state(state, _tracker) when is_binary(state), do: state
+  defp scheduling_state(_state, _tracker), do: "Unknown"
+
+  defp first_configured_state([state | _rest], _fallback) when is_binary(state) and state != "", do: state
+  defp first_configured_state(_states, fallback), do: fallback
 
   defp normalize_github_issue_state("OPEN"), do: "Open"
   defp normalize_github_issue_state("CLOSED"), do: "Closed"
@@ -589,7 +656,6 @@ defmodule SymphonyElixir.GitHub.Client do
       not is_binary(tracker.api_key) -> {:error, :missing_github_api_token}
       not is_binary(tracker.owner) -> {:error, :missing_github_owner}
       not is_binary(tracker.repo) -> {:error, :missing_github_repo}
-      not is_integer(tracker.project_number) -> {:error, :missing_github_project_number}
       true -> :ok
     end
   end
@@ -604,9 +670,38 @@ defmodule SymphonyElixir.GitHub.Client do
   defp find_project_item(nil), do: {:error, :issue_not_found}
 
   defp find_project_item(issue_details) do
-    case matching_project_item(issue_details) do
-      %{} = item -> {:ok, item}
-      nil -> {:error, :github_project_item_not_found}
+    if is_integer(Config.settings!().tracker.project_number) do
+      case matching_project_item(issue_details) do
+        %{} = item -> {:ok, item}
+        nil -> {:error, :github_project_item_not_found}
+      end
+    else
+      {:error, :github_project_number_required_for_status_update}
+    end
+  end
+
+  defp update_issue_state_for_tracker_mode(issue_number, state_name, graphql_fun, rest_fun) do
+    if is_integer(Config.settings!().tracker.project_number) do
+      update_project_issue_state(issue_number, state_name, graphql_fun, rest_fun)
+    else
+      sync_issue_open_closed(issue_number, state_name, rest_fun, require_known_state: true)
+    end
+  end
+
+  defp update_project_issue_state(issue_number, state_name, graphql_fun, rest_fun) do
+    with {:ok, details} <- fetch_issue_details(issue_number, graphql_fun),
+         {:ok, project_item} <- find_project_item(details),
+         {:ok, field_id, option_id} <- resolve_status_option(project_item, state_name),
+         {:ok, response} <-
+           graphql_fun.(@update_project_status_mutation, %{
+             projectId: get_in(project_item, ["project", "id"]),
+             itemId: project_item["id"],
+             fieldId: field_id,
+             optionId: option_id
+           }),
+         :ok <- validate_project_status_update(response),
+         :ok <- sync_issue_open_closed(issue_number, state_name, rest_fun) do
+      :ok
     end
   end
 
@@ -632,7 +727,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp validate_project_status_update(_response), do: {:error, :issue_update_failed}
 
-  defp sync_issue_open_closed(issue_number, state_name) do
+  defp sync_issue_open_closed(issue_number, state_name, rest_fun, opts \\ []) do
     tracker = Config.settings!().tracker
     normalized_state_name = normalize_state(state_name)
     terminal_states = MapSet.new(Enum.map(tracker.terminal_states, &normalize_state/1))
@@ -640,22 +735,25 @@ defmodule SymphonyElixir.GitHub.Client do
 
     cond do
       MapSet.member?(terminal_states, normalized_state_name) ->
-        patch_issue_state(issue_number, "closed", close_state_reason(state_name))
+        patch_issue_state(issue_number, "closed", close_state_reason(state_name), rest_fun)
 
       MapSet.member?(active_states, normalized_state_name) ->
-        patch_issue_state(issue_number, "open", "reopened")
+        patch_issue_state(issue_number, "open", "reopened", rest_fun)
+
+      Keyword.get(opts, :require_known_state, false) ->
+        {:error, :github_project_number_required_for_status_update}
 
       true ->
         :ok
     end
   end
 
-  defp patch_issue_state(issue_number, issue_state, state_reason) do
+  defp patch_issue_state(issue_number, issue_state, state_reason, rest_fun) do
     body =
       %{state: issue_state}
       |> maybe_put_state_reason(issue_state, state_reason)
 
-    with {:ok, response} <- rest_request(:patch, issue_path(issue_number), body),
+    with {:ok, response} <- rest_fun.(:patch, issue_path(issue_number), body),
          status when status in [200, 201] <- response.status do
       :ok
     else

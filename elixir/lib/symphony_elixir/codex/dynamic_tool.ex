@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{Config, GitHub, Linear, PullRequest}
+  alias SymphonyElixir.{Config, GitHub, Linear, PullRequest, Tracker}
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -115,6 +115,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @tracker_issue_tool "tracker_issue"
+  @tracker_issue_description """
+  Execute provider-neutral issue operations using Symphony's configured tracker adapter.
+  Supported operations: create comment and set status. Available for any configured tracker.
+  """
+  @tracker_issue_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["operation", "issueId"],
+    "properties" => %{
+      "operation" => %{
+        "type" => "string",
+        "enum" => ["create_comment", "set_status"],
+        "description" => "Tracker issue operation to perform."
+      },
+      "issueId" => %{
+        "type" => "string",
+        "description" => "Symphony issue id for the configured tracker."
+      },
+      "body" => %{
+        "type" => "string",
+        "description" => "Comment body used by `create_comment`."
+      },
+      "state" => %{
+        "type" => "string",
+        "description" => "Workflow state name used by `set_status`."
+      }
+    }
+  }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -127,6 +156,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
       @github_pr_tool ->
         execute_github_pr(arguments, opts)
+
+      @tracker_issue_tool ->
+        execute_tracker_issue(arguments, opts)
 
       other ->
         failure_response(%{
@@ -155,6 +187,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "name" => @github_pr_tool,
         "description" => @github_pr_description,
         "inputSchema" => @github_pr_input_schema
+      },
+      %{
+        "name" => @tracker_issue_tool,
+        "description" => @tracker_issue_description,
+        "inputSchema" => @tracker_issue_input_schema
       }
     ]
   end
@@ -172,16 +209,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp execute_github_issue(arguments, opts) do
-    github_fetch_issue = Keyword.get(opts, :github_fetch_issue, &GitHub.Client.fetch_issue/1)
-    github_list_comments = Keyword.get(opts, :github_list_comments, &GitHub.Client.list_comments/1)
+    github_client = Application.get_env(:symphony_elixir, :github_client_module, GitHub.Client)
+
+    github_fetch_issue = Keyword.get(opts, :github_fetch_issue, &github_client.fetch_issue/1)
+    github_list_comments = Keyword.get(opts, :github_list_comments, &github_client.list_comments/1)
 
     github_upsert_workpad_comment =
-      Keyword.get(opts, :github_upsert_workpad_comment, &GitHub.Client.upsert_workpad_comment/3)
+      Keyword.get(opts, :github_upsert_workpad_comment, &github_client.upsert_workpad_comment/3)
 
     github_update_issue_state =
-      Keyword.get(opts, :github_update_issue_state, &GitHub.Client.update_issue_state/2)
+      Keyword.get(opts, :github_update_issue_state, &github_client.update_issue_state/2)
 
-    github_add_labels = Keyword.get(opts, :github_add_labels, &GitHub.Client.add_labels/2)
+    github_add_labels = Keyword.get(opts, :github_add_labels, &github_client.add_labels/2)
 
     with :ok <- validate_github_tracker(opts),
          {:ok, operation, issue_id, payload} <- normalize_github_issue_arguments(arguments),
@@ -258,6 +297,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp execute_tracker_issue(arguments, opts) do
+    tracker_create_comment = Keyword.get(opts, :tracker_create_comment, &Tracker.create_comment/2)
+    tracker_update_issue_state = Keyword.get(opts, :tracker_update_issue_state, &Tracker.update_issue_state/2)
+
+    with {:ok, operation, issue_id, payload} <- normalize_tracker_issue_arguments(arguments),
+         {:ok, response} <-
+           execute_tracker_issue_operation(
+             operation,
+             issue_id,
+             payload,
+             tracker_create_comment,
+             tracker_update_issue_state
+           ) do
+      dynamic_tool_response(true, encode_payload(response))
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+    end
+  end
+
   defp normalize_linear_graphql_arguments(arguments) when is_binary(arguments) do
     case String.trim(arguments) do
       "" -> {:error, :missing_query}
@@ -292,6 +351,83 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_github_issue_arguments(_arguments), do: {:error, :invalid_github_issue_arguments}
+
+  defp normalize_tracker_issue_arguments(arguments) when is_map(arguments) do
+    with {:ok, operation} <- normalize_tracker_issue_operation(arguments),
+         {:ok, issue_id} <- normalize_tracker_issue_id(arguments),
+         {:ok, payload} <- normalize_tracker_issue_payload(operation, arguments) do
+      {:ok, operation, issue_id, payload}
+    end
+  end
+
+  defp normalize_tracker_issue_arguments(_arguments), do: {:error, :invalid_tracker_issue_arguments}
+
+  defp normalize_tracker_issue_operation(arguments) do
+    case argument_value(arguments, "operation", :operation) do
+      operation when is_binary(operation) ->
+        case String.trim(operation) do
+          "create_comment" = normalized_operation -> {:ok, normalized_operation}
+          "set_status" = normalized_operation -> {:ok, normalized_operation}
+          other -> {:error, {:unsupported_tracker_issue_operation, other}}
+        end
+
+      _ ->
+        {:error, :missing_tracker_issue_operation}
+    end
+  end
+
+  defp normalize_tracker_issue_id(arguments) do
+    case argument_value(arguments, "issueId", :issueId) do
+      issue_id when is_binary(issue_id) ->
+        case String.trim(issue_id) do
+          "" -> {:error, :missing_issue_id}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, :missing_issue_id}
+    end
+  end
+
+  defp normalize_tracker_issue_payload("create_comment", arguments) do
+    with {:ok, body} <- normalize_tracker_issue_body(arguments) do
+      {:ok, %{"body" => body}}
+    end
+  end
+
+  defp normalize_tracker_issue_payload("set_status", arguments) do
+    with {:ok, state} <- normalize_tracker_issue_state(arguments) do
+      {:ok, %{"state" => state}}
+    end
+  end
+
+  defp normalize_tracker_issue_payload(_operation, _arguments), do: {:ok, %{}}
+
+  defp normalize_tracker_issue_body(arguments) do
+    case argument_value(arguments, "body", :body) do
+      body when is_binary(body) ->
+        case String.trim(body) do
+          "" -> {:error, :missing_tracker_issue_body}
+          _ -> {:ok, body}
+        end
+
+      _ ->
+        {:error, :missing_tracker_issue_body}
+    end
+  end
+
+  defp normalize_tracker_issue_state(arguments) do
+    case argument_value(arguments, "state", :state) do
+      state when is_binary(state) ->
+        case String.trim(state) do
+          "" -> {:error, :missing_tracker_issue_state}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, :missing_tracker_issue_state}
+    end
+  end
 
   defp normalize_github_issue_operation(arguments) do
     case Map.get(arguments, "operation") || Map.get(arguments, :operation) do
@@ -624,6 +760,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp execute_tracker_issue_operation(
+         "create_comment",
+         issue_id,
+         %{"body" => body},
+         tracker_create_comment,
+         _tracker_update_issue_state
+       ) do
+    with :ok <- tracker_create_comment.(issue_id, body) do
+      {:ok, %{"commented" => true, "issueId" => issue_id}}
+    end
+  end
+
+  defp execute_tracker_issue_operation(
+         "set_status",
+         issue_id,
+         %{"state" => state},
+         _tracker_create_comment,
+         tracker_update_issue_state
+       ) do
+    with :ok <- tracker_update_issue_state.(issue_id, state) do
+      {:ok, %{"issueId" => issue_id, "state" => state, "updated" => true}}
+    end
+  end
+
   defp execute_github_pr_operation(
          "list_for_head",
          %{"headRefName" => head_ref_name},
@@ -951,6 +1111,42 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           }
         }
 
+      :missing_tracker_issue_operation ->
+        %{
+          "error" => %{
+            "message" => "`tracker_issue` requires an `operation`."
+          }
+        }
+
+      {:unsupported_tracker_issue_operation, operation} ->
+        %{
+          "error" => %{
+            "message" => "Unsupported `tracker_issue.operation`: #{inspect(operation)}.",
+            "supportedOperations" => ["create_comment", "set_status"]
+          }
+        }
+
+      :missing_tracker_issue_body ->
+        %{
+          "error" => %{
+            "message" => "`tracker_issue` requires a non-empty `body` for `create_comment`."
+          }
+        }
+
+      :missing_tracker_issue_state ->
+        %{
+          "error" => %{
+            "message" => "`tracker_issue` requires a non-empty `state` for `set_status`."
+          }
+        }
+
+      :invalid_tracker_issue_arguments ->
+        %{
+          "error" => %{
+            "message" => "`tracker_issue` expects an object with `operation`, `issueId`, and any required operation-specific fields."
+          }
+        }
+
       :missing_github_pr_operation ->
         %{
           "error" => %{
@@ -1071,6 +1267,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         %{
           "error" => %{
             "message" => "The requested GitHub Project status does not exist on the configured Status field."
+          }
+        }
+
+      :github_project_number_required_for_status_update ->
+        %{
+          "error" => %{
+            "message" => "GitHub issue status updates without `tracker.project_number` only support configured active or terminal states."
           }
         }
 

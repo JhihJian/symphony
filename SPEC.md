@@ -1138,7 +1138,7 @@ Note:
 
 - Workspaces are intentionally preserved after successful runs.
 
-## 11. Issue Tracker Integration Contract (Linear-Compatible)
+## 11. Issue Tracker Integration Contract
 
 ### 11.1 REQUIRED Operations
 
@@ -1153,7 +1153,7 @@ An implementation MUST support these tracker adapter operations:
 3. `fetch_issue_states_by_ids(issue_ids)`
    - Used for active-run reconciliation.
 
-### 11.2 Query Semantics (Linear)
+### 11.2 Query Semantics
 
 Linear-specific requirements for `tracker.kind == "linear"`:
 
@@ -1170,10 +1170,31 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - Page size default: `50`
 - Network timeout: `30000 ms`
 
+GitHub-specific requirements for `tracker.kind == "github"`:
+
+- `tracker.owner` and `tracker.repo` define the repository scope.
+- `tracker.project_number` is optional. When present, GitHub Project v2 status is used as the
+  normalized scheduling state. When omitted, GitHub native `OPEN` maps to the first configured
+  active state and `CLOSED` maps to the first configured terminal state.
+- Issue numbers are only repository-local; normalized IDs and identifiers must include repository
+  scope.
+
+GitLab-specific requirements for `tracker.kind == "gitlab"`:
+
+- `tracker.project_slug` defines the project scope. It can be a path such as `group/project` or a
+  numeric project ID.
+- The default endpoint is `https://gitlab.com/api/v4`.
+- GitLab native `opened` maps to the first configured active state and `closed` maps to the first
+  configured terminal state.
+- Issue `iid` values are only project-local; normalized IDs and identifiers must include project
+  scope.
+
 Important:
 
 - Linear GraphQL schema details can drift. Keep query construction isolated and test the exact query
   fields/types REQUIRED by this specification.
+- GitHub and GitLab API details can drift. Keep REST/GraphQL construction isolated and test the
+  provider payload fields required for normalization.
 
 A non-Linear implementation MAY change transport details, but the normalized outputs MUST match the
 domain model in Section 4.
@@ -1203,6 +1224,8 @@ RECOMMENDED error categories:
 - `linear_graphql_errors`
 - `linear_unknown_payload`
 - `linear_missing_end_cursor` (pagination integrity error)
+- `github_api_request`, `github_api_status`, `github_graphql_errors`, `github_unknown_payload`
+- `gitlab_api_request`, `gitlab_api_status`, `gitlab_unknown_payload`
 
 Orchestrator behavior on tracker errors:
 

@@ -430,6 +430,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
     case tracker.kind do
       "github" -> github_project_url(tracker.owner, tracker.repo, tracker.project_number)
+      "gitlab" -> gitlab_project_url(tracker.endpoint, tracker.project_slug)
       _ -> linear_project_url(tracker.project_slug)
     end
   end
@@ -450,6 +451,39 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp github_project_url(_owner, _repo, _project_number), do: nil
+
+  defp gitlab_project_url(endpoint, project_slug)
+       when is_binary(endpoint) and is_binary(project_slug) and project_slug != "" do
+    base_url = gitlab_web_base_url(endpoint)
+
+    if String.match?(project_slug, ~r/^\d+$/) do
+      base_url <> "/dashboard/issues?scope=all&state=opened"
+    else
+      base_url <> "/" <> project_slug <> "/-/issues"
+    end
+  end
+
+  defp gitlab_project_url(_endpoint, _project_slug), do: nil
+
+  defp gitlab_web_base_url(endpoint) when is_binary(endpoint) do
+    case URI.parse(endpoint) do
+      %URI{scheme: scheme, host: host} = uri when is_binary(scheme) and is_binary(host) ->
+        path =
+          (uri.path || "")
+          |> String.replace_suffix("/api/v4", "")
+          |> String.trim_trailing("/")
+
+        uri
+        |> Map.put(:path, path)
+        |> Map.put(:query, nil)
+        |> Map.put(:fragment, nil)
+        |> URI.to_string()
+        |> String.trim_trailing("/")
+
+      _ ->
+        "https://gitlab.com"
+    end
+  end
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
@@ -578,6 +612,13 @@ defmodule SymphonyElixir.StatusDashboard do
         "project_number" => project_number
       }),
       do: github_project_url(owner, repo, project_number)
+
+  def project_url_for_test(%{
+        "kind" => "gitlab",
+        "endpoint" => endpoint,
+        "project_slug" => project_slug
+      }),
+      do: gitlab_project_url(endpoint, project_slug)
 
   def project_url_for_test(%{"project_slug" => project_slug}), do: linear_project_url(project_slug)
   def project_url_for_test(_tracker), do: nil

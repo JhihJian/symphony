@@ -25,6 +25,12 @@ defmodule SymphonyElixir.TestSupport do
         only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
 
       setup do
+        client_modules =
+          SymphonyElixir.TestSupport.snapshot_app_env_keys([
+            :github_client_module,
+            :gitlab_client_module
+          ])
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -35,6 +41,7 @@ defmodule SymphonyElixir.TestSupport do
         workflow_file = Path.join(workflow_root, "WORKFLOW.md")
         write_workflow_file!(workflow_file)
         Workflow.set_workflow_file_path(workflow_file)
+        SymphonyElixir.TestSupport.ensure_application_started!()
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
 
@@ -43,6 +50,8 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :e2e_tracker_double)
+          SymphonyElixir.TestSupport.restore_app_env_keys(client_modules)
           File.rm_rf(workflow_root)
         end)
 
@@ -69,7 +78,34 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
+  def snapshot_app_env_keys(keys) when is_list(keys) do
+    Enum.map(keys, &{&1, Application.fetch_env(:symphony_elixir, &1)})
+  end
+
+  def restore_app_env_keys(snapshots) when is_list(snapshots) do
+    Enum.each(snapshots, fn
+      {key, {:ok, value}} -> Application.put_env(:symphony_elixir, key, value)
+      {key, :error} -> Application.delete_env(:symphony_elixir, key)
+    end)
+  end
+
+  def ensure_application_started! do
+    case Process.whereis(SymphonyElixir.Supervisor) do
+      pid when is_pid(pid) ->
+        :ok
+
+      nil ->
+        case Application.ensure_all_started(:symphony_elixir) do
+          {:ok, _apps} -> :ok
+          {:error, {:already_started, :symphony_elixir}} -> :ok
+          {:error, reason} -> raise "failed to start symphony_elixir test application: #{inspect(reason)}"
+        end
+    end
+  end
+
   def stop_default_http_server do
+    ensure_application_started!()
+
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false

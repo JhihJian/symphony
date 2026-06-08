@@ -94,7 +94,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql", "github_issue", "github_pr"]
+               "supportedTools" => ["linear_graphql", "github_issue", "github_pr", "tracker_issue"]
              }
            }
 
@@ -625,6 +625,28 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "message" => "GitHub API request failed with HTTP 503.",
                "status" => 503
              }
+           }
+  end
+
+  test "tracker_issue sets status through the configured tracker adapter" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "tracker_issue",
+        %{"operation" => "set_status", "issueId" => "gitlab:platform/symphony#7", "state" => "Done"},
+        tracker_update_issue_state: fn issue_id, state ->
+          send(test_pid, {:tracker_update_issue_state_called, issue_id, state})
+          :ok
+        end
+      )
+
+    assert_received {:tracker_update_issue_state_called, "gitlab:platform/symphony#7", "Done"}
+
+    assert Jason.decode!(response["output"]) == %{
+             "issueId" => "gitlab:platform/symphony#7",
+             "state" => "Done",
+             "updated" => true
            }
   end
 

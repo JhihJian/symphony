@@ -202,12 +202,72 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      tracker_project_number: nil
+    )
+
+    settings = Config.settings!()
+    assert settings.tracker.project_number == nil
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
       tracker_owner: nil,
       tracker_repo: "symphony",
       tracker_project_number: 42
     )
 
     assert {:error, :missing_github_owner} = Config.validate!()
+  end
+
+  test "gitlab config resolves defaults and validates required fields" do
+    previous_gitlab_token = System.get_env("GITLAB_TOKEN")
+    previous_gitlab_assignee = System.get_env("GITLAB_ASSIGNEE")
+
+    on_exit(fn ->
+      restore_env("GITLAB_TOKEN", previous_gitlab_token)
+      restore_env("GITLAB_ASSIGNEE", previous_gitlab_assignee)
+    end)
+
+    System.put_env("GITLAB_TOKEN", "gitlab-token")
+    System.put_env("GITLAB_ASSIGNEE", "symphony-bot")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: "platform/symphony",
+      tracker_assignee: nil
+    )
+
+    settings = Config.settings!()
+    assert settings.tracker.endpoint == "https://gitlab.com/api/v4"
+    assert settings.tracker.api_key == "gitlab-token"
+    assert settings.tracker.project_slug == "platform/symphony"
+    assert settings.tracker.assignee == "symphony-bot"
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: nil,
+      tracker_api_token: "gitlab-token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_gitlab_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: nil,
+      tracker_project_slug: "platform/symphony"
+    )
+
+    restore_env("GITLAB_TOKEN", nil)
+    assert {:error, :missing_gitlab_api_token} = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

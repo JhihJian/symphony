@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
+  alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -67,6 +68,33 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  defmodule FakeGitLabClient do
+    def fetch_candidate_issues do
+      send(self(), :gitlab_fetch_candidate_issues_called)
+      {:ok, [:gitlab_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:gitlab_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:gitlab_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:gitlab_create_comment_called, issue_id, body})
+      Process.get({__MODULE__, :create_comment_result}, :ok)
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:gitlab_update_issue_state_called, issue_id, state_name})
+      Process.get({__MODULE__, :update_issue_state_result}, :ok)
+    end
+  end
+
   defmodule SlowOrchestrator do
     use GenServer
 
@@ -108,6 +136,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     github_client_module = Application.get_env(:symphony_elixir, :github_client_module)
+    gitlab_client_module = Application.get_env(:symphony_elixir, :gitlab_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
@@ -120,6 +149,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         Application.delete_env(:symphony_elixir, :github_client_module)
       else
         Application.put_env(:symphony_elixir, :github_client_module, github_client_module)
+      end
+
+      if is_nil(gitlab_client_module) do
+        Application.delete_env(:symphony_elixir, :gitlab_client_module)
+      else
+        Application.put_env(:symphony_elixir, :gitlab_client_module, gitlab_client_module)
       end
     end)
 
@@ -216,7 +251,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     WorkflowStore.force_reload()
   end
 
-  test "tracker delegates to memory, linear, and github adapters" do
+  test "tracker delegates to memory, linear, github, and gitlab adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -247,6 +282,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert SymphonyElixir.Tracker.adapter() == GitHubAdapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_project_slug: "platform/symphony"
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == GitLabAdapter
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -381,6 +424,31 @@ defmodule SymphonyElixir.ExtensionsTest do
     Process.put({FakeGitHubClient, :update_issue_state_result}, {:error, :boom})
     assert {:error, :boom} = GitHubAdapter.update_issue_state("12", "Done")
     assert_receive {:github_update_issue_state_called, "12", "Done"}
+  end
+
+  test "gitlab adapter delegates reads and writes" do
+    Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
+
+    assert {:ok, [:gitlab_candidate]} = GitLabAdapter.fetch_candidate_issues()
+    assert_receive :gitlab_fetch_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = GitLabAdapter.fetch_issues_by_states(["Todo"])
+    assert_receive {:gitlab_fetch_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["platform/symphony#12"]} =
+             GitLabAdapter.fetch_issue_states_by_ids(["platform/symphony#12"])
+
+    assert_receive {:gitlab_fetch_issue_states_by_ids_called, ["platform/symphony#12"]}
+
+    assert :ok = GitLabAdapter.create_comment("platform/symphony#12", "hello")
+    assert_receive {:gitlab_create_comment_called, "platform/symphony#12", "hello"}
+
+    Process.put({FakeGitLabClient, :update_issue_state_result}, {:error, :boom})
+
+    assert {:error, :boom} =
+             GitLabAdapter.update_issue_state("platform/symphony#12", "Done")
+
+    assert_receive {:gitlab_update_issue_state_called, "platform/symphony#12", "Done"}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

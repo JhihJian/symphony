@@ -504,12 +504,15 @@ defmodule SymphonyElixir.Config.Schema do
   defp env_reference_name(_value), do: :error
 
   defp default_tracker_endpoint("github"), do: "https://api.github.com/graphql"
+  defp default_tracker_endpoint("gitlab"), do: "https://gitlab.com/api/v4"
   defp default_tracker_endpoint(_kind), do: "https://api.linear.app/graphql"
 
   defp tracker_api_key_env_var("github"), do: "GITHUB_TOKEN"
+  defp tracker_api_key_env_var("gitlab"), do: "GITLAB_TOKEN"
   defp tracker_api_key_env_var(_kind), do: "LINEAR_API_KEY"
 
   defp tracker_assignee_env_var("github"), do: "GITHUB_ASSIGNEE"
+  defp tracker_assignee_env_var("gitlab"), do: "GITLAB_ASSIGNEE"
   defp tracker_assignee_env_var(_kind), do: "LINEAR_ASSIGNEE"
 
   defp resolve_env_token(env_name) do

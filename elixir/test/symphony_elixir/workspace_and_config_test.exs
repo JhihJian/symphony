@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitLab.Client, as: GitLabClient
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -455,12 +456,458 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.identifier == "your-org/your-repo#42"
   end
 
+  test "github client maps issues-only native states to configured scheduling states" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_owner: "your-org",
+      tracker_repo: "your-repo",
+      tracker_project_number: nil,
+      tracker_active_states: ["Ready", "Doing"],
+      tracker_terminal_states: ["Done", "Closed"]
+    )
+
+    raw_issue = %{
+      "number" => 42,
+      "title" => "GitHub issue without project item",
+      "body" => "Use native issue state",
+      "state" => "OPEN",
+      "url" => "https://github.com/your-org/your-repo/issues/42",
+      "labels" => %{"nodes" => []},
+      "assignees" => %{"nodes" => []},
+      "projectItems" => %{"nodes" => []}
+    }
+
+    issue = GitHubClient.normalize_issue_for_test(raw_issue)
+    assert issue.state == "Ready"
+    assert issue.identifier == "your-org/your-repo#42"
+
+    closed_issue = GitHubClient.normalize_issue_for_test(%{raw_issue | "state" => "CLOSED"})
+    assert closed_issue.state == "Done"
+  end
+
+  test "github client updates issues-only native states without a project item" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "token",
+      tracker_owner: "your-org",
+      tracker_repo: "your-repo",
+      tracker_project_number: nil,
+      tracker_active_states: ["Ready"],
+      tracker_terminal_states: ["Done", "Duplicate"]
+    )
+
+    graphql_fun = fn _query, _variables -> flunk("issues-only updates should not call GitHub GraphQL") end
+
+    rest_fun = fn method, path, body ->
+      send(self(), {:github_rest_update, method, path, body})
+      {:ok, %{status: 200}}
+    end
+
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Done", graphql_fun, rest_fun)
+    assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "closed", state_reason: "completed"}}
+
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Ready", graphql_fun, rest_fun)
+    assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "open"}}
+
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Duplicate", graphql_fun, rest_fun)
+    assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "closed", state_reason: "duplicate"}}
+
+    assert {:error, :github_project_number_required_for_status_update} =
+             GitHubClient.update_issue_state_for_test("42", "Human Review", graphql_fun, rest_fun)
+  end
+
   test "github client derives REST base URLs for dotcom and enterprise GraphQL endpoints" do
     assert GitHubClient.rest_api_base_url_for_test("https://api.github.com/graphql") ==
              "https://api.github.com"
 
     assert GitHubClient.rest_api_base_url_for_test("https://ghe.example.com/api/graphql") ==
              "https://ghe.example.com/api/v3"
+  end
+
+  test "gitlab client normalizes project issues and blockers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_project_slug: "platform/symphony",
+      tracker_assignee: "worker-1"
+    )
+
+    raw_issue = %{
+      "id" => 9001,
+      "iid" => 42,
+      "title" => "Blocked GitLab task",
+      "description" => "Wait for dependency",
+      "state" => "opened",
+      "web_url" => "https://gitlab.example.com/platform/symphony/-/issues/42",
+      "labels" => ["backend", "symphony"],
+      "assignees" => [%{"username" => "worker-1"}],
+      "blocking_issues" => [
+        %{
+          "id" => 9000,
+          "iid" => 41,
+          "state" => "opened",
+          "web_url" => "https://gitlab.example.com/platform/symphony/-/issues/41",
+          "references" => %{"full" => "platform/symphony#41"}
+        }
+      ],
+      "created_at" => "2026-01-01T00:00:00.000Z",
+      "updated_at" => "2026-01-02T00:00:00.000Z"
+    }
+
+    issue = GitLabClient.normalize_issue_for_test(raw_issue)
+
+    assert issue.id == "gitlab:platform/symphony#42"
+    assert issue.identifier == "platform/symphony#42"
+    assert issue.title == "Blocked GitLab task"
+    assert issue.description == "Wait for dependency"
+    assert issue.state == "Todo"
+    assert issue.url == "https://gitlab.example.com/platform/symphony/-/issues/42"
+    assert issue.assignee_id == "worker-1"
+    assert issue.labels == ["backend", "symphony"]
+    assert issue.assigned_to_worker
+    assert issue.blocked_by == [%{id: "gitlab:platform/symphony#41", identifier: "platform/symphony#41", state: "Todo"}]
+    assert issue.created_at == ~U[2026-01-01 00:00:00.000Z]
+    assert issue.updated_at == ~U[2026-01-02 00:00:00.000Z]
+
+    closed_issue = GitLabClient.normalize_issue_for_test(%{raw_issue | "state" => "closed"})
+    assert closed_issue.state == "Closed"
+
+    assigned_elsewhere =
+      GitLabClient.normalize_issue_for_test(%{raw_issue | "assignees" => [%{"username" => "other"}]})
+
+    refute assigned_elsewhere.assigned_to_worker
+  end
+
+  test "gitlab client fetches and filters candidate issues from REST pages" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_required_labels: ["symphony"],
+      tracker_assignee: "worker-1"
+    )
+
+    first_page = [
+      gitlab_issue_payload(1, "opened", ["symphony"], [%{"username" => "worker-1"}]),
+      gitlab_issue_payload(2, "closed", ["symphony"], [%{"username" => "worker-1"}])
+    ]
+
+    second_page = [
+      gitlab_issue_payload(3, "opened", ["other"], [%{"username" => "worker-1"}]),
+      gitlab_issue_payload(4, "opened", ["symphony"], [%{"username" => "other"}])
+    ]
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_request, opts})
+
+      case opts[:params][:page] do
+        1 -> {:ok, %{status: 200, body: first_page, headers: [{"x-next-page", "2"}]}}
+        2 -> {:ok, %{status: 200, body: second_page, headers: [{"x-next-page", ""}]}}
+      end
+    end
+
+    assert {:ok, issues} = GitLabClient.fetch_candidate_issues_for_test(request_fun)
+    assert Enum.map(issues, & &1.identifier) == ["platform/symphony#1"]
+
+    assert_receive {:gitlab_request, first_request}
+    assert first_request[:method] == :get
+    assert first_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues"
+    assert first_request[:params][:state] == "opened"
+    assert first_request[:params][:labels] == "symphony"
+    assert first_request[:params][:assignee_username] == "worker-1"
+    assert first_request[:params][:page] == 1
+
+    assert_receive {:gitlab_request, second_request}
+    assert second_request[:params][:page] == 2
+  end
+
+  test "gitlab client fetches issues by normalized states" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony"
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_state_request, opts})
+      {:ok, %{status: 200, body: [gitlab_issue_payload(1, opts[:params][:state], ["symphony"], [])], headers: []}}
+    end
+
+    assert {:ok, issues} = GitLabClient.fetch_issues_by_states_for_test(["Todo", "Closed"], request_fun)
+    assert Enum.map(issues, & &1.state) == ["Todo", "Closed"]
+
+    assert_receive {:gitlab_state_request, opened_request}
+    assert opened_request[:params][:state] == "opened"
+
+    assert_receive {:gitlab_state_request, closed_request}
+    assert closed_request[:params][:state] == "closed"
+
+    assert {:ok, []} = GitLabClient.fetch_issues_by_states_for_test([], request_fun)
+  end
+
+  test "gitlab client refreshes issue states by provider-scoped ids" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony"
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_refresh_request, opts})
+      iid = opts[:url] |> String.split("/") |> List.last()
+      {:ok, %{status: 200, body: gitlab_issue_payload(iid, "opened", ["symphony"], []), headers: []}}
+    end
+
+    assert {:ok, issues} =
+             GitLabClient.fetch_issue_states_by_ids_for_test(
+               ["gitlab:platform/symphony#2", "platform/symphony#1", "platform/symphony#1"],
+               request_fun
+             )
+
+    assert Enum.map(issues, & &1.identifier) == ["platform/symphony#2", "platform/symphony#1"]
+
+    assert_receive {:gitlab_refresh_request, first_request}
+    assert first_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues/2"
+
+    assert_receive {:gitlab_refresh_request, second_request}
+    assert second_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues/1"
+  end
+
+  test "gitlab client creates notes and updates issue state" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony"
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_write_request, opts})
+      {:ok, %{status: 200, body: %{}, headers: []}}
+    end
+
+    assert :ok = GitLabClient.create_comment_for_test("platform/symphony#7", "hello", request_fun)
+
+    assert_receive {:gitlab_write_request, comment_request}
+    assert comment_request[:method] == :post
+    assert comment_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues/7/notes"
+    assert comment_request[:json] == %{body: "hello"}
+
+    assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "Done", request_fun)
+
+    assert_receive {:gitlab_write_request, state_request}
+    assert state_request[:method] == :put
+    assert state_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues/7"
+    assert state_request[:json] == %{state_event: "close"}
+
+    assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "Todo", request_fun)
+
+    assert_receive {:gitlab_write_request, reopen_request}
+    assert reopen_request[:json] == %{state_event: "reopen"}
+  end
+
+  test "gitlab client covers validation and error paths" do
+    request_fun = fn _opts -> flunk("request should not run when config or issue id is invalid") end
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: nil,
+      tracker_project_slug: "platform/symphony"
+    )
+
+    assert {:error, :missing_gitlab_api_token} = GitLabClient.fetch_candidate_issues()
+    assert {:error, :missing_gitlab_api_token} = GitLabClient.fetch_issue_states_by_ids(["platform/symphony#1"])
+    assert {:error, :missing_gitlab_api_token} = GitLabClient.create_comment("platform/symphony#1", "hello")
+    assert {:error, :missing_gitlab_api_token} = GitLabClient.update_issue_state("platform/symphony#1", "Todo")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_gitlab_project_slug} = GitLabClient.fetch_issues_by_states(["Todo"])
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4/",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_required_labels: [],
+      tracker_assignee: nil
+    )
+
+    assert GitLabClient.rest_api_base_url_for_test(" https://gitlab.example.com/api/v4/ ") ==
+             "https://gitlab.example.com/api/v4"
+
+    assert {:ok, []} = GitLabClient.fetch_issues_by_states_for_test(["Review", :todo], request_fun)
+
+    assert {:error, :invalid_issue_id} =
+             GitLabClient.create_comment_for_test("platform/symphony#not-a-number", "hello", request_fun)
+
+    assert {:error, {:gitlab_unsupported_state, "Review"}} =
+             GitLabClient.update_issue_state_for_test("platform/symphony#1", "Review", request_fun)
+
+    error_request_fun = fn _opts -> {:error, :timeout} end
+
+    assert {:error, {:gitlab_api_request, :timeout}} =
+             GitLabClient.fetch_candidate_issues_for_test(error_request_fun)
+
+    assert {:error, {:gitlab_api_request, :timeout}} =
+             GitLabClient.fetch_issues_by_states_for_test(["Todo"], error_request_fun)
+
+    assert {:error, {:gitlab_api_request, :timeout}} =
+             GitLabClient.fetch_issue_states_by_ids_for_test(["platform/symphony#1"], error_request_fun)
+
+    status_request_fun = fn _opts -> {:ok, %{status: 503, body: %{}, headers: []}} end
+
+    assert {:error, {:gitlab_api_status, 503}} =
+             GitLabClient.fetch_candidate_issues_for_test(status_request_fun)
+
+    unknown_page_fun = fn _opts -> {:ok, %{status: 200, body: %{"unexpected" => true}, headers: []}} end
+
+    assert {:error, :gitlab_unknown_payload} =
+             GitLabClient.fetch_candidate_issues_for_test(unknown_page_fun)
+
+    unknown_issue_fun = fn _opts -> {:ok, %{status: 200, body: [], headers: []}} end
+
+    assert {:error, :gitlab_unknown_payload} =
+             GitLabClient.fetch_issue_states_by_ids_for_test(["platform/symphony#1"], unknown_issue_fun)
+
+    not_found_fun = fn _opts -> {:ok, %{status: 404, body: %{}, headers: []}} end
+
+    assert {:ok, []} =
+             GitLabClient.fetch_issue_states_by_ids_for_test(["platform/symphony#1"], not_found_fun)
+
+    invalid_next_page_fun = fn _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: [gitlab_issue_payload(1, "opened", [], [])],
+         headers: [{"x-next-page", "not-a-number"}]
+       }}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(invalid_next_page_fun)
+
+    map_header_fun = fn _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: [gitlab_issue_payload(1, "opened", [], [])],
+         headers: %{"x-next-page" => ""}
+       }}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(map_header_fun)
+
+    atom_map_header_fun = fn _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: [gitlab_issue_payload(1, "opened", [], [])],
+         headers: %{:"x-next-page" => ""}
+       }}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(atom_map_header_fun)
+
+    invalid_header_entry_fun = fn _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: [gitlab_issue_payload(1, "opened", [], [])],
+         headers: [:bad_header]
+       }}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(invalid_header_entry_fun)
+
+    no_header_fun = fn _opts ->
+      {:ok,
+       %{
+         status: 200,
+         body: [gitlab_issue_payload(1, "opened", [], [])],
+         headers: :none
+       }}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(no_header_fun)
+
+    missing_header_key_fun = fn _opts ->
+      {:ok, %{status: 200, body: [gitlab_issue_payload(1, "opened", [], [])]}}
+    end
+
+    assert {:ok, [%Issue{identifier: "platform/symphony#1"}]} =
+             GitLabClient.fetch_candidate_issues_for_test(missing_header_key_fun)
+
+    non_map_issue_fun = fn _opts ->
+      {:ok, %{status: 200, body: [nil], headers: []}}
+    end
+
+    assert {:ok, []} = GitLabClient.fetch_candidate_issues_for_test(non_map_issue_fun)
+  end
+
+  test "gitlab client normalizes defensive payload variants" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_assignee: "worker",
+      tracker_active_states: [""],
+      tracker_terminal_states: [""]
+    )
+
+    unknown_issue =
+      GitLabClient.normalize_issue_for_test(%{
+        "iid" => 5,
+        "state" => nil,
+        "labels" => "not-a-list",
+        "assignees" => [%{"id" => 1}, "bad"],
+        "blocking_issues" => [%{"iid" => "not-int"}],
+        "created_at" => "not-a-date"
+      })
+
+    assert unknown_issue.state == "Unknown"
+    assert unknown_issue.labels == []
+    assert unknown_issue.assignee_id == nil
+    refute unknown_issue.assigned_to_worker
+    assert unknown_issue.blocked_by == []
+    assert unknown_issue.created_at == nil
+    assert unknown_issue.updated_at == nil
+
+    refute GitLabClient.normalize_issue_for_test(%{"iid" => "5"})
+    refute GitLabClient.normalize_issue_for_test(%{})
+
+    custom_open = GitLabClient.normalize_issue_for_test(%{"iid" => 6, "state" => "review"})
+    assert custom_open.state == "review"
+
+    closed_fallback = GitLabClient.normalize_issue_for_test(%{"iid" => 7, "state" => "closed"})
+    assert closed_fallback.state == "Closed"
+
+    opened_fallback = GitLabClient.normalize_issue_for_test(%{"iid" => 8, "state" => "reopened"})
+    assert opened_fallback.state == "Todo"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_assignee: ""
+    )
+
+    empty_assignee_issue = GitLabClient.normalize_issue_for_test(%{"iid" => 9, "state" => "opened"})
+    assert empty_assignee_issue.assigned_to_worker
+
+    reopened = GitLabClient.normalize_issue_for_test(%{"iid" => 10, "state" => "reopened"})
+    assert reopened.state == "Todo"
   end
 
   test "linear client pagination merge helper preserves issue ordering" do
@@ -519,6 +966,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert query =~ "SymphonyLinearIssuesById"
 
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+  end
+
+  defp gitlab_issue_payload(iid, state, labels, assignees) do
+    %{
+      "id" => 9_000 + gitlab_iid_integer(iid),
+      "iid" => gitlab_iid_integer(iid),
+      "title" => "GitLab issue #{iid}",
+      "description" => "Issue body #{iid}",
+      "state" => state,
+      "web_url" => "https://gitlab.example.com/platform/symphony/-/issues/#{iid}",
+      "labels" => labels,
+      "assignees" => assignees,
+      "blocking_issues" => [],
+      "created_at" => "2026-01-01T00:00:00.000Z",
+      "updated_at" => "2026-01-02T00:00:00.000Z"
+    }
+  end
+
+  defp gitlab_iid_integer(iid) when is_integer(iid), do: iid
+
+  defp gitlab_iid_integer(iid) when is_binary(iid) do
+    {number, ""} = Integer.parse(iid)
+    number
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do

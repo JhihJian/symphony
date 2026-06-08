@@ -1,9 +1,9 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e e2e-local e2e-live
 
 MIX ?= mix
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, e2e-live, ci"
 
 setup:
 	$(MIX) setup
@@ -34,6 +34,11 @@ dialyzer:
 	$(MIX) dialyzer --format short
 
 e2e:
+	$(MIX) test test/symphony_elixir/e2e_test.exs test/symphony_elixir/provider_contract_e2e_test.exs
+
+e2e-local: e2e
+
+e2e-live:
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
 
 ci:
