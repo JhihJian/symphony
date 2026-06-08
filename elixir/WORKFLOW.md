@@ -17,7 +17,7 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ~/code/symphony-workspaces
+  root: /data/dev/symphony/workspaces
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
