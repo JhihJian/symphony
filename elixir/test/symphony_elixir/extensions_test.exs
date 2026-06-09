@@ -699,17 +699,22 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Symphony 可观测性"
+    assert html =~ "运维仪表盘"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
-    assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "进行中"
+    assert html =~ "运行时长"
+    assert html =~ "实时"
+    assert html =~ "离线"
+    assert html =~ "复制 ID"
+    assert html =~ "Codex 更新"
+    refute html =~ "Operations Dashboard"
+    refute html =~ "Copy ID"
+    refute html =~ "<span class=\"state-badge state-badge-active\">\n                        In Progress\n                      </span>"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -765,7 +770,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Snapshot unavailable"
+    assert html =~ "快照不可用"
     assert html =~ "snapshot_unavailable"
   end
 
