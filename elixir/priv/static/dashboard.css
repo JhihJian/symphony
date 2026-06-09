@@ -393,6 +393,31 @@ pre,
   font-size: 0.86rem;
 }
 
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.action-row button {
+  padding: 0.42rem 0.72rem;
+  font-size: 0.82rem;
+  box-shadow: none;
+}
+
+.state-badge-blocked {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
+.state-badge-terminal,
+.state-badge-muted {
+  background: #f5f5f7;
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
 .muted {
   color: var(--muted);
 }

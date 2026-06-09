@@ -178,6 +178,10 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- The same Phoenix service also exposes an operator-only multi-instance management surface at
+  `/admin/instances` and `/api/v1/admin/instances*`. It discovers independently deployed
+  `symphony@<project>.service` instances from the systemd-template config directory and does not
+  change the single-instance orchestrator scheduling model.
 
 ## Web dashboard
 
@@ -187,6 +191,18 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+
+The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
+it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
+detail links.
+
+The multi-instance dashboard at `/admin/instances` is a thin operator management plane. It reads
+registered instances from `~/.config/symphony/projects` by default, checks each
+`symphony@<project>.service` via `systemctl --user`, and queries each reachable instance's
+`/api/v1/state`. Stopped, failed, or unreachable instances are rendered as per-instance health
+states and do not block the rest of the overview. The page can request `start`, `stop`, and
+`restart` for a service, but issue dispatch, retry semantics, workspace isolation, and Codex
+app-server behavior remain owned by each individual instance's orchestrator.
 
 ## Project Layout
 
