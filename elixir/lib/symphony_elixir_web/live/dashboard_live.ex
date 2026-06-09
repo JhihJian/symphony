@@ -45,24 +45,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">
-              Symphony Observability
+              Symphony 可观测性
             </p>
             <h1 class="hero-title">
-              Operations Dashboard
+              运维仪表盘
             </h1>
             <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
+              展示当前状态、重试压力、Token 用量，以及活跃 Symphony 运行时的编排健康状况。
             </p>
           </div>
 
           <div class="status-stack">
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
-              Live
+              实时
             </span>
             <span class="status-badge status-badge-offline">
               <span class="status-badge-dot"></span>
-              Offline
+              离线
             </span>
           </div>
         </div>
@@ -71,7 +71,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <%= if @payload[:error] do %>
         <section class="error-card">
           <h2 class="error-title">
-            Snapshot unavailable
+            快照不可用
           </h2>
           <p class="error-copy">
             <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
@@ -80,43 +80,43 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <% else %>
         <section class="metric-grid">
           <article class="metric-card">
-            <p class="metric-label">Running</p>
+            <p class="metric-label">运行中</p>
             <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
+            <p class="metric-detail">当前运行时中的活跃 Issue 会话。</p>
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Retrying</p>
+            <p class="metric-label">重试中</p>
             <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
+            <p class="metric-detail">等待下一个重试窗口的 Issue。</p>
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Blocked</p>
+            <p class="metric-label">已阻塞</p>
             <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
-            <p class="metric-detail">Issues paused for operator input or approval.</p>
+            <p class="metric-detail">因等待操作员输入或批准而暂停的 Issue。</p>
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
+            <p class="metric-label">Token 总数</p>
             <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
+              输入 <%= format_int(@payload.codex_totals.input_tokens) %> / 输出 <%= format_int(@payload.codex_totals.output_tokens) %>
             </p>
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Runtime</p>
+            <p class="metric-label">运行时长</p>
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
+            <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
           </article>
         </section>
 
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
+              <h2 class="section-title">速率限制</h2>
+              <p class="section-copy">可用时展示最新的上游速率限制快照。</p>
             </div>
           </div>
 
@@ -126,13 +126,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
+              <h2 class="section-title">运行中会话</h2>
+              <p class="section-copy">活跃 Issue、最近一次已知 Agent 活动和 Token 用量。</p>
             </div>
           </div>
 
           <%= if @payload.running == [] do %>
-            <p class="empty-state">No active sessions.</p>
+            <p class="empty-state">暂无活跃会话。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table data-table-running">
@@ -147,11 +147,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <thead>
                   <tr>
                     <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
-                    <th>Tokens</th>
+                    <th>状态</th>
+                    <th>会话</th>
+                    <th>运行时长 / 轮次</th>
+                    <th>Codex 更新</th>
+                    <th>Token</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -159,12 +159,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON 详情</a>
                       </div>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
+                        <%= display_state(entry.state) %>
                       </span>
                     </td>
                     <td>
@@ -173,14 +173,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           <button
                             type="button"
                             class="subtle-button"
-                            data-label="Copy ID"
+                            data-label="复制 ID"
                             data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = '已复制'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                           >
-                            Copy ID
+                            复制 ID
                           </button>
                         <% else %>
-                          <span class="muted">n/a</span>
+                          <span class="muted">暂无</span>
                         <% end %>
                       </div>
                     </td>
@@ -189,10 +189,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <div class="detail-stack">
                         <span
                           class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                          title={entry.last_message || to_string(entry.last_event || "暂无")}
+                        ><%= entry.last_message || to_string(entry.last_event || "暂无") %></span>
                         <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
+                          <%= entry.last_event || "暂无" %>
                           <%= if entry.last_event_at do %>
                             · <span class="mono numeric"><%= entry.last_event_at %></span>
                           <% end %>
@@ -201,8 +201,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td>
                       <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                        <span>总计：<%= format_int(entry.tokens.total_tokens) %></span>
+                        <span class="muted">输入 <%= format_int(entry.tokens.input_tokens) %> / 输出 <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
                     </td>
                   </tr>
@@ -215,24 +215,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Blocked sessions</h2>
-              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
+              <h2 class="section-title">阻塞会话</h2>
+              <p class="section-copy">因 Codex 请求操作员输入或批准而暂停的 Issue。</p>
             </div>
           </div>
 
           <%= if @payload.blocked == [] do %>
-            <p class="empty-state">No blocked sessions.</p>
+            <p class="empty-state">暂无阻塞会话。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table" style="min-width: 760px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Blocked at</th>
-                    <th>Last update</th>
-                    <th>Error</th>
+                    <th>状态</th>
+                    <th>会话</th>
+                    <th>阻塞时间</th>
+                    <th>最近更新</th>
+                    <th>错误</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -240,12 +240,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON 详情</a>
                       </div>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state || "Blocked")}>
-                        <%= entry.state || "Blocked" %>
+                        <%= display_state(entry.state || "Blocked") %>
                       </span>
                     </td>
                     <td>
@@ -253,32 +253,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <button
                           type="button"
                           class="subtle-button"
-                          data-label="Copy ID"
+                          data-label="复制 ID"
                           data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = '已复制'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                         >
-                          Copy ID
+                          复制 ID
                         </button>
                       <% else %>
-                        <span class="muted">n/a</span>
+                        <span class="muted">暂无</span>
                       <% end %>
                     </td>
-                    <td class="mono"><%= entry.blocked_at || "n/a" %></td>
+                    <td class="mono"><%= entry.blocked_at || "暂无" %></td>
                     <td>
                       <div class="detail-stack">
                         <span
                           class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                          title={entry.last_message || to_string(entry.last_event || "暂无")}
+                        ><%= entry.last_message || to_string(entry.last_event || "暂无") %></span>
                         <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
+                          <%= entry.last_event || "暂无" %>
                           <%= if entry.last_event_at do %>
                             · <span class="mono numeric"><%= entry.last_event_at %></span>
                           <% end %>
                         </span>
                       </div>
                     </td>
-                    <td><%= entry.error || "n/a" %></td>
+                    <td><%= entry.error || "暂无" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -289,22 +289,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
+              <h2 class="section-title">重试队列</h2>
+              <p class="section-copy">等待下一个重试窗口的 Issue。</p>
             </div>
           </div>
 
           <%= if @payload.retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
+            <p class="empty-state">当前没有处于退避等待的 Issue。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table" style="min-width: 680px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
-                    <th>Attempt</th>
-                    <th>Due at</th>
-                    <th>Error</th>
+                    <th>尝试次数</th>
+                    <th>到期时间</th>
+                    <th>错误</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -312,12 +312,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON 详情</a>
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
+                    <td class="mono"><%= entry.due_at || "暂无" %></td>
+                    <td><%= entry.error || "暂无" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -387,7 +387,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> String.reverse()
   end
 
-  defp format_int(_value), do: "n/a"
+  defp format_int(_value), do: "暂无"
 
   defp state_badge_class(state) do
     base = "state-badge"
@@ -401,10 +401,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp display_state(state) do
+    case state |> to_string() |> String.trim() |> String.downcase() do
+      "" -> "暂无"
+      "active" -> "活跃"
+      "blocked" -> "已阻塞"
+      "completed" -> "已完成"
+      "done" -> "已完成"
+      "error" -> "错误"
+      "failed" -> "失败"
+      "in progress" -> "进行中"
+      "pending" -> "等待中"
+      "queued" -> "排队中"
+      "ready" -> "就绪"
+      "retry" -> "重试"
+      "retrying" -> "重试中"
+      "running" -> "运行中"
+      "to do" -> "待办"
+      "todo" -> "待办"
+      _ -> state
+    end
+  end
+
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
 
-  defp pretty_value(nil), do: "n/a"
+  defp pretty_value(nil), do: "暂无"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
 end
