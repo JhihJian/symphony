@@ -306,6 +306,34 @@ defmodule SymphonyElixir.CoreTest do
              Workflow.load(workflow_path)
   end
 
+  test "workflow load preserves UTF-8 prompt content containing Chinese characters" do
+    workflow_prompt = """
+    2. 只在缺少必要权限、密钥或外部服务不可用时停止。
+    3. 只在当前 workspace 内工作，不要修改 workspace 外的路径。
+    """
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    assert {:ok, %{prompt: prompt}} = Workflow.load(Workflow.workflow_file_path())
+    assert String.valid?(prompt)
+    assert prompt =~ "必要权限"
+    assert prompt =~ "当前 workspace 内工作"
+
+    issue = %Issue{
+      identifier: "GH-3",
+      title: "将 Operations Dashboard 改为中文",
+      description: "将 Operations Dashboard 改为中文",
+      state: "Ready",
+      url: "https://github.com/example/repo/issues/3",
+      labels: ["enhancement", "symphony"]
+    }
+
+    rendered = PromptBuilder.build_prompt(issue)
+
+    assert String.valid?(rendered)
+    assert Jason.encode!(%{"text" => rendered})
+  end
+
   test "workflow load accepts unterminated front matter with an empty prompt" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
     File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
