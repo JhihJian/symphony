@@ -51,10 +51,14 @@ Continuation context:
 
 Issue context:
 Identifier: {{ issue.identifier }}
+Tracker: {{ issue.tracker_kind }}
 Title: {{ issue.title }}
 Current status: {{ issue.state }}
 Labels: {{ issue.labels }}
 URL: {{ issue.url }}
+PR issue reference: {{ issue.closing_reference }}
+
+{{ issue.closing_instruction }}
 
 Description:
 {% if issue.description %}
@@ -124,6 +128,9 @@ who need the result first and execution details second.
   messages unless the change is genuinely tiny.
 - PR body must use the repository PR template's Chinese structure so reviewers
   can quickly understand change behavior, impact, verification, and risk.
+- PR body must include `Issue: {{ issue.closing_reference }}`. For GitHub and GitLab
+  issues, this closing reference is required so the PR/MR links to the issue and closes it
+  automatically when merged.
 
 ## Related skills
 

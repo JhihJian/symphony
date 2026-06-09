@@ -334,6 +334,59 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       ## 风险与限制
 
       - <!-- 无 / 已知限制 -->
+
+      Issue: <!-- e.g. Closes #123 -->
+      """)
+
+      File.write!("body.md", """
+      ## 变更说明
+
+      - 让 PR 描述使用统一中文结构。
+
+      ## 影响范围
+
+      - 影响 PR body 模板和本地格式检查。
+
+      ## 验证
+
+      - [x] `make -C elixir all`
+
+      ## 风险与限制
+
+      - 无。
+
+      Issue: Closes #26
+      """)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "repository template no longer accepts stale Linear-only issue linkage" do
+    in_temp_repo(fn ->
+      write_template!("""
+      ## 变更说明
+
+      - <!-- 说明行为变化 -->
+
+      ## 影响范围
+
+      - <!-- 说明页面、模块、数据流或配置 -->
+
+      ## 验证
+
+      - [ ] `make -C elixir all`
+
+      ## 风险与限制
+
+      - <!-- 无 / 已知限制 -->
+
+      Issue: <!-- e.g. Closes #123 -->
       """)
 
       File.write!("body.md", """
@@ -356,12 +409,78 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       Linear: JIE-26
       """)
 
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Missing required template line: Issue:"
+    end)
+  end
+
+  test "repository template accepts qualified GitHub and GitLab issue references" do
+    in_temp_repo(fn ->
+      write_template!(chinese_template_with_issue_line())
+
+      for linkage <- ["Issue: Closes openai/symphony#26", "Issue: Resolves platform/symphony#7"] do
+        File.write!("body.md", valid_chinese_body(linkage))
+
+        output =
+          capture_io(fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end)
+
+        assert output =~ "PR body format OK"
+        Mix.Task.reenable("pr_body.check")
+      end
+    end)
+  end
+
+  test "repository template accepts Linear references under the Issue line" do
+    in_temp_repo(fn ->
+      write_template!(chinese_template_with_issue_line())
+      File.write!("body.md", valid_chinese_body("Issue: Linear: JIE-26"))
+
       output =
         capture_io(fn ->
           Check.run(["lint", "--file", "body.md"])
         end)
 
       assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "repository template rejects empty issue linkage line" do
+    in_temp_repo(fn ->
+      write_template!(chinese_template_with_issue_line())
+      File.write!("body.md", valid_chinese_body("Issue:   "))
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Issue linkage line cannot be empty."
+    end)
+  end
+
+  test "repository template rejects unsupported issue linkage values" do
+    in_temp_repo(fn ->
+      write_template!(chinese_template_with_issue_line())
+      File.write!("body.md", valid_chinese_body("Issue: Related #26"))
+
+      error_output =
+        capture_io(:stderr, fn ->
+          assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+            Check.run(["lint", "--file", "body.md"])
+          end
+        end)
+
+      assert error_output =~ "Issue linkage line must use a supported closing reference or Linear reference."
     end)
   end
 
@@ -386,5 +505,49 @@ defmodule Mix.Tasks.PrBody.CheckTest do
   defp write_template!(content) do
     File.mkdir_p!(".github")
     File.write!(".github/pull_request_template.md", content)
+  end
+
+  defp chinese_template_with_issue_line do
+    """
+    ## 变更说明
+
+    - <!-- 说明行为变化 -->
+
+    ## 影响范围
+
+    - <!-- 说明页面、模块、数据流或配置 -->
+
+    ## 验证
+
+    - [ ] `make -C elixir all`
+
+    ## 风险与限制
+
+    - <!-- 无 / 已知限制 -->
+
+    Issue: <!-- e.g. Closes #123 -->
+    """
+  end
+
+  defp valid_chinese_body(linkage) do
+    """
+    ## 变更说明
+
+    - 让 PR 描述使用统一中文结构。
+
+    ## 影响范围
+
+    - 影响 PR body 模板和本地格式检查。
+
+    ## 验证
+
+    - [x] `make -C elixir all`
+
+    ## 风险与限制
+
+    - 无。
+
+    #{linkage}
+    """
   end
 end

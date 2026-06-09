@@ -139,12 +139,16 @@ defmodule SymphonyElixir.CoreTest do
     assert push_skill =~ "## 变更说明"
     assert push_skill =~ "## 影响范围"
     assert push_skill =~ "## 风险与限制"
+    assert push_skill =~ "Issue: <issue reference>"
+    refute push_skill =~ "and `Linear: <issue id>`"
+    refute push_skill =~ "# Linear: <issue id>"
 
     assert pr_template =~ "## 变更说明"
     assert pr_template =~ "## 影响范围"
     assert pr_template =~ "## 验证"
     assert pr_template =~ "## 风险与限制"
-    assert pr_template =~ "Linear: JIE-"
+    assert pr_template =~ "Issue:"
+    refute pr_template =~ "Linear: JIE-"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -1065,6 +1069,200 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "prompt builder exposes same-repository GitHub issue closing reference" do
+    workflow_prompt =
+      "kind={{ issue.tracker_kind }} ref={{ issue.closing_reference }} instruction={{ issue.closing_instruction }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_project_slug: nil,
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "openai/symphony#3",
+      title: "Link PR to GitHub issue",
+      description: "PR body should close the issue on merge.",
+      state: "Todo",
+      url: "https://github.com/openai/symphony/issues/3",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "kind=github"
+    assert prompt =~ "ref=Closes #3"
+    assert prompt =~ "Use `Closes #3` in the pull request description"
+  end
+
+  test "prompt builder keeps cross-repository GitHub issue references fully qualified" do
+    workflow_prompt = "ref={{ issue.closing_reference }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_project_slug: nil,
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "other-org/other-repo#9",
+      title: "Close an external issue",
+      description: "PR body should keep repository scope.",
+      state: "Todo",
+      url: "https://github.com/other-org/other-repo/issues/9",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "ref=Closes other-org/other-repo#9"
+  end
+
+  test "prompt builder keeps qualified GitHub issue reference when configured scope is incomplete" do
+    workflow_prompt = "ref={{ issue.closing_reference }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_project_slug: nil,
+      tracker_owner: nil,
+      tracker_repo: nil,
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "openai/symphony#10",
+      title: "Close issue with missing repository config in prompt",
+      description: "Prompt builder should still emit a valid local closing keyword.",
+      state: "Todo",
+      url: "https://github.com/openai/symphony/issues/10",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "ref=Closes openai/symphony#10"
+  end
+
+  test "prompt builder preserves unparseable GitHub identifiers in closing reference" do
+    workflow_prompt = "ref={{ issue.closing_reference }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_endpoint: nil,
+      tracker_project_slug: nil,
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "openai/symphony",
+      title: "Identifier without issue number",
+      description: "Prompt builder should not invent an issue number.",
+      state: "Todo",
+      url: "https://github.com/openai/symphony/issues",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "ref=Closes openai/symphony"
+  end
+
+  test "prompt builder exposes same-project GitLab issue closing reference" do
+    workflow_prompt =
+      "kind={{ issue.tracker_kind }} ref={{ issue.closing_reference }} instruction={{ issue.closing_instruction }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: nil,
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "platform/symphony#7",
+      title: "Link MR to GitLab issue",
+      description: "MR body should close the issue on merge.",
+      state: "Todo",
+      url: "https://gitlab.com/platform/symphony/-/issues/7",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "kind=gitlab"
+    assert prompt =~ "ref=Closes #7"
+    assert prompt =~ "Use `Closes #7` in the merge request description"
+  end
+
+  test "prompt builder keeps Linear issue references readable without closing semantics" do
+    workflow_prompt =
+      "kind={{ issue.tracker_kind }} ref={{ issue.closing_reference }} instruction={{ issue.closing_instruction }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "JIE-3",
+      title: "Keep Linear reference",
+      description: "Linear should not use GitHub closing keywords.",
+      state: "Todo",
+      url: "https://linear.app/team/issue/JIE-3",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "kind=linear"
+    assert prompt =~ "ref=Linear: JIE-3"
+    assert prompt =~ "preserve the Linear ticket reference"
+  end
+
+  test "prompt builder exposes fallback issue reference for generic trackers" do
+    workflow_prompt =
+      "kind={{ issue.tracker_kind }} ref={{ issue.closing_reference }} instruction={{ issue.closing_instruction }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_api_token: nil,
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "MEM-3",
+      title: "Generic issue",
+      description: "Fallback trackers preserve their identifier.",
+      state: "Todo",
+      url: nil,
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "kind=memory"
+    assert prompt =~ "ref=MEM-3"
+    assert prompt =~ "preserve the issue reference"
+  end
+
+  test "prompt builder exposes unavailable closing reference when issue identifier is missing" do
+    workflow_prompt = "ref={{ issue.closing_reference }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: nil,
+      title: "Missing identifier",
+      description: "Prompt builder should not crash.",
+      state: "Todo",
+      url: nil,
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "ref=Unavailable"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do

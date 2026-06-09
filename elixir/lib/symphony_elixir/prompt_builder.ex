@@ -42,7 +42,9 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp to_solid_map(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), to_solid_value(value)} end)
+    map
+    |> with_tracker_context()
+    |> Map.new(fn {key, value} -> {to_string(key), to_solid_value(value)} end)
   end
 
   defp to_solid_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
@@ -60,5 +62,75 @@ defmodule SymphonyElixir.PromptBuilder do
     else
       prompt
     end
+  end
+
+  defp with_tracker_context(%{identifier: _identifier} = issue) do
+    tracker = Config.settings!().tracker
+    tracker_kind = tracker.kind || "unknown"
+    closing_reference = closing_reference(issue, tracker)
+
+    issue
+    |> Map.put(:tracker_kind, tracker_kind)
+    |> Map.put(:closing_reference, closing_reference)
+    |> Map.put(:closing_instruction, closing_instruction(tracker_kind, closing_reference))
+  end
+
+  defp with_tracker_context(map), do: map
+
+  defp closing_reference(%{identifier: identifier}, %{kind: "github"} = tracker) when is_binary(identifier) do
+    provider_closing_reference(identifier, github_scope(tracker))
+  end
+
+  defp closing_reference(%{identifier: identifier}, %{kind: "gitlab"} = tracker) when is_binary(identifier) do
+    provider_closing_reference(identifier, tracker.project_slug)
+  end
+
+  defp closing_reference(%{identifier: identifier}, %{kind: "linear"}) when is_binary(identifier) do
+    "Linear: #{identifier}"
+  end
+
+  defp closing_reference(%{identifier: identifier}, _tracker) when is_binary(identifier), do: identifier
+  defp closing_reference(_issue, _tracker), do: "Unavailable"
+
+  defp provider_closing_reference(identifier, configured_scope) do
+    case split_provider_identifier(identifier) do
+      {scope, number} when is_binary(scope) and scope == configured_scope ->
+        "Closes ##{number}"
+
+      {_scope, _number} ->
+        "Closes #{identifier}"
+
+      nil ->
+        "Closes #{identifier}"
+    end
+  end
+
+  defp split_provider_identifier(identifier) do
+    case Regex.run(~r/^(.+)#([1-9][0-9]*)$/, identifier) do
+      [_match, scope, number] -> {scope, number}
+      _ -> nil
+    end
+  end
+
+  defp github_scope(%{owner: owner, repo: repo}) when is_binary(owner) and is_binary(repo) do
+    "#{owner}/#{repo}"
+  end
+
+  defp github_scope(_tracker), do: nil
+
+  defp closing_instruction("github", closing_reference) do
+    "Use `#{closing_reference}` in the pull request description so GitHub links the PR and closes the issue when it is merged."
+  end
+
+  defp closing_instruction("gitlab", closing_reference) do
+    "Use `#{closing_reference}` in the merge request description so GitLab links the MR and closes the issue when it is merged."
+  end
+
+  defp closing_instruction("linear", closing_reference) do
+    "Use `#{closing_reference}` in the pull request description to preserve the Linear ticket reference."
+  end
+
+  defp closing_instruction(_tracker_kind, closing_reference) do
+    "Use `#{closing_reference}` in the pull request description to preserve the issue reference."
   end
 end

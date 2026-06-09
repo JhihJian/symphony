@@ -46,10 +46,13 @@ description:
      matches the latest scope; update it if it no longer does.
 6. Write/update PR body explicitly using `.github/pull_request_template.md`:
    - Use the Chinese structure exactly: `## 变更说明`, `## 影响范围`,
-     `## 验证`, `## 风险与限制`, and `Linear: <issue id>`.
+     `## 验证`, `## 风险与限制`, and `Issue: <issue reference>`.
    - Fill every section with concrete content for this change.
    - Replace all placeholder comments (`<!-- ... -->`).
    - Keep bullets/checkboxes where template expects them.
+   - For GitHub or GitLab issue work, use the workflow-provided closing reference such as
+     `Issue: Closes #123` so merging the PR/MR closes the issue automatically.
+   - For Linear work, use `Issue: Linear: <issue id>` to preserve the ticket reference.
    - In `## 变更说明`, describe behavior changes, not just changed files.
    - In `## 影响范围`, name affected pages, modules, data flow, or config.
    - In `## 验证`, list only commands or checks actually run.
@@ -105,7 +108,7 @@ fi
 # ## 影响范围
 # ## 验证
 # ## 风险与限制
-# Linear: <issue id>
+# Issue: <issue reference>
 # Example workflow:
 # 1) open the template and draft body content for this PR
 # 2) gh pr edit --body-file /tmp/pr_body.md

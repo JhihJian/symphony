@@ -1255,6 +1255,18 @@ Inputs to prompt rendering:
 - normalized `issue` object
 - OPTIONAL `attempt` integer (retry/continuation metadata)
 
+Implementations MAY enrich the template `issue` object with derived, provider-aware fields that are
+not persisted back to the tracker. Standard derived prompt fields:
+
+- `issue.tracker_kind`: active tracker kind such as `linear`, `github`, or `gitlab`.
+- `issue.closing_reference`: PR/MR description reference for the current issue.
+  - GitHub/GitLab same-scope issues SHOULD use a provider closing keyword such as `Closes #123`.
+  - GitHub/GitLab cross-scope issues SHOULD keep the qualified reference, for example
+    `Closes owner/repo#123` or `Closes group/project#123`.
+  - Linear issues SHOULD keep a readable non-closing reference such as `Linear: ABC-123`.
+- `issue.closing_instruction`: human-readable guidance describing how to use the closing reference in
+  the PR/MR description.
+
 ### 12.2 Rendering Rules
 
 - Render with strict variable checking.

@@ -15,4 +15,4 @@
 
 - <!-- 无 / 已知限制或风险控制 -->
 
-Linear: JIE-<!-- issue number -->
+Issue: <!-- e.g. Closes #123, Closes owner/repo#123, or Linear: ABC-123 -->

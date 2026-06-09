@@ -23,6 +23,11 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 During Linear-backed app-server sessions, Symphony also serves a client-side `linear_graphql` tool
 so that repo skills can make raw Linear GraphQL calls.
 
+For GitHub Issues and GitLab Issues, rendered workflow prompts expose
+`{{ issue.closing_reference }}` and `{{ issue.closing_instruction }}`. Use that reference in PR/MR
+descriptions as `Issue: Closes #123` or a fully qualified cross-project reference so the provider
+links the change and closes the issue automatically when the PR/MR is merged.
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 

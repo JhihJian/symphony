@@ -103,6 +103,7 @@ defmodule Mix.Tasks.PrBody.Check do
     |> check_required_headings(body, headings)
     |> check_order(body, headings)
     |> check_no_placeholders(body)
+    |> check_issue_linkage_line(template, body)
     |> check_sections_from_template(template, body, headings)
   end
 
@@ -125,6 +126,26 @@ defmodule Mix.Tasks.PrBody.Check do
       errors ++ ["PR description still contains template placeholder comments (<!-- ... -->)."]
     else
       errors
+    end
+  end
+
+  defp check_issue_linkage_line(errors, template, body) do
+    if template_requires_issue_line?(template) do
+      case issue_linkage_line(body) do
+        nil -> errors ++ ["Missing required template line: Issue:"]
+        "" -> errors ++ ["Issue linkage line cannot be empty."]
+        linkage -> check_issue_linkage_value(errors, linkage)
+      end
+    else
+      errors
+    end
+  end
+
+  defp check_issue_linkage_value(errors, linkage) do
+    if valid_issue_linkage?(linkage) do
+      errors
+    else
+      errors ++ ["Issue linkage line must use a supported closing reference or Linear reference."]
     end
   end
 
@@ -212,5 +233,22 @@ defmodule Mix.Tasks.PrBody.Check do
     headings
     |> Enum.filter(&(&1 != current_heading))
     |> Enum.map(&("\n" <> &1))
+  end
+
+  defp template_requires_issue_line?(template) do
+    Regex.match?(~r/^Issue:\s*/m, template)
+  end
+
+  defp issue_linkage_line(body) do
+    case Regex.run(~r/^Issue:\s*(.*)$/m, body) do
+      [_match, linkage] -> String.trim(linkage)
+      _ -> nil
+    end
+  end
+
+  defp valid_issue_linkage?(linkage) do
+    Regex.match?(~r/^(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+([A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+#\d+$/i, linkage) or
+      Regex.match?(~r/^(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#\d+$/i, linkage) or
+      Regex.match?(~r/^Linear:\s*[A-Za-z][A-Za-z0-9]*-\d+$/, linkage)
   end
 end

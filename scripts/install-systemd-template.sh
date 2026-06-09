@@ -467,10 +467,14 @@ codex:
 Issue 信息：
 
 - ID: \`{{ issue.id }}\`
+- Tracker: \`{{ issue.tracker_kind }}\`
 - 标题: \`{{ issue.title }}\`
 - 当前状态: \`{{ issue.state }}\`
 - 标签: \`{{ issue.labels }}\`
 - URL: \`{{ issue.url }}\`
+- PR Issue Reference: \`{{ issue.closing_reference }}\`
+
+{{ issue.closing_instruction }}
 
 Issue 描述：
 {% if issue.description %}
@@ -487,7 +491,7 @@ Issue 描述：
 4. 开始后先用 \`github_issue\` 工具读取 issue 和评论，维护一个标题为 \`## Codex Workpad\` 的持久评论。
 5. 执行前在 workpad 里记录计划、验收标准和验证方式。
 6. 变更完成后运行与改动范围匹配的验证命令。
-7. 如需提交代码，创建清晰的 commit，并使用 \`github_pr\` 工具创建 PR。
+7. 如需提交代码，创建清晰的 commit，并使用 \`github_pr\` 工具创建 PR。PR 描述必须包含 \`Issue: {{ issue.closing_reference }}\`，以便 GitHub 关联 PR 并在合并后自动关闭 Issue。
 8. 需要变更任务状态时，使用 \`github_issue\` 的 \`set_status\` 操作更新 GitHub Project v2 的 \`Status\` 字段。
 9. 最终在 workpad 中记录完成摘要、验证结果、commit 和 PR 链接。
 EOF
