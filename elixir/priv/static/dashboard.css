@@ -534,6 +534,18 @@ pre,
   grid-column: 1 / -1;
 }
 
+.auto-update-panel .instance-meta-grid {
+  margin-top: 1rem;
+}
+
+.auto-update-panel .instance-actions {
+  padding: 0;
+}
+
+.update-results-table {
+  margin-top: 1rem;
+}
+
 .panel-label {
   margin: 0 0 0.45rem;
   color: var(--muted);

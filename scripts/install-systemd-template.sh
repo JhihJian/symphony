@@ -28,6 +28,7 @@ Options:
   --auto-update             Install and enable symphony-update.timer.
   --update-calendar <spec>  systemd OnCalendar value for auto update. Default: daily.
   --no-auto-update          Disable symphony-update.timer if it exists.
+  --update-strategy <name>  Dashboard auto-update strategy. Default: idle_restart.
   --no-systemd              Write files only; skip systemctl commands.
   --no-start                Do not enable/start the instance.
   -h, --help                Show this help.
@@ -62,6 +63,7 @@ start_service=1
 skip_build=0
 auto_update=""
 update_calendar="daily"
+update_strategy=""
 run_systemd=1
 labels=()
 active_states=()
@@ -152,6 +154,10 @@ while [ "$#" -gt 0 ]; do
     --no-auto-update)
       auto_update=0
       shift
+      ;;
+    --update-strategy)
+      update_strategy="${2:?missing value for --update-strategy}"
+      shift 2
       ;;
     --no-systemd)
       run_systemd=0
@@ -352,6 +358,27 @@ if [ -z "$github_token" ] && [ -f "${project_config_dir}/env" ]; then
   fi
 fi
 
+if [ -z "$update_strategy" ] && [ -f "${project_config_dir}/env" ]; then
+  existing_update_strategy="$(sed -n 's/^SYMPHONY_UPDATE_STRATEGY=//p' "${project_config_dir}/env" | head -n 1)"
+  if [ -n "$existing_update_strategy" ]; then
+    update_strategy="$existing_update_strategy"
+  fi
+fi
+
+if [ -z "$update_strategy" ]; then
+  update_strategy="idle_restart"
+fi
+
+case "$update_strategy" in
+  idle_restart|defer_until_idle|download_only|manual_restart|force_restart)
+    ;;
+  *)
+    echo "Unsupported --update-strategy: ${update_strategy}" >&2
+    echo "Use one of: idle_restart, defer_until_idle, download_only, manual_restart, force_restart" >&2
+    exit 2
+    ;;
+esac
+
 if [ ! -x "${app_dir}/bin/symphony" ]; then
   if [ "$skip_build" -eq 1 ]; then
     echo "Symphony binary not found or not executable: ${app_dir}/bin/symphony" >&2
@@ -402,6 +429,7 @@ GITHUB_TOKEN=${github_token}
 
 SYMPHONY_PORT=${port}
 SYMPHONY_LOGS_ROOT=${logs_root}
+SYMPHONY_UPDATE_STRATEGY=${update_strategy}
 ENV
 chmod 600 "${project_config_dir}/env"
 

@@ -16,6 +16,7 @@ defmodule SymphonyElixir.InstanceRegistry do
           name: String.t(),
           service: String.t(),
           status: String.t(),
+          systemd: map(),
           dashboard_url: String.t() | nil,
           api_url: String.t() | nil,
           tracker: map(),
@@ -25,7 +26,8 @@ defmodule SymphonyElixir.InstanceRegistry do
           logs_root: String.t() | nil,
           config_path: String.t(),
           env_path: String.t(),
-          runtime: map()
+          runtime: map(),
+          strategy: String.t()
         }
 
   @type action_result ::
@@ -36,22 +38,17 @@ defmodule SymphonyElixir.InstanceRegistry do
   def list_instances(opts \\ []) do
     config_root = config_root(opts)
 
-    case File.ls(config_root) do
+    case discover_instance_names(config_root, opts) do
       {:ok, entries} ->
         instances =
           entries
           |> Enum.sort()
-          |> Enum.map(&Path.join(config_root, &1))
-          |> Enum.filter(&File.dir?/1)
-          |> Enum.map(&load_instance(&1, opts))
+          |> Enum.map(&load_instance(config_root, &1, opts))
 
         {:ok, instances}
 
-      {:error, :enoent} ->
-        {:ok, []}
-
       {:error, reason} ->
-        {:error, {:config_root_unavailable, config_root, reason}}
+        {:error, reason}
     end
   end
 
@@ -67,14 +64,64 @@ defmodule SymphonyElixir.InstanceRegistry do
   @spec default_config_root() :: Path.t()
   def default_config_root, do: Path.join([System.user_home!(), ".config", "symphony", "projects"])
 
-  defp load_instance(project_config_root, opts) do
-    name = Path.basename(project_config_root)
+  defp discover_instance_names(config_root, opts) do
+    with {:ok, config_entries} <- config_instance_names(config_root),
+         {:ok, service_entries} <- service_instance_names(opts) do
+      {:ok, Enum.uniq(config_entries ++ service_entries)}
+    end
+  end
+
+  defp config_instance_names(config_root) do
+    case File.ls(config_root) do
+      {:ok, entries} ->
+        names =
+          entries
+          |> Enum.filter(fn entry ->
+            Regex.match?(@instance_name_pattern, entry) and File.dir?(Path.join(config_root, entry))
+          end)
+
+        {:ok, names}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, {:config_root_unavailable, config_root, reason}}
+    end
+  end
+
+  defp service_instance_names(opts) do
+    opts
+    |> deps()
+    |> Map.get(:list_services, fn -> {:ok, []} end)
+    |> then(& &1.())
+    |> case do
+      {:ok, services} when is_list(services) ->
+        {:ok, services |> Enum.flat_map(&instance_name_from_service/1) |> Enum.uniq()}
+
+      {:error, _reason} ->
+        {:ok, []}
+    end
+  end
+
+  defp instance_name_from_service(service) when is_binary(service) do
+    case Regex.run(~r/\Asymphony@(.+)\.service\z/, service) do
+      [_service, name] -> [name]
+      _not_instance -> []
+    end
+  end
+
+  defp instance_name_from_service(_service), do: []
+
+  defp load_instance(config_root, name, opts) do
+    project_config_root = Path.join(config_root, name)
     workflow_path = Path.join(project_config_root, "WORKFLOW.md")
     env_path = Path.join(project_config_root, "env")
     env = read_env_file(env_path)
     settings = parse_settings(workflow_path)
     service = service_name(name)
-    status = service_status(service, opts)
+    systemd = systemd_summary(service, opts)
+    status = normalize_systemd_status(systemd.active)
     port = port(env, settings)
     dashboard_url = dashboard_url(settings, port)
     api_url = api_url(dashboard_url)
@@ -84,6 +131,7 @@ defmodule SymphonyElixir.InstanceRegistry do
       name: name,
       service: service,
       status: status,
+      systemd: systemd,
       dashboard_url: dashboard_url,
       api_url: api_url,
       tracker: tracker_summary(settings),
@@ -93,7 +141,8 @@ defmodule SymphonyElixir.InstanceRegistry do
       logs_root: Map.get(env, "SYMPHONY_LOGS_ROOT"),
       config_path: workflow_path,
       env_path: env_path,
-      runtime: runtime_summary(state_result)
+      runtime: runtime_summary(state_result),
+      strategy: update_strategy(env)
     }
   end
 
@@ -137,6 +186,9 @@ defmodule SymphonyElixir.InstanceRegistry do
   defp deps(opts) do
     Keyword.get(opts, :deps, %{
       systemctl_status: &systemctl_status/1,
+      systemctl_show: &systemctl_show/1,
+      systemctl_enabled: &systemctl_enabled/1,
+      list_services: &list_services/0,
       http_get_state: &http_get_state/1,
       systemctl_action: &systemctl_action/2
     })
@@ -172,9 +224,69 @@ defmodule SymphonyElixir.InstanceRegistry do
     end
   end
 
+  defp systemd_summary(service, opts) do
+    raw_show = systemctl_show(service, opts)
+    active = raw_show.active || service_status(service, opts)
+
+    %{
+      active: active,
+      enabled: systemctl_enabled(service, opts),
+      sub: raw_show.sub || active,
+      failed: raw_show.failed || active == "failed"
+    }
+  end
+
+  defp systemctl_show(service, opts) do
+    opts
+    |> deps()
+    |> Map.get(:systemctl_show, fn _service -> {:error, :unsupported} end)
+    |> then(& &1.(service))
+    |> case do
+      {:ok, %{active: active, sub: sub, failed: failed}} -> %{active: active, sub: sub, failed: failed}
+      {:ok, %{} = raw} -> normalize_show_map(raw)
+      {:ok, raw} when is_binary(raw) -> parse_systemctl_show(raw)
+      _error -> %{active: nil, sub: nil, failed: false}
+    end
+  end
+
+  defp normalize_show_map(raw) do
+    active = map_get(raw, :active, map_get(raw, :ActiveState, nil))
+    sub = map_get(raw, :sub, map_get(raw, :SubState, nil))
+    failed = map_get(raw, :failed, map_get(raw, :Result, nil) == "failed" or active == "failed")
+    %{active: active, sub: sub, failed: failed}
+  end
+
+  defp parse_systemctl_show(raw) do
+    values =
+      raw
+      |> String.split(["\n", "\r\n"], trim: true)
+      |> Enum.reduce(%{}, fn line, acc ->
+        case String.split(line, "=", parts: 2) do
+          [key, value] -> Map.put(acc, key, value)
+          _invalid -> acc
+        end
+      end)
+
+    active = Map.get(values, "ActiveState")
+    sub = Map.get(values, "SubState")
+    failed = Map.get(values, "Result") == "failed" or active == "failed"
+    %{active: active, sub: sub, failed: failed}
+  end
+
+  defp systemctl_enabled(service, opts) do
+    opts
+    |> deps()
+    |> Map.get(:systemctl_enabled, fn _service -> {:error, :unsupported} end)
+    |> then(& &1.(service))
+    |> case do
+      {:ok, enabled} when is_binary(enabled) -> enabled
+      _error -> "unknown"
+    end
+  end
+
   defp service_status(service, opts) do
     case deps(opts).systemctl_status.(service) do
-      {:ok, raw_status} -> normalize_systemd_status(raw_status)
+      {:ok, raw_status} -> raw_status
       {:error, _reason} -> "unknown"
       :error -> "unknown"
     end
@@ -290,6 +402,16 @@ defmodule SymphonyElixir.InstanceRegistry do
   defp workspace_root(nil), do: nil
   defp workspace_root(settings), do: settings.workspace.root
 
+  defp update_strategy(env) do
+    case Map.get(env, "SYMPHONY_UPDATE_STRATEGY", "idle_restart") do
+      strategy when strategy in ["idle_restart", "defer_until_idle", "download_only", "manual_restart", "force_restart"] ->
+        strategy
+
+      _unknown ->
+        "idle_restart"
+    end
+  end
+
   defp service_name(name), do: "symphony@#{name}.service"
 
   defp systemctl_status(service) do
@@ -299,6 +421,78 @@ defmodule SymphonyElixir.InstanceRegistry do
     end
   rescue
     error -> {:error, error}
+  end
+
+  defp systemctl_show(service) do
+    case System.cmd(
+           "systemctl",
+           ["--user", "show", service, "--property=ActiveState", "--property=SubState", "--property=Result"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} -> {:ok, output}
+      {output, _exit_status} -> {:error, String.trim(output)}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  defp systemctl_enabled(service) do
+    case System.cmd("systemctl", ["--user", "is-enabled", service], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, _exit_status} -> {:ok, String.trim(output)}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  defp list_services do
+    services =
+      [systemctl_list_units(), systemd_user_symlinks()]
+      |> Enum.flat_map(fn
+        {:ok, entries} -> entries
+        {:error, _reason} -> []
+      end)
+      |> Enum.uniq()
+
+    {:ok, services}
+  end
+
+  defp systemctl_list_units do
+    case System.cmd("systemctl", ["--user", "list-units", "symphony@*.service", "--all", "--no-legend", "--no-pager"], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, parse_unit_list(output)}
+      {output, _exit_status} -> {:error, String.trim(output)}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  defp parse_unit_list(output) do
+    output
+    |> String.split(["\n", "\r\n"], trim: true)
+    |> Enum.flat_map(fn line ->
+      line
+      |> String.split(~r/\s+/, trim: true, parts: 2)
+      |> case do
+        [unit | _rest] -> [unit]
+        _empty -> []
+      end
+    end)
+    |> Enum.filter(&String.match?(&1, ~r/\Asymphony@.+\.service\z/))
+  end
+
+  defp systemd_user_symlinks do
+    root = Path.join([System.user_home!(), ".config", "systemd", "user"])
+
+    if File.dir?(root) do
+      {:ok,
+       root
+       |> Path.join("**/symphony@*.service")
+       |> Path.wildcard()
+       |> Enum.map(&Path.basename/1)
+       |> Enum.filter(&String.match?(&1, ~r/\Asymphony@.+\.service\z/))}
+    else
+      {:ok, []}
+    end
   end
 
   defp systemctl_action(action, service) do

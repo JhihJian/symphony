@@ -1579,6 +1579,11 @@ If implemented:
   MUST NOT prevent other instances from being shown.
 - Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
   failures MUST be reported with operator-readable errors.
+- The management surface MAY coordinate deployment updates for the Symphony program itself. If it
+  does, it SHOULD poll the upstream source with conditional requests where available, serialize
+  update execution, refuse updates when the source checkout has local changes, build before any
+  restart, and decide per instance whether to restart immediately, defer until idle, skip failed
+  services, or require manual confirmation.
 - The management surface MUST NOT become a prerequisite for issue dispatch, retry/reconciliation
   semantics, workspace isolation, or coding-agent protocol correctness.
 

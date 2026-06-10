@@ -179,9 +179,10 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 - The same Phoenix service also exposes an operator-only multi-instance management surface at
-  `/admin/instances` and `/api/v1/admin/instances*`. It discovers independently deployed
-  `symphony@<project>.service` instances from the systemd-template config directory and does not
-  change the single-instance orchestrator scheduling model.
+  `/admin/instances`, `/api/v1/admin/instances*`, and `/api/v1/admin/auto-update*`. It discovers
+  independently deployed `symphony@<project>.service` instances from the systemd-template config
+  directory plus user-level systemd units, and does not change the single-instance orchestrator
+  scheduling model.
 
 ## Web dashboard
 
@@ -203,6 +204,25 @@ registered instances from `~/.config/symphony/projects` by default, checks each
 states and do not block the rest of the overview. The page can request `start`, `stop`, and
 `restart` for a service, but issue dispatch, retry semantics, workspace isolation, and Codex
 app-server behavior remain owned by each individual instance's orchestrator.
+
+The same page includes a GitHub `main` auto-update control panel. `SymphonyElixir.AutoUpdate`
+polls `jhihjian/symphony` with GitHub REST ETag/`If-None-Match` requests, records the current
+deployed SHA, remote SHA, next check time, rate-limit metadata, and any last error, and exposes
+manual check/update triggers through `/api/v1/admin/auto-update`. Update execution is serialized
+with a host-local lock, refuses to proceed when the source checkout has local changes, fetches and
+fast-forwards `origin/main`, builds only after code changed, and restarts instances only after a
+successful build.
+
+Per-instance restart policy is read from `SYMPHONY_UPDATE_STRATEGY` in each instance `env` file:
+
+- `idle_restart` / `defer_until_idle`: active idle instances restart immediately; instances with
+  active sessions are marked pending idle.
+- `download_only`: update and build the deployed program without restarting the instance.
+- `manual_restart`: require an operator to restart after the build.
+- `force_restart`: explicit dangerous mode that restarts even when active sessions exist.
+
+Failed instances are never restarted automatically, and inactive enabled instances are updated but
+not started by default.
 
 ## Project Layout
 
