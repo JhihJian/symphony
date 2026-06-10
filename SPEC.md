@@ -57,7 +57,9 @@ Important boundary:
 
 ### 2.2 Non-Goals
 
-- Rich web UI or multi-tenant control plane.
+- Rich web UI or multi-tenant orchestration control plane.
+- Making any optional management surface required for issue dispatch, workspace isolation, or agent
+  runtime correctness.
 - Prescribing a specific dashboard or terminal UI implementation.
 - General-purpose workflow engine or distributed job scheduler.
 - Built-in business logic for how to edit tickets, PRs, or comments. (That logic lives in the
@@ -1561,6 +1563,24 @@ API design notes:
 - API errors SHOULD use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.
 - If the dashboard is a client-side app, it SHOULD consume this API rather than duplicating state
   logic.
+
+#### 13.7.3 Multi-Instance Operator Management (OPTIONAL)
+
+An implementation MAY expose a thin multi-instance operator dashboard/API for deployments where
+several independent Symphony processes run side by side, for example under a systemd template.
+
+If implemented:
+
+- Each managed instance MUST remain an independent Symphony runtime with its own workflow file,
+  environment, workspace root, log directory, port, and in-memory orchestrator state.
+- The management surface MAY discover registered instances from implementation-defined config
+  directories and MAY aggregate service-manager state plus each instance's observability API.
+- Stopped, failed, or unreachable instances MUST be represented as per-instance health states and
+  MUST NOT prevent other instances from being shown.
+- Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
+  failures MUST be reported with operator-readable errors.
+- The management surface MUST NOT become a prerequisite for issue dispatch, retry/reconciliation
+  semantics, workspace isolation, or coding-agent protocol correctness.
 
 ## 14. Failure Model and Recovery Strategy
 

@@ -25,9 +25,16 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    live("/admin/instances", AdminInstancesLive, :index)
   end
 
   scope "/", SymphonyElixirWeb do
+    get("/api/v1/admin/instances", AdminInstanceController, :index)
+    match(:*, "/api/v1/admin/instances", AdminInstanceController, :method_not_allowed)
+    post("/api/v1/admin/instances/:name/start", AdminInstanceController, :start)
+    post("/api/v1/admin/instances/:name/stop", AdminInstanceController, :stop)
+    post("/api/v1/admin/instances/:name/restart", AdminInstanceController, :restart)
+    match(:*, "/api/v1/admin/instances/:name/:action", AdminInstanceController, :method_not_allowed)
     get("/api/v1/state", ObservabilityApiController, :state)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)

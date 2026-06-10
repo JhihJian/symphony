@@ -354,3 +354,28 @@ curl http://127.0.0.1:20000/api/v1/state
 ```bash
 curl http://<host-ip>:20000/api/v1/state
 ```
+
+## 多实例管理 Dashboard
+
+任意启用了 `server.port` 或通过 `--port` 启动的 Symphony 实例，都会在同一个 Phoenix
+服务里提供多实例管理入口：
+
+```text
+http://127.0.0.1:<port>/admin/instances
+http://127.0.0.1:<port>/api/v1/admin/instances
+```
+
+这个页面是 operator 管理面，不是多租户 orchestrator：
+
+- `/` 是当前进程的单实例执行 Dashboard，展示该实例内部 orchestrator 的运行、重试、阻塞和 token 状态。
+- `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
+- 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、环境变量、日志目录、workspace root、端口和内存调度账本。
+- 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。
+- 管理面可以请求 `start`、`stop`、`restart`，失败时 API 返回可读错误；issue 派发、重试、reconciliation 和 workspace 隔离仍由对应实例内部 `Orchestrator` 负责。
+
+管理 API 示例：
+
+```bash
+curl http://127.0.0.1:20000/api/v1/admin/instances
+curl -X POST http://127.0.0.1:20000/api/v1/admin/instances/project-a/restart
+```
