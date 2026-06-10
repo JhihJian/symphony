@@ -24,13 +24,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   def handle_event("auto_update", %{"action" => action}, socket) do
-    message =
+    {message, auto_update} =
       case run_auto_update_action(action) do
-        {:ok, snapshot} -> "自动更新操作完成：#{get_in(snapshot, [:last_update, :status]) || get_in(snapshot, [:last_check, :status])}"
-        {:error, snapshot} -> "自动更新操作失败：#{auto_update_error(snapshot)}"
+        {:ok, snapshot} -> {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
+        {:error, snapshot} -> {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
       end
 
-    {:noreply, assign_admin_state(socket, message)}
+    {:noreply, assign_admin_state(socket, message, auto_update)}
   end
 
   @impl true
@@ -126,6 +126,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <div class="detail-stack">
               <span class={update_badge_class(@auto_update.pending_update?)}><%= update_state_text(@auto_update.pending_update?) %></span>
               <span class="muted">最近检查：<%= get_in(@auto_update, [:last_check, :status]) || "never" %></span>
+              <span class="muted">检查时间：<%= format_datetime(get_in(@auto_update, [:last_check, :checked_at])) %></span>
             </div>
           </section>
 
@@ -283,7 +284,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     """
   end
 
-  defp assign_admin_state(socket, notice) do
+  defp assign_admin_state(socket, notice, auto_update \\ nil) do
     instances =
       case registry().list_instances(registry_opts()) do
         {:ok, instances} ->
@@ -308,7 +309,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
     socket
     |> assign(:instances, instances)
-    |> assign(:auto_update, auto_update_snapshot())
+    |> assign(:auto_update, auto_update || auto_update_snapshot())
     |> assign(:notice, notice)
   end
 
@@ -354,6 +355,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp auto_update_opts do
     Endpoint.config(:auto_update_opts) || []
   end
+
+  defp auto_update_status("check", snapshot), do: get_in(snapshot, [:last_check, :status]) || "unknown"
+  defp auto_update_status("update", snapshot), do: get_in(snapshot, [:last_update, :status]) || "unknown"
+  defp auto_update_status(_action, snapshot), do: get_in(snapshot, [:last_update, :status]) || get_in(snapshot, [:last_check, :status]) || "unknown"
 
   defp total_count(instances, key) do
     Enum.reduce(instances, 0, fn instance, total -> total + count(instance, key) end)
