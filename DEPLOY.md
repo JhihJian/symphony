@@ -172,6 +172,46 @@ scripts/install-systemd-template.sh \
 
 ## 自动更新
 
+推荐在多实例部署中使用 Dashboard 控制自动更新：打开任一运行中实例的
+`http://<host>:<SYMPHONY_PORT>/admin/instances`，页面会展示当前部署 commit、GitHub
+`main` 最新 commit、下一次 API 轮询时间、最近一次检查结果、速率限制信息和最近一次更新/构建/重启结果。
+
+Dashboard 后端通过 GitHub REST API 轮询 `jhihjian/symphony` 的 `main` 分支，并使用
+ETag/`If-None-Match` 条件请求降低速率限制压力。也可以通过 API 手动触发：
+
+```bash
+curl http://127.0.0.1:20000/api/v1/admin/auto-update
+curl -X POST http://127.0.0.1:20000/api/v1/admin/auto-update/check
+curl -X POST http://127.0.0.1:20000/api/v1/admin/auto-update/update
+```
+
+更新执行会先检查源码目录是否有本地未提交改动；有改动时会阻止更新并在 Dashboard/API
+显示错误。只有 `git fetch`/fast-forward 和 `mix build` 成功后，才进入实例重启决策。
+默认策略不会重启有活跃 Symphony 会话的实例，而是标记为等待空闲；失败实例不会被自动覆盖。
+
+每个实例可在 `~/.config/symphony/projects/<project>/env` 中配置更新策略：
+
+```bash
+SYMPHONY_UPDATE_STRATEGY=idle_restart
+```
+
+安装或更新实例时也可以直接指定，未指定时会保留已有 `env` 中的值：
+
+```bash
+scripts/install-systemd-template.sh ... --update-strategy manual_restart
+```
+
+可选值：
+
+- `idle_restart`：空闲 active 实例自动重启；运行中实例等待空闲。
+- `defer_until_idle`：与 `idle_restart` 等价，强调运行中延后。
+- `download_only`：只更新和构建程序，不自动重启实例。
+- `manual_restart`：构建后等待人工确认重启。
+- `force_restart`：显式危险操作，允许强制重启。
+
+下面的 systemd timer 仍保留为兼容的无人值守入口；如果希望完全由 Dashboard 控制，可以不传
+`--auto-update`，或对已有部署执行 `--no-auto-update` 关闭 timer。
+
 安装时加上 `--auto-update` 会创建并启用用户级 timer：
 
 ```text

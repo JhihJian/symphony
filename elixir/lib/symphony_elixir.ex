@@ -23,14 +23,17 @@ defmodule SymphonyElixir.Application do
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
 
-    children = [
-      {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-      SymphonyElixir.WorkflowStore,
-      SymphonyElixir.Orchestrator,
-      SymphonyElixir.HttpServer,
-      SymphonyElixir.StatusDashboard
-    ]
+    children =
+      [
+        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+        SymphonyElixir.WorkflowStore,
+        SymphonyElixir.Orchestrator,
+        auto_update_child(),
+        SymphonyElixir.HttpServer,
+        SymphonyElixir.StatusDashboard
+      ]
+      |> Enum.reject(&is_nil/1)
 
     Supervisor.start_link(
       children,
@@ -43,5 +46,13 @@ defmodule SymphonyElixir.Application do
   def stop(_state) do
     SymphonyElixir.StatusDashboard.render_offline_status()
     :ok
+  end
+
+  defp auto_update_child do
+    opts = Application.get_env(:symphony_elixir, :auto_update_opts, [])
+
+    if Keyword.get(opts, :enabled?, true) do
+      {SymphonyElixir.AutoUpdate, opts}
+    end
   end
 end

@@ -19,6 +19,41 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
     end
   end
 
+  @spec auto_update(Conn.t(), map()) :: Conn.t()
+  def auto_update(conn, _params) do
+    json(conn, encode_datetimes(auto_update_module().snapshot(auto_update_opts())))
+  end
+
+  @spec check_update(Conn.t(), map()) :: Conn.t()
+  def check_update(conn, _params) do
+    case auto_update_module().check_now(auto_update_opts()) do
+      {:ok, snapshot} ->
+        conn
+        |> put_status(202)
+        |> json(encode_datetimes(snapshot))
+
+      {:error, snapshot} ->
+        conn
+        |> put_status(503)
+        |> json(encode_datetimes(snapshot))
+    end
+  end
+
+  @spec run_update(Conn.t(), map()) :: Conn.t()
+  def run_update(conn, _params) do
+    case auto_update_module().update_now(auto_update_opts()) do
+      {:ok, snapshot} ->
+        conn
+        |> put_status(202)
+        |> json(encode_datetimes(snapshot))
+
+      {:error, snapshot} ->
+        conn
+        |> put_status(409)
+        |> json(encode_datetimes(snapshot))
+    end
+  end
+
   @spec start(Conn.t(), map()) :: Conn.t()
   def start(conn, %{"name" => name}), do: run_action(conn, "start", name)
 
@@ -68,4 +103,21 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   defp registry_opts do
     Endpoint.config(:instance_registry_opts) || []
   end
+
+  defp auto_update_module do
+    Endpoint.config(:auto_update) || SymphonyElixir.AutoUpdate
+  end
+
+  defp auto_update_opts do
+    Endpoint.config(:auto_update_opts) || []
+  end
+
+  defp encode_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp encode_datetimes(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {key, encode_datetimes(value)} end)
+  end
+
+  defp encode_datetimes(list) when is_list(list), do: Enum.map(list, &encode_datetimes/1)
+  defp encode_datetimes(value), do: value
 end

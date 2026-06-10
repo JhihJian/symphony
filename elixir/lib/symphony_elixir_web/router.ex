@@ -31,6 +31,11 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     get("/api/v1/admin/instances", AdminInstanceController, :index)
     match(:*, "/api/v1/admin/instances", AdminInstanceController, :method_not_allowed)
+    get("/api/v1/admin/auto-update", AdminInstanceController, :auto_update)
+    post("/api/v1/admin/auto-update/check", AdminInstanceController, :check_update)
+    post("/api/v1/admin/auto-update/update", AdminInstanceController, :run_update)
+    match(:*, "/api/v1/admin/auto-update", AdminInstanceController, :method_not_allowed)
+    match(:*, "/api/v1/admin/auto-update/:action", AdminInstanceController, :method_not_allowed)
     post("/api/v1/admin/instances/:name/start", AdminInstanceController, :start)
     post("/api/v1/admin/instances/:name/stop", AdminInstanceController, :stop)
     post("/api/v1/admin/instances/:name/restart", AdminInstanceController, :restart)

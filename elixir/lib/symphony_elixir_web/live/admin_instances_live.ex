@@ -9,7 +9,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign_instances(socket, nil)}
+    {:ok, assign_admin_state(socket, nil)}
   end
 
   @impl true
@@ -20,7 +20,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         {:error, %{message: message}} -> message
       end
 
-    {:noreply, assign_instances(socket, message)}
+    {:noreply, assign_admin_state(socket, message)}
+  end
+
+  def handle_event("auto_update", %{"action" => action}, socket) do
+    message =
+      case run_auto_update_action(action) do
+        {:ok, snapshot} -> "自动更新操作完成：#{get_in(snapshot, [:last_update, :status]) || get_in(snapshot, [:last_check, :status])}"
+        {:error, snapshot} -> "自动更新操作失败：#{auto_update_error(snapshot)}"
+      end
+
+    {:noreply, assign_admin_state(socket, message)}
   end
 
   @impl true
@@ -72,6 +82,103 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </article>
       </section>
 
+      <section class="section-card auto-update-panel">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">GitHub main 自动更新</h2>
+            <p class="section-copy">
+              通过 GitHub API 条件轮询检测 main 最新提交，并按实例策略决定是否重启。
+            </p>
+          </div>
+          <div class="instance-actions">
+            <button
+              class="lifecycle-button lifecycle-button-neutral"
+              phx-click="auto_update"
+              phx-value-action="check"
+            >立即检查</button>
+            <button
+              class="lifecycle-button lifecycle-button-primary"
+              phx-click="auto_update"
+              phx-value-action="update"
+            >执行更新</button>
+          </div>
+        </div>
+
+        <div class="instance-meta-grid">
+          <section class="instance-panel">
+            <p class="panel-label">当前部署</p>
+            <div class="detail-stack mono">
+              <span><%= @auto_update.current_sha || "未知" %></span>
+              <span class="muted"><%= @auto_update.source_root || "source root 未配置" %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">远端 main</p>
+            <div class="detail-stack mono">
+              <span><%= @auto_update.remote_sha || "尚未检查" %></span>
+              <span class="muted"><%= @auto_update.repo %>#<%= @auto_update.branch %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">更新状态</p>
+            <div class="detail-stack">
+              <span class={update_badge_class(@auto_update.pending_update?)}><%= update_state_text(@auto_update.pending_update?) %></span>
+              <span class="muted">最近检查：<%= get_in(@auto_update, [:last_check, :status]) || "never" %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">下次检查</p>
+            <div class="detail-stack mono">
+              <span><%= format_datetime(@auto_update.next_check_at) %></span>
+              <span class="muted">间隔 <%= div(@auto_update.poll_interval_ms || 0, 60_000) %> 分钟</span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">GitHub API</p>
+            <div class="detail-stack">
+              <span>ETag <span class="mono"><%= get_in(@auto_update, [:last_check, :etag]) || "无" %></span></span>
+              <span class="muted">剩余额度 <%= get_in(@auto_update, [:last_check, :rate_limit, :remaining]) || "未知" %></span>
+              <span :if={get_in(@auto_update, [:last_check, :error])} class="muted"><%= get_in(@auto_update, [:last_check, :error]) %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">策略</p>
+            <div class="detail-stack">
+              <span>空闲自动重启</span>
+              <span class="muted">运行中延后；失败实例跳过；可配置为只构建、手动确认或强制重启。</span>
+            </div>
+          </section>
+        </div>
+
+        <%= if get_in(@auto_update, [:last_update, :instance_results]) not in [nil, []] do %>
+          <div class="table-wrap update-results-table">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>实例</th>
+                  <th>策略</th>
+                  <th>决策</th>
+                  <th>原因</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={result <- @auto_update.last_update.instance_results}>
+                  <td class="mono"><%= result.name %></td>
+                  <td><%= result.strategy %></td>
+                  <td><%= result.decision %></td>
+                  <td><%= result.reason %></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        <% end %>
+      </section>
+
       <section class="section-card">
         <div class="section-header">
           <div>
@@ -116,7 +223,16 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                     <p class="panel-label">健康摘要</p>
                     <div class="detail-stack">
                       <span><%= get_in(instance, [:health, :summary]) || "暂无健康摘要" %></span>
+                      <span class="muted"><%= get_in(instance, [:systemd, :enabled]) || "unknown" %> / <%= get_in(instance, [:systemd, :sub]) || "unknown" %></span>
                       <span :if={get_in(instance, [:health, :error])} class="muted"><%= get_in(instance, [:health, :error]) %></span>
+                    </div>
+                  </section>
+
+                  <section class="instance-panel">
+                    <p class="panel-label">更新策略</p>
+                    <div class="detail-stack">
+                      <span><%= Map.get(instance, :strategy, "idle_restart") %></span>
+                      <span class="muted"><%= strategy_description(Map.get(instance, :strategy, "idle_restart")) %></span>
                     </div>
                   </section>
 
@@ -167,7 +283,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     """
   end
 
-  defp assign_instances(socket, notice) do
+  defp assign_admin_state(socket, notice) do
     instances =
       case registry().list_instances(registry_opts()) do
         {:ok, instances} ->
@@ -192,6 +308,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
     socket
     |> assign(:instances, instances)
+    |> assign(:auto_update, auto_update_snapshot())
     |> assign(:notice, notice)
   end
 
@@ -200,12 +317,42 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp run_action("restart", name), do: registry().restart_instance(name, registry_opts())
   defp run_action(action, _name), do: {:error, %{message: "Unsupported lifecycle action: #{action}"}}
 
+  defp run_auto_update_action("check"), do: auto_update_module().check_now(auto_update_opts())
+  defp run_auto_update_action("update"), do: auto_update_module().update_now(auto_update_opts())
+  defp run_auto_update_action(_action), do: {:error, %{last_check: %{error: "Unsupported auto update action"}}}
+
   defp registry do
     Endpoint.config(:instance_registry) || SymphonyElixir.InstanceRegistry
   end
 
   defp registry_opts do
     Endpoint.config(:instance_registry_opts) || []
+  end
+
+  defp auto_update_snapshot do
+    auto_update_module().snapshot(auto_update_opts())
+  rescue
+    error ->
+      %{
+        repo: "unknown",
+        branch: "main",
+        source_root: nil,
+        poll_interval_ms: 0,
+        current_sha: nil,
+        remote_sha: nil,
+        pending_update?: false,
+        next_check_at: nil,
+        last_check: %{status: "unavailable", error: Exception.message(error), rate_limit: %{}, etag: nil},
+        last_update: %{status: "idle", instance_results: []}
+      }
+  end
+
+  defp auto_update_module do
+    Endpoint.config(:auto_update) || SymphonyElixir.AutoUpdate
+  end
+
+  defp auto_update_opts do
+    Endpoint.config(:auto_update_opts) || []
   end
 
   defp total_count(instances, key) do
@@ -221,4 +368,25 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp instance_badge_class("failed"), do: "state-badge state-badge-blocked"
   defp instance_badge_class("stopped"), do: "state-badge state-badge-terminal"
   defp instance_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp strategy_description("idle_restart"), do: "空闲时自动更新并重启"
+  defp strategy_description("defer_until_idle"), do: "运行中延后，空闲后重启"
+  defp strategy_description("download_only"), do: "只下载构建，不自动重启"
+  defp strategy_description("manual_restart"), do: "手动确认后重启"
+  defp strategy_description("force_restart"), do: "强制重启（危险操作）"
+  defp strategy_description(_strategy), do: "使用默认空闲重启策略"
+
+  defp update_state_text(true), do: "有可用更新"
+  defp update_state_text(false), do: "已是最新"
+
+  defp update_badge_class(true), do: "state-badge state-badge-blocked"
+  defp update_badge_class(false), do: "state-badge state-badge-active"
+
+  defp format_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+  defp format_datetime(nil), do: "未知"
+  defp format_datetime(datetime), do: to_string(datetime)
+
+  defp auto_update_error(snapshot) when is_map(snapshot) do
+    get_in(snapshot, [:last_update, :error]) || get_in(snapshot, [:last_check, :error]) || "unknown error"
+  end
 end

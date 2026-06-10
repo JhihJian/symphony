@@ -21,6 +21,8 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     write_instance!(config_root, runtime_root, "project-b",
       port: 20_002,
       systemd: "failed",
+      enabled: "disabled",
+      strategy: "manual_restart",
       http_error: :econnrefused,
       tracker: %{kind: "gitlab", project_slug: "platform/group/repo"}
     )
@@ -36,6 +38,7 @@ defmodule SymphonyElixir.InstanceRegistryTest do
              name: "project-a",
              service: "symphony@project-a.service",
              status: "running",
+             systemd: %{active: "active", enabled: "enabled", sub: "running", failed: false},
              dashboard_url: "http://127.0.0.1:20001/",
              api_url: "http://127.0.0.1:20001/api/v1/state",
              tracker: %{kind: "github", scope: "acme/project-a", required_labels: ["symphony"]},
@@ -49,15 +52,48 @@ defmodule SymphonyElixir.InstanceRegistryTest do
              logs_root: Path.join([runtime_root, "project-a", "logs"]),
              config_path: Path.join([config_root, "project-a", "WORKFLOW.md"]),
              env_path: Path.join([config_root, "project-a", "env"]),
-             runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42}
+             runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42},
+             strategy: "idle_restart"
            }
 
     assert project_b.status == "failed"
+    assert project_b.systemd == %{active: "failed", enabled: "disabled", sub: "failed", failed: true}
+    assert project_b.strategy == "manual_restart"
     assert project_b.tracker == %{kind: "gitlab", scope: "platform/group/repo", required_labels: ["symphony"]}
     assert project_b.counts == %{running: 0, retrying: 0, blocked: 0}
     assert project_b.health.status == "unreachable"
     assert project_b.health.summary == "state API unreachable; service failed"
     assert project_b.health.error =~ "econnrefused"
+  end
+
+  test "discovers systemd template services even before config exists" do
+    root = temporary_root("instance-registry-systemd-discovery")
+    config_root = Path.join(root, "config")
+    File.mkdir_p!(config_root)
+
+    owner = self()
+
+    deps = %{
+      list_services: fn -> {:ok, ["symphony@orphan.service", "not-symphony.service"]} end,
+      systemctl_status: fn "symphony@orphan.service" -> {:ok, "active"} end,
+      systemctl_show: fn "symphony@orphan.service" -> {:ok, %{active: "active", sub: "running", failed: false}} end,
+      systemctl_enabled: fn "symphony@orphan.service" -> {:ok, "enabled"} end,
+      http_get_state: fn _url ->
+        send(owner, :unexpected_http_call)
+        {:error, :missing_dashboard_url}
+      end,
+      systemctl_action: fn _action, _service -> :ok end
+    }
+
+    assert {:ok, [instance]} = InstanceRegistry.list_instances(config_root: config_root, deps: deps)
+    assert instance.name == "orphan"
+    assert instance.service == "symphony@orphan.service"
+    assert instance.status == "running"
+    assert instance.systemd == %{active: "active", enabled: "enabled", sub: "running", failed: false}
+    assert instance.config_path == Path.join([config_root, "orphan", "WORKFLOW.md"])
+    assert instance.dashboard_url == nil
+    assert instance.counts == %{running: 0, retrying: 0, blocked: 0}
+    refute_received :unexpected_http_call
   end
 
   test "lifecycle actions call systemd user services and surface failures" do
@@ -135,6 +171,9 @@ defmodule SymphonyElixir.InstanceRegistryTest do
       config_root: config_root,
       deps: %{
         systemctl_status: fn service -> Map.fetch(status_by_service, service) end,
+        systemctl_show: fn service -> Map.fetch(show_by_service(), service) end,
+        systemctl_enabled: fn service -> Map.fetch(enabled_by_service(), service) end,
+        list_services: fn -> {:ok, Map.keys(status_by_service)} end,
         http_get_state: fn url -> Map.fetch!(state_by_url, url) end,
         systemctl_action: fn _action, _service -> :ok end
       }
@@ -155,12 +194,35 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     File.mkdir_p!(logs_root)
     File.mkdir_p!(workspace_root)
 
-    File.write!(env_path, "SYMPHONY_PORT=#{port}\nSYMPHONY_LOGS_ROOT=#{logs_root}\n")
+    strategy = Keyword.get(opts, :strategy, "idle_restart")
+
+    File.write!(
+      env_path,
+      "SYMPHONY_PORT=#{port}\nSYMPHONY_LOGS_ROOT=#{logs_root}\nSYMPHONY_UPDATE_STRATEGY=#{strategy}\n"
+    )
+
     File.write!(workflow_path, workflow_contents(tracker, workspace_root))
 
     service = "symphony@#{name}.service"
     status_by_service = Process.get(:status_by_service, %{})
     Process.put(:status_by_service, Map.put(status_by_service, service, Keyword.get(opts, :systemd, "inactive")))
+
+    enabled_by_service = enabled_by_service()
+    Process.put(:enabled_by_service, Map.put(enabled_by_service, service, Keyword.get(opts, :enabled, "enabled")))
+
+    show_by_service = show_by_service()
+
+    systemd_status = Keyword.get(opts, :systemd, "inactive")
+    default_sub = if systemd_status == "active", do: "running", else: systemd_status
+
+    Process.put(
+      :show_by_service,
+      Map.put(show_by_service, service, %{
+        active: systemd_status,
+        sub: Keyword.get(opts, :sub, default_sub),
+        failed: systemd_status == "failed"
+      })
+    )
 
     url = "http://127.0.0.1:#{port}/api/v1/state"
     state_by_url = Process.get(:state_by_url, %{})
@@ -173,6 +235,9 @@ defmodule SymphonyElixir.InstanceRegistryTest do
 
     Process.put(:state_by_url, Map.put(state_by_url, url, state_result))
   end
+
+  defp enabled_by_service, do: Process.get(:enabled_by_service, %{})
+  defp show_by_service, do: Process.get(:show_by_service, %{})
 
   defp workflow_contents(%{kind: "github"} = tracker, workspace_root) do
     """

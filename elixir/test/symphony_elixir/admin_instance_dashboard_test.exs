@@ -16,6 +16,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            name: "project-a",
            service: "symphony@project-a.service",
            status: "running",
+           systemd: %{active: "active", enabled: "enabled", sub: "running", failed: false},
            dashboard_url: "http://127.0.0.1:20001/",
            api_url: "http://127.0.0.1:20001/api/v1/state",
            tracker: %{kind: "github", scope: "acme/project-a", required_labels: ["symphony"]},
@@ -25,12 +26,14 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            logs_root: "/runtime/project-a/logs",
            config_path: "/config/project-a/WORKFLOW.md",
            env_path: "/config/project-a/env",
-           runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42}
+           runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42},
+           strategy: "idle_restart"
          },
          %{
            name: "project-b",
            service: "symphony@project-b.service",
            status: "failed",
+           systemd: %{active: "failed", enabled: "disabled", sub: "failed", failed: true},
            dashboard_url: "http://127.0.0.1:20002/",
            api_url: "http://127.0.0.1:20002/api/v1/state",
            tracker: %{kind: "gitlab", scope: "platform/group/repo", required_labels: ["symphony"]},
@@ -40,7 +43,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            logs_root: "/runtime/project-b/logs",
            config_path: "/config/project-b/WORKFLOW.md",
            env_path: "/config/project-b/env",
-           runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0}
+           runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
+           strategy: "manual_restart"
          }
        ]}
     end
@@ -64,6 +68,90 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
   end
 
+  defmodule FakeAutoUpdate do
+    @moduledoc false
+
+    def snapshot(opts) do
+      send(owner(opts), {:auto_update_snapshot, opts})
+      snapshot_payload()
+    end
+
+    def check_now(opts) do
+      send(owner(opts), {:auto_update_check_now, opts})
+      {:ok, %{snapshot_payload() | last_check: %{snapshot_payload().last_check | status: "ok"}}}
+    end
+
+    def update_now(opts) do
+      send(owner(opts), {:auto_update_update_now, opts})
+
+      {:ok,
+       %{
+         snapshot_payload()
+         | current_sha: "remote-sha",
+           pending_update?: false,
+           last_update: %{
+             status: "updated",
+             started_at: ~U[2026-06-10 02:00:00Z],
+             finished_at: ~U[2026-06-10 02:01:00Z],
+             from_sha: "local-sha",
+             to_sha: "remote-sha",
+             error: nil,
+             instance_results: [
+               %{
+                 name: "project-a",
+                 service: "symphony@project-a.service",
+                 status: "running",
+                 running: 0,
+                 strategy: "idle_restart",
+                 decision: "restarted",
+                 reason: "active instance is idle"
+               },
+               %{
+                 name: "project-b",
+                 service: "symphony@project-b.service",
+                 status: "failed",
+                 running: 0,
+                 strategy: "idle_restart",
+                 decision: "skipped_failed",
+                 reason: "service is failed; manual intervention required"
+               }
+             ]
+           }
+       }}
+    end
+
+    defp snapshot_payload do
+      %{
+        repo: "jhihjian/symphony",
+        branch: "main",
+        source_root: "/source",
+        poll_interval_ms: 600_000,
+        current_sha: "local-sha",
+        remote_sha: "remote-sha",
+        pending_update?: true,
+        next_check_at: ~U[2026-06-10 02:10:00Z],
+        last_check: %{
+          status: "ok",
+          checked_at: ~U[2026-06-10 02:00:00Z],
+          etag: ~s(W/"etag-1"),
+          error: nil,
+          rate_limit: %{remaining: 58, reset_at: "2026-06-10T03:00:00Z"}
+        },
+        last_update: %{
+          status: "idle",
+          started_at: nil,
+          finished_at: nil,
+          from_sha: nil,
+          to_sha: nil,
+          error: nil,
+          instance_results: []
+        }
+      }
+    end
+
+    defp owner(opts), do: Keyword.fetch!(opts, :owner)
+  end
+
   setup do
     original_endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
 
@@ -72,6 +160,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
       |> Keyword.merge(server: false, secret_key_base: String.duplicate("s", 64))
       |> Keyword.put(:instance_registry, FakeInstanceRegistry)
       |> Keyword.put(:instance_registry_opts, owner: self())
+      |> Keyword.put(:auto_update, FakeAutoUpdate)
+      |> Keyword.put(:auto_update_opts, owner: self())
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
@@ -119,6 +209,32 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert_receive {:instance_action, "start", "project-b", _opts}
   end
 
+  test "admin auto update API exposes status and manual triggers" do
+    status_payload = json_response(get(build_conn(), "/api/v1/admin/auto-update"), 200)
+    assert_receive {:auto_update_snapshot, opts}
+    assert Keyword.fetch!(opts, :owner) == self()
+
+    assert status_payload["repo"] == "jhihjian/symphony"
+    assert status_payload["branch"] == "main"
+    assert status_payload["current_sha"] == "local-sha"
+    assert status_payload["remote_sha"] == "remote-sha"
+    assert status_payload["pending_update?"] == true
+    assert status_payload["last_check"]["etag"] == ~s(W/"etag-1")
+    assert status_payload["last_check"]["rate_limit"]["remaining"] == 58
+    assert status_payload["next_check_at"] == "2026-06-10T02:10:00Z"
+
+    check_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/check", %{}), 202)
+    assert_receive {:auto_update_check_now, _opts}
+    assert check_payload["last_check"]["status"] == "ok"
+
+    update_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/update", %{}), 202)
+    assert_receive {:auto_update_update_now, _opts}
+    assert update_payload["last_update"]["status"] == "updated"
+    assert [project_a, project_b] = update_payload["last_update"]["instance_results"]
+    assert project_a["decision"] == "restarted"
+    assert project_b["decision"] == "skipped_failed"
+  end
+
   test "admin dashboard renders multi-instance overview and links" do
     {:ok, _view, html} = live(build_conn(), "/admin/instances")
 
@@ -134,6 +250,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "project-a"
     assert html =~ "project-b"
     assert html =~ "running"
+    assert html =~ "enabled / running"
+    assert html =~ "idle_restart"
+    assert html =~ "manual_restart"
     assert html =~ "failed"
     assert html =~ "acme/project-a"
     assert html =~ "platform/group/repo"
@@ -146,6 +265,17 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "启动"
     assert html =~ "停止"
     assert html =~ "重启"
+
+    assert html =~ "GitHub main 自动更新"
+    assert html =~ "当前部署"
+    assert html =~ "local-sha"
+    assert html =~ "remote-sha"
+    assert html =~ "有可用更新"
+    assert html =~ "下次检查"
+    assert html =~ "2026-06-10T02:10:00Z"
+    assert html =~ "立即检查"
+    assert html =~ "执行更新"
+    assert html =~ "空闲自动重启"
   end
 
   test "admin dashboard stylesheet includes responsive card styling" do
