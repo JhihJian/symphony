@@ -78,7 +78,19 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     def check_now(opts) do
       send(owner(opts), {:auto_update_check_now, opts})
-      {:ok, %{snapshot_payload() | last_check: %{snapshot_payload().last_check | status: "ok"}}}
+
+      {:ok,
+       %{
+         snapshot_payload()
+         | pending_update?: false,
+           next_check_at: ~U[2026-06-10 02:20:00Z],
+           last_check: %{
+             snapshot_payload().last_check
+             | status: "not_modified",
+               checked_at: ~U[2026-06-10 02:10:00Z],
+               rate_limit: %{remaining: 57, reset_at: "2026-06-10T03:00:00Z"}
+           }
+       }}
     end
 
     def update_now(opts) do
@@ -225,7 +237,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     check_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/check", %{}), 202)
     assert_receive {:auto_update_check_now, _opts}
-    assert check_payload["last_check"]["status"] == "ok"
+    assert check_payload["last_check"]["status"] == "not_modified"
 
     update_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/update", %{}), 202)
     assert_receive {:auto_update_update_now, _opts}
@@ -276,6 +288,26 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "立即检查"
     assert html =~ "执行更新"
     assert html =~ "空闲自动重启"
+  end
+
+  test "admin dashboard check now button refreshes visible check details" do
+    {:ok, view, html} = live(build_conn(), "/admin/instances")
+
+    assert html =~ "最近检查：ok"
+    refute html =~ "检查时间：2026-06-10T02:10:00Z"
+    refute html =~ "自动更新操作完成：not_modified"
+
+    html =
+      view
+      |> element("button", "立即检查")
+      |> render_click()
+
+    assert_receive {:auto_update_check_now, _opts}
+    assert html =~ "自动更新操作完成：not_modified"
+    assert html =~ "最近检查：not_modified"
+    assert html =~ "检查时间"
+    assert html =~ "2026-06-10T02:10:00Z"
+    assert html =~ "剩余额度 57"
   end
 
   test "admin dashboard stylesheet includes responsive card styling" do
