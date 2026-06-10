@@ -49,7 +49,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </section>
       <% end %>
 
-      <section class="metric-grid">
+      <section class="metric-grid fleet-summary">
         <article class="metric-card">
           <p class="metric-label">实例总数</p>
           <p class="metric-value numeric"><%= length(@instances) %></p>
@@ -83,71 +83,83 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         <%= if @instances == [] do %>
           <p class="empty-state">未发现已登记的 Symphony 实例。</p>
         <% else %>
-          <div class="table-wrap">
-            <table class="data-table" style="min-width: 1120px;">
-              <thead>
-                <tr>
-                  <th>实例</th>
-                  <th>状态</th>
-                  <th>Tracker</th>
-                  <th>Issue 压力</th>
-                  <th>健康摘要</th>
-                  <th>Dashboard / API</th>
-                  <th>Workspace / Logs</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr :for={instance <- @instances}>
-                  <td>
-                    <div class="issue-stack">
-                      <span class="issue-id"><%= instance.name %></span>
-                      <span class="muted mono"><%= instance.service %></span>
-                    </div>
-                  </td>
-                  <td><span class={instance_badge_class(instance.status)}><%= instance.status %></span></td>
-                  <td>
+          <div class="instance-card-grid">
+            <article :for={instance <- @instances} class="instance-card">
+              <header class="instance-card-header">
+                <div class="instance-identity">
+                  <span class="instance-name"><%= instance.name %></span>
+                  <span class="muted mono"><%= instance.service %></span>
+                </div>
+                <span class={instance_badge_class(instance.status)}><%= instance.status %></span>
+              </header>
+
+              <div class="instance-card-body">
+                <div class="instance-meta-grid">
+                  <section class="instance-panel">
+                    <p class="panel-label">Tracker</p>
                     <div class="detail-stack">
                       <span><%= get_in(instance, [:tracker, :kind]) || "unknown" %></span>
                       <span class="muted"><%= get_in(instance, [:tracker, :scope]) || "未配置范围" %></span>
                     </div>
-                  </td>
-                  <td>
-                    <div class="detail-stack numeric">
+                  </section>
+
+                  <section class="instance-panel pressure-panel">
+                    <p class="panel-label">Issue 压力</p>
+                    <div class="pressure-grid numeric">
                       <span>运行中 <%= count(instance, :running) %></span>
                       <span>重试中 <%= count(instance, :retrying) %></span>
                       <span>阻塞 <%= count(instance, :blocked) %></span>
                     </div>
-                  </td>
-                  <td>
+                  </section>
+
+                  <section class="instance-panel health-panel">
+                    <p class="panel-label">健康摘要</p>
                     <div class="detail-stack">
                       <span><%= get_in(instance, [:health, :summary]) || "暂无健康摘要" %></span>
                       <span :if={get_in(instance, [:health, :error])} class="muted"><%= get_in(instance, [:health, :error]) %></span>
                     </div>
-                  </td>
-                  <td>
+                  </section>
+
+                  <section class="instance-panel">
+                    <p class="panel-label">Dashboard / API</p>
                     <div class="detail-stack">
                       <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
                       <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
                       <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
                     </div>
-                  </td>
-                  <td>
+                  </section>
+
+                  <section class="instance-panel path-panel">
+                    <p class="panel-label">Workspace / Logs</p>
                     <div class="detail-stack mono">
                       <span><%= instance.workspace_root || "workspace 未知" %></span>
                       <span class="muted"><%= instance.logs_root || "logs 未知" %></span>
                     </div>
-                  </td>
-                  <td>
-                    <div class="action-row">
-                      <button phx-click="lifecycle" phx-value-action="start" phx-value-name={instance.name}>启动</button>
-                      <button phx-click="lifecycle" phx-value-action="stop" phx-value-name={instance.name}>停止</button>
-                      <button phx-click="lifecycle" phx-value-action="restart" phx-value-name={instance.name}>重启</button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+                  </section>
+                </div>
+              </div>
+
+              <footer class="instance-actions">
+                <button
+                  class="lifecycle-button lifecycle-button-primary"
+                  phx-click="lifecycle"
+                  phx-value-action="start"
+                  phx-value-name={instance.name}
+                >启动</button>
+                <button
+                  class="lifecycle-button lifecycle-button-danger"
+                  phx-click="lifecycle"
+                  phx-value-action="stop"
+                  phx-value-name={instance.name}
+                >停止</button>
+                <button
+                  class="lifecycle-button lifecycle-button-neutral"
+                  phx-click="lifecycle"
+                  phx-value-action="restart"
+                  phx-value-name={instance.name}
+                >重启</button>
+              </footer>
+            </article>
           </div>
         <% end %>
       </section>

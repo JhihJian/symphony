@@ -16,6 +16,7 @@
   --danger-soft: #fef3f2;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.08);
+  --shadow-panel: 0 18px 44px rgba(15, 23, 42, 0.09);
 }
 
 * {
@@ -45,6 +46,12 @@ a {
 
 a:hover {
   color: var(--accent);
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid rgba(16, 163, 127, 0.3);
+  outline-offset: 3px;
 }
 
 button {
@@ -186,6 +193,7 @@ pre,
 
 .status-stack {
   display: grid;
+  gap: 0.5rem;
   justify-items: end;
   align-content: start;
   min-width: min(100%, 9rem);
@@ -242,8 +250,22 @@ pre,
 }
 
 .metric-card {
+  position: relative;
+  overflow: hidden;
   border-radius: 22px;
   padding: 1rem 1.05rem 1.1rem;
+}
+
+.metric-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), rgba(16, 163, 127, 0));
+}
+
+.fleet-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .metric-label {
@@ -437,6 +459,145 @@ pre,
   color: var(--muted);
 }
 
+.instance-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 32rem), 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.instance-card {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(217, 217, 227, 0.88);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.9)),
+    var(--card);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.instance-card:hover {
+  border-color: rgba(16, 163, 127, 0.24);
+  box-shadow: var(--shadow-panel);
+  transform: translateY(-2px);
+}
+
+.instance-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(232, 250, 244, 0.58), rgba(255, 255, 255, 0));
+}
+
+.instance-identity {
+  display: grid;
+  gap: 0.24rem;
+  min-width: 0;
+}
+
+.instance-name {
+  font-size: 1.08rem;
+  font-weight: 750;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.instance-card-body {
+  padding: 1rem;
+}
+
+.instance-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.72rem;
+}
+
+.instance-panel {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(247, 247, 248, 0.72);
+}
+
+.health-panel,
+.path-panel {
+  grid-column: 1 / -1;
+}
+
+.panel-label {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pressure-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.42rem;
+}
+
+.pressure-grid span {
+  min-width: 0;
+  padding: 0.42rem 0.5rem;
+  border-radius: 14px;
+  background: white;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 650;
+  text-align: center;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.instance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0 1rem 1rem;
+}
+
+.lifecycle-button {
+  min-height: 2.35rem;
+  padding: 0.48rem 0.9rem;
+  font-size: 0.84rem;
+  box-shadow: none;
+}
+
+.lifecycle-button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.lifecycle-button-danger {
+  background: var(--danger-soft);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
+.lifecycle-button-neutral {
+  background: white;
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.lifecycle-button-danger:hover,
+.lifecycle-button-neutral:hover {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
 .error-card {
   border-radius: 24px;
   padding: 1.25rem;
@@ -472,6 +633,31 @@ pre,
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .fleet-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .instance-card-header,
+  .instance-meta-grid,
+  .pressure-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .instance-card-header {
+    display: grid;
+  }
+
+  .instance-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .lifecycle-button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 560px) {
@@ -484,5 +670,21 @@ pre,
   .error-card {
     border-radius: 20px;
     padding: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  button:hover,
+  .instance-card:hover {
+    transform: none;
   }
 }

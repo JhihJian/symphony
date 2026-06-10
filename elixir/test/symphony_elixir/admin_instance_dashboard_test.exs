@@ -124,6 +124,13 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     assert html =~ "Symphony 实例管理"
     assert html =~ "集中观察"
+    assert html =~ "fleet-summary"
+    assert html =~ "instance-card-grid"
+    assert html =~ "instance-identity"
+    assert html =~ "health-panel"
+    assert html =~ "lifecycle-button lifecycle-button-primary"
+    assert html =~ "lifecycle-button lifecycle-button-danger"
+    assert html =~ "lifecycle-button lifecycle-button-neutral"
     assert html =~ "project-a"
     assert html =~ "project-b"
     assert html =~ "running"
@@ -139,5 +146,17 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "启动"
     assert html =~ "停止"
     assert html =~ "重启"
+  end
+
+  test "admin dashboard stylesheet includes responsive card styling" do
+    css = response(get(build_conn(), "/dashboard.css"), 200)
+
+    assert css =~ ".fleet-summary"
+    assert css =~ ".instance-card-grid"
+    assert css =~ ".instance-card"
+    assert css =~ ".health-panel"
+    assert css =~ ".lifecycle-button-danger"
+    assert css =~ "@media (prefers-reduced-motion: reduce)"
+    assert css =~ "@media (max-width: 720px)"
   end
 end
