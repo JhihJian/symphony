@@ -468,7 +468,23 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     html =
       view
-      |> element("button", "手动触发")
+      |> element(~s(button[type="button"][phx-click="update_timer"][phx-value-action="enable"]))
+      |> render_click()
+
+    assert_receive {:update_timer_action, "enable --now", "symphony-update.timer", _opts}
+    assert html =~ "已请求 enable symphony-update.timer"
+
+    html =
+      view
+      |> element(~s(button[type="button"][phx-click="update_timer"][phx-value-action="disable"]))
+      |> render_click()
+
+    assert_receive {:update_timer_action, "disable --now", "symphony-update.timer", _opts}
+    assert html =~ "已请求 disable symphony-update.timer"
+
+    html =
+      view
+      |> element(~s(button[type="button"][phx-click="update_timer"][phx-value-action="trigger"]))
       |> render_click()
 
     assert_receive {:update_timer_action, "start", "symphony-update.service", _opts}
