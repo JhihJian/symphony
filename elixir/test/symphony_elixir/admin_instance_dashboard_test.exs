@@ -404,8 +404,15 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "最近日志"
 
     assert html =~ "新增实例"
+    assert html =~ "create-form-layout"
+    assert html =~ "项目与仓库"
+    assert html =~ "运行策略"
+    assert html =~ "访问令牌"
+    assert html =~ "field-hint"
+    assert html =~ "form-option"
     assert html =~ "Project Number"
     assert html =~ "Token Env"
+    assert html =~ "创建后将写入实例配置并刷新总览"
     assert html =~ "创建实例"
 
     assert html =~ "systemd 自动更新 timer"
@@ -463,6 +470,34 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     refute html =~ "ghp_secret"
   end
 
+  test "admin dashboard create form submits explicit option toggles" do
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    view
+    |> form("form.instance-form",
+      instance: %{
+        project: "project-d",
+        tracker_kind: "github",
+        owner: "acme",
+        repo: "project-d",
+        project_number: "15",
+        token: "",
+        token_env: "GITHUB_TOKEN",
+        port: "20015",
+        update_strategy: "manual_restart",
+        max_agents: "1",
+        start: "false",
+        auto_update: "true"
+      }
+    )
+    |> render_submit()
+
+    assert_receive {:create_instance, params, _opts}
+    assert params["start"] == "false"
+    assert params["auto_update"] == "true"
+    assert params["update_strategy"] == "manual_restart"
+  end
+
   test "admin dashboard controls update timer" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
 
@@ -502,6 +537,10 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".instance-card-grid"
     assert css =~ ".instance-card"
     assert css =~ ".health-panel"
+    assert css =~ ".create-form-layout"
+    assert css =~ ".form-section"
+    assert css =~ ".form-option"
+    assert css =~ ".form-submit-strip"
     assert css =~ ".lifecycle-button-danger"
     assert css =~ "@media (prefers-reduced-motion: reduce)"
     assert css =~ "@media (max-width: 720px)"
