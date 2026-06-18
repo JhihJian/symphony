@@ -19,6 +19,7 @@ polling:
 workspace:
   root: /data/dev/symphony/workspaces
 hooks:
+  timeout_ms: 300000
   after_create: |
     git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then

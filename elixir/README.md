@@ -152,6 +152,9 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- `hooks.timeout_ms` controls workspace hook timeouts. If `after_create` times out or fails,
+  Symphony terminates the local hook process tree and removes the newly-created workspace before
+  retrying, so a later attempt does not reuse a partial clone.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from the selected tracker's token env var when unset or when value is the
@@ -167,6 +170,7 @@ tracker:
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
+  timeout_ms: 300000
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
 codex:

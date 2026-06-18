@@ -471,6 +471,7 @@ server:
 workspace:
   root: ${workspace_root}
 hooks:
+  timeout_ms: 300000
   after_create: |
     git clone --depth 1 ${repo_url} .
     if command -v mise >/dev/null 2>&1; then

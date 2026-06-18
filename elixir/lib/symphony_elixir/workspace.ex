@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @hook_termination_grace_ms 1_000
 
   @type worker_host :: String.t() | nil
 
@@ -217,7 +218,14 @@ defmodule SymphonyElixir.Workspace do
             :ok
 
           command ->
-            run_hook(command, workspace, issue_context, "after_create", worker_host)
+            case run_hook(command, workspace, issue_context, "after_create", worker_host) do
+              :ok ->
+                :ok
+
+              {:error, reason} = error ->
+                cleanup_failed_new_workspace(workspace, worker_host, issue_context, reason)
+                error
+            end
         end
 
       false ->
@@ -296,21 +304,17 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
-    task =
-      Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
-      end)
-
-    case Task.yield(task, timeout_ms) do
+    case run_local_command(command, workspace, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
-      nil ->
-        Task.shutdown(task, :brutal_kill)
-
+      {:error, :timeout} ->
         Logger.warning("Workspace hook timed out hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local timeout_ms=#{timeout_ms}")
 
         {:error, {:workspace_hook_timeout, hook_name, timeout_ms}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -353,6 +357,154 @@ defmodule SymphonyElixir.Workspace do
       false ->
         binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
     end
+  end
+
+  defp cleanup_failed_new_workspace(workspace, worker_host, issue_context, reason) do
+    Logger.warning(
+      "Cleaning up newly-created workspace after after_create failure #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host_for_log(worker_host)} reason=#{inspect(reason)}"
+    )
+
+    case remove(workspace, worker_host) do
+      {:ok, _removed} ->
+        :ok
+
+      {:error, cleanup_reason, _output} ->
+        Logger.warning(
+          "Failed to clean up newly-created workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host_for_log(worker_host)} reason=#{inspect(cleanup_reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp run_local_command(command, workspace, timeout_ms)
+       when is_binary(command) and is_binary(workspace) and is_integer(timeout_ms) and timeout_ms > 0 do
+    with {:ok, executable, args} <- local_hook_command(command) do
+      port =
+        Port.open(
+          {:spawn_executable, String.to_charlist(executable)},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: Enum.map(args, &String.to_charlist/1),
+            cd: String.to_charlist(workspace)
+          ]
+        )
+
+      os_pid = port_os_pid(port)
+
+      deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+
+      case collect_local_command(port, deadline_ms, []) do
+        {:ok, result} ->
+          {:ok, result}
+
+        {:timeout, _output} ->
+          terminate_local_command(port, os_pid)
+          {:error, :timeout}
+      end
+    end
+  end
+
+  defp local_hook_command(command) do
+    case System.find_executable("sh") do
+      nil -> {:error, :shell_not_found}
+      executable -> {:ok, executable, ["-lc", command]}
+    end
+  end
+
+  defp collect_local_command(port, deadline_ms, output) when is_port(port) do
+    timeout_ms = max(deadline_ms - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} ->
+        collect_local_command(port, deadline_ms, [data | output])
+
+      {^port, {:exit_status, status}} ->
+        {:ok, {IO.iodata_to_binary(Enum.reverse(output)), status}}
+    after
+      timeout_ms ->
+        {:timeout, IO.iodata_to_binary(Enum.reverse(output))}
+    end
+  end
+
+  defp terminate_local_command(port, os_pid) do
+    signal_local_process_tree(os_pid, "TERM")
+
+    unless wait_for_port_exit(port, @hook_termination_grace_ms) do
+      signal_local_process_tree(os_pid, "KILL")
+      wait_for_port_exit(port, @hook_termination_grace_ms)
+    end
+
+    close_port(port)
+  end
+
+  defp wait_for_port_exit(port, timeout_ms) do
+    receive do
+      {^port, {:data, _data}} ->
+        wait_for_port_exit(port, timeout_ms)
+
+      {^port, {:exit_status, _status}} ->
+        true
+    after
+      timeout_ms ->
+        false
+    end
+  end
+
+  defp signal_local_process_tree(nil, _signal), do: :ok
+
+  defp signal_local_process_tree(os_pid, signal) when is_integer(os_pid) do
+    os_pid
+    |> local_process_tree_pids()
+    |> Enum.each(&signal_local_pid(&1, signal))
+  end
+
+  defp local_process_tree_pids(os_pid) when is_integer(os_pid) do
+    child_pids = local_child_pids(os_pid)
+
+    [os_pid | Enum.flat_map(child_pids, &local_process_tree_pids/1)]
+    |> Enum.uniq()
+  end
+
+  defp local_child_pids(os_pid) when is_integer(os_pid) do
+    case System.cmd("pgrep", ["-P", Integer.to_string(os_pid)], stderr_to_stdout: true) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.flat_map(fn raw_pid ->
+          case Integer.parse(raw_pid) do
+            {pid, ""} -> [pid]
+            _ -> []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  rescue
+    _error -> []
+  end
+
+  defp signal_local_pid(os_pid, signal) when is_integer(os_pid) do
+    System.cmd("kill", ["-#{signal}", "--", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    :ok
+  rescue
+    _error -> :ok
+  end
+
+  defp port_os_pid(port) when is_port(port) do
+    case :erlang.port_info(port, :os_pid) do
+      {:os_pid, os_pid} when is_integer(os_pid) -> os_pid
+      _ -> nil
+    end
+  end
+
+  defp close_port(port) when is_port(port) do
+    Port.close(port)
+  rescue
+    _error -> :ok
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
