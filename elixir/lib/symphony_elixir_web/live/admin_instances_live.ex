@@ -8,29 +8,75 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   alias SymphonyElixirWeb.Endpoint
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    local_admin? = local_admin_session?(Map.get(session, "admin_client_ip") || Map.get(session, :admin_client_ip))
+
+    socket =
+      socket
+      |> assign(:local_admin?, local_admin?)
+      |> assign(:create_form, default_create_form())
+      |> assign(:logs, nil)
+
     {:ok, assign_admin_state(socket, nil)}
   end
 
   @impl true
   def handle_event("lifecycle", %{"action" => action, "name" => name}, socket) do
-    message =
-      case run_action(action, name) do
-        {:ok, %{service: service}} -> "已请求 #{action} #{service}"
-        {:error, %{message: message}} -> message
-      end
+    message = guarded(socket, fn -> action_message(run_action(action, name), action) end)
 
     {:noreply, assign_admin_state(socket, message)}
   end
 
+  def handle_event("create_instance", %{"instance" => params}, socket) do
+    {message, form} =
+      guarded_create(socket, params, fn ->
+        case registry().create_instance(params, registry_opts()) do
+          {:ok, %{instance: instance}} -> {"已创建实例 #{instance.name}", default_create_form()}
+          {:error, %{message: message}} -> {message, normalize_form(params)}
+        end
+      end)
+
+    socket =
+      socket
+      |> assign(:create_form, form)
+      |> assign_admin_state(message)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("logs", %{"name" => name}, socket) do
+    {message, logs} =
+      guarded_logs(socket, fn ->
+        case registry().latest_logs(name, registry_opts()) do
+          {:ok, payload} -> {"已读取 #{payload.service} 最近日志", payload}
+          {:error, %{message: message}} -> {message, nil}
+        end
+      end)
+
+    socket =
+      socket
+      |> assign(:logs, logs)
+      |> assign_admin_state(message)
+
+    {:noreply, socket}
+  end
+
   def handle_event("auto_update", %{"action" => action}, socket) do
     {message, auto_update} =
-      case run_auto_update_action(action) do
-        {:ok, snapshot} -> {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
-        {:error, snapshot} -> {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
-      end
+      guarded_auto_update(socket, fn ->
+        case run_auto_update_action(action) do
+          {:ok, snapshot} -> {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
+          {:error, snapshot} -> {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
+        end
+      end)
 
     {:noreply, assign_admin_state(socket, message, auto_update)}
+  end
+
+  def handle_event("update_timer", %{"action" => action}, socket) do
+    message = guarded(socket, fn -> action_message(run_update_timer_action(action), action) end)
+
+    {:noreply, assign_admin_state(socket, message)}
   end
 
   @impl true
@@ -59,6 +105,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </section>
       <% end %>
 
+      <%= unless @local_admin? do %>
+        <section class="error-card">
+          <h2 class="error-title">管理操作已限制</h2>
+          <p class="error-copy">实例创建、systemd 操作和日志读取只允许本机客户端访问。</p>
+        </section>
+      <% end %>
+
       <section class="metric-grid fleet-summary">
         <article class="metric-card">
           <p class="metric-label">实例总数</p>
@@ -80,6 +133,82 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           <p class="metric-value numeric"><%= total_count(@instances, :blocked) %></p>
           <p class="metric-detail">等待操作员输入或批准的会话数。</p>
         </article>
+      </section>
+
+      <section class="section-card">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">新增实例</h2>
+            <p class="section-copy">通过现有 systemd template 安装脚本生成配置、env、logs 和 workspaces。</p>
+          </div>
+        </div>
+
+        <form phx-submit="create_instance" class="instance-form">
+          <div class="form-grid">
+            <label class="field">
+              <span>Project</span>
+              <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
+            </label>
+
+            <label class="field">
+              <span>Tracker</span>
+              <select name="instance[tracker_kind]">
+                <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Owner</span>
+              <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
+            </label>
+
+            <label class="field">
+              <span>Repo</span>
+              <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
+            </label>
+
+            <label class="field">
+              <span>Project Number</span>
+              <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
+            </label>
+
+            <label class="field">
+              <span>Port</span>
+              <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
+            </label>
+
+            <label class="field">
+              <span>Token</span>
+              <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
+            </label>
+
+            <label class="field">
+              <span>Token Env</span>
+              <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
+            </label>
+
+            <label class="field">
+              <span>更新策略</span>
+              <select name="instance[update_strategy]">
+                <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy %></option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Max Agents</span>
+              <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
+            </label>
+          </div>
+
+          <div class="check-row">
+            <label><input type="checkbox" name="instance[start]" value="true" checked={@create_form["start"] == "true"} /> 立即启动</label>
+            <label><input type="checkbox" name="instance[auto_update]" value="true" checked={@create_form["auto_update"] == "true"} /> 启用 systemd 自动更新 timer</label>
+          </div>
+
+          <div class="instance-actions form-actions">
+            <button class="lifecycle-button lifecycle-button-primary" type="submit" disabled={!@local_admin?}>创建实例</button>
+          </div>
+        </form>
       </section>
 
       <section class="section-card auto-update-panel">
@@ -183,6 +312,46 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       <section class="section-card">
         <div class="section-header">
           <div>
+            <h2 class="section-title">systemd 自动更新 timer</h2>
+            <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
+          </div>
+          <div class="instance-actions">
+            <button class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
+            <button class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
+            <button class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
+          </div>
+        </div>
+
+        <div class="instance-meta-grid timer-grid">
+          <section class="instance-panel">
+            <p class="panel-label">Timer</p>
+            <div class="detail-stack">
+              <span><%= @update_timer.timer %></span>
+              <span class="muted"><%= @update_timer.enabled %> / <%= @update_timer.active %> / <%= @update_timer.sub || "unknown" %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">Service</p>
+            <div class="detail-stack">
+              <span><%= @update_timer.service %></span>
+              <span class="muted"><%= @update_timer.service_active %> / <%= @update_timer.service_sub || "unknown" %></span>
+            </div>
+          </section>
+
+          <section class="instance-panel">
+            <p class="panel-label">Next Run</p>
+            <div class="detail-stack mono">
+              <span><%= @update_timer.next_run || "未知" %></span>
+              <span class="muted">Last Trigger <%= @update_timer.last_trigger || "未知" %></span>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="section-card">
+        <div class="section-header">
+          <div>
             <h2 class="section-title">实例总览</h2>
             <p class="section-copy">管理面只展示和触发生命周期操作，不参与 issue 派发或 workspace 隔离。</p>
           </div>
@@ -242,13 +411,16 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                     <div class="detail-stack">
                       <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
                       <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
+                      <span class="muted">端口 <%= Map.get(instance, :port) || "未知" %></span>
                       <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
                     </div>
                   </section>
 
                   <section class="instance-panel path-panel">
-                    <p class="panel-label">Workspace / Logs</p>
+                    <p class="panel-label">Config / Runtime</p>
                     <div class="detail-stack mono">
+                      <span><%= instance.config_path || "workflow 未知" %></span>
+                      <span class="muted"><%= instance.env_path || "env 未知" %></span>
                       <span><%= instance.workspace_root || "workspace 未知" %></span>
                       <span class="muted"><%= instance.logs_root || "logs 未知" %></span>
                     </div>
@@ -275,11 +447,40 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-value-action="restart"
                   phx-value-name={instance.name}
                 >重启</button>
+                <button
+                  class="lifecycle-button lifecycle-button-neutral"
+                  phx-click="lifecycle"
+                  phx-value-action="enable"
+                  phx-value-name={instance.name}
+                >启用</button>
+                <button
+                  class="lifecycle-button lifecycle-button-neutral"
+                  phx-click="lifecycle"
+                  phx-value-action="disable"
+                  phx-value-name={instance.name}
+                >禁用</button>
+                <button
+                  class="lifecycle-button lifecycle-button-neutral"
+                  phx-click="logs"
+                  phx-value-name={instance.name}
+                >最近日志</button>
               </footer>
             </article>
           </div>
         <% end %>
       </section>
+
+      <%= if @logs do %>
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">最近日志</h2>
+              <p class="section-copy"><%= @logs.service %></p>
+            </div>
+          </div>
+          <pre class="code-panel log-panel"><%= @logs.logs %></pre>
+        </section>
+      <% end %>
     </section>
     """
   end
@@ -310,17 +511,40 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     socket
     |> assign(:instances, instances)
     |> assign(:auto_update, auto_update || auto_update_snapshot())
+    |> assign(:update_timer, update_timer_snapshot())
     |> assign(:notice, notice)
   end
 
   defp run_action("start", name), do: registry().start_instance(name, registry_opts())
   defp run_action("stop", name), do: registry().stop_instance(name, registry_opts())
   defp run_action("restart", name), do: registry().restart_instance(name, registry_opts())
+  defp run_action("enable", name), do: registry().enable_instance(name, registry_opts())
+  defp run_action("disable", name), do: registry().disable_instance(name, registry_opts())
   defp run_action(action, _name), do: {:error, %{message: "Unsupported lifecycle action: #{action}"}}
 
   defp run_auto_update_action("check"), do: auto_update_module().check_now(auto_update_opts())
   defp run_auto_update_action("update"), do: auto_update_module().update_now(auto_update_opts())
   defp run_auto_update_action(_action), do: {:error, %{last_check: %{error: "Unsupported auto update action"}}}
+
+  defp run_update_timer_action("enable"), do: registry().enable_update_timer(registry_opts())
+  defp run_update_timer_action("disable"), do: registry().disable_update_timer(registry_opts())
+  defp run_update_timer_action("trigger"), do: registry().trigger_update_service(registry_opts())
+  defp run_update_timer_action(action), do: {:error, %{message: "Unsupported update timer action: #{action}"}}
+
+  defp action_message({:ok, %{service: service}}, action), do: "已请求 #{action} #{service}"
+  defp action_message({:error, %{message: message}}, _action), do: message
+
+  defp guarded(%{assigns: %{local_admin?: true}}, fun), do: fun.()
+  defp guarded(_socket, _fun), do: "管理操作只允许本机客户端访问"
+
+  defp guarded_create(%{assigns: %{local_admin?: true}}, _params, fun), do: fun.()
+  defp guarded_create(_socket, params, _fun), do: {"管理操作只允许本机客户端访问", normalize_form(params)}
+
+  defp guarded_logs(%{assigns: %{local_admin?: true}}, fun), do: fun.()
+  defp guarded_logs(_socket, _fun), do: {"管理操作只允许本机客户端访问", nil}
+
+  defp guarded_auto_update(%{assigns: %{local_admin?: true}}, fun), do: fun.()
+  defp guarded_auto_update(_socket, _fun), do: {"管理操作只允许本机客户端访问", auto_update_snapshot()}
 
   defp registry do
     Endpoint.config(:instance_registry) || SymphonyElixir.InstanceRegistry
@@ -355,6 +579,50 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp auto_update_opts do
     Endpoint.config(:auto_update_opts) || []
   end
+
+  defp update_timer_snapshot do
+    registry().update_timer_status(registry_opts())
+  rescue
+    error ->
+      %{
+        timer: "symphony-update.timer",
+        service: "symphony-update.service",
+        active: "unknown",
+        sub: nil,
+        enabled: "unknown",
+        next_run: nil,
+        last_trigger: nil,
+        service_active: "unknown",
+        service_sub: Exception.message(error)
+      }
+  end
+
+  defp default_create_form do
+    %{
+      "project" => "",
+      "tracker_kind" => "github",
+      "owner" => "",
+      "repo" => "",
+      "project_number" => "",
+      "port" => "",
+      "token_env" => "",
+      "update_strategy" => "idle_restart",
+      "max_agents" => "2",
+      "start" => "true",
+      "auto_update" => "false"
+    }
+  end
+
+  defp normalize_form(params) do
+    Map.merge(default_create_form(), Map.new(params, fn {key, value} -> {to_string(key), to_string(value)} end))
+  end
+
+  defp update_strategies do
+    ["idle_restart", "defer_until_idle", "download_only", "manual_restart", "force_restart"]
+  end
+
+  defp local_admin_session?(ip) when ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1"], do: true
+  defp local_admin_session?(_ip), do: false
 
   defp auto_update_status("check", snapshot), do: get_in(snapshot, [:last_check, :status]) || "unknown"
   defp auto_update_status("update", snapshot), do: get_in(snapshot, [:last_update, :status]) || "unknown"
