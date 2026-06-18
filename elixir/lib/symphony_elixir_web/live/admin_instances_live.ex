@@ -282,11 +282,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           </div>
           <div class="instance-actions">
             <button
+              type="button"
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="auto_update"
               phx-value-action="check"
             >立即检查</button>
             <button
+              type="button"
               class="lifecycle-button lifecycle-button-primary"
               phx-click="auto_update"
               phx-value-action="update"
@@ -377,9 +379,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
-            <button class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
-            <button class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
           </div>
         </div>
 
@@ -491,36 +493,42 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
               <footer class="instance-actions">
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-primary"
                   phx-click="lifecycle"
                   phx-value-action="start"
                   phx-value-name={instance.name}
                 >启动</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-danger"
                   phx-click="lifecycle"
                   phx-value-action="stop"
                   phx-value-name={instance.name}
                 >停止</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="restart"
                   phx-value-name={instance.name}
                 >重启</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="enable"
                   phx-value-name={instance.name}
                 >启用</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="disable"
                   phx-value-name={instance.name}
                 >禁用</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="logs"
                   phx-value-name={instance.name}
