@@ -208,6 +208,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert {:error, {:workspace_hook_failed, "after_create", 17, _output}} =
                Workspace.create_for_issue("MT-FAIL")
+
+      refute File.exists?(Path.join(workspace_root, "MT-FAIL"))
     after
       File.rm_rf(workspace_root)
     end
@@ -229,8 +231,37 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert {:error, {:workspace_hook_timeout, "after_create", 10}} =
                Workspace.create_for_issue("MT-TIMEOUT")
+
+      refute File.exists?(Path.join(workspace_root, "MT-TIMEOUT"))
     after
       File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace hook timeout kills child processes" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-timeout-process-tree-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      marker = Path.join(test_root, "late-marker")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_timeout_ms: 50,
+        hook_after_create: "sh -c 'sleep 1; echo leaked > #{marker}' & wait"
+      )
+
+      assert {:error, {:workspace_hook_timeout, "after_create", 50}} =
+               Workspace.create_for_issue("MT-PROCESS-TREE")
+
+      Process.sleep(1_300)
+      refute File.exists?(marker)
+    after
+      File.rm_rf(test_root)
     end
   end
 
