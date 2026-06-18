@@ -20,6 +20,19 @@ defmodule SymphonyElixir.AutoUpdateTest do
       refute source_root =~ "elixir/lib/symphony_elixir"
     end
 
+    test "resolves mise from the user-local fallback when PATH is minimal" do
+      original_path = System.get_env("PATH")
+      System.put_env("PATH", "/usr/bin:/bin")
+
+      try do
+        assert {:ok, mise} = AutoUpdate.resolve_mise_executable()
+        assert String.ends_with?(mise, "/.local/bin/mise") or Path.basename(mise) == "mise"
+        assert File.exists?(mise)
+      after
+        if original_path, do: System.put_env("PATH", original_path), else: System.delete_env("PATH")
+      end
+    end
+
     test "checks main with etag and marks update availability" do
       owner = self()
 
