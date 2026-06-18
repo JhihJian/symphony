@@ -16,6 +16,7 @@ defmodule SymphonyElixir.AutoUpdate do
   @default_poll_interval_ms 10 * 60 * 1_000
   @github_api_version "2022-11-28"
   @state_timeout_ms 30_000
+  @build_revision_filename "symphony.build-revision"
 
   @type snapshot :: map()
   @type deps :: map()
@@ -66,6 +67,12 @@ defmodule SymphonyElixir.AutoUpdate do
   @spec replace_deps(GenServer.server(), deps()) :: :ok
   def replace_deps(server, deps) when is_map(deps) do
     GenServer.call(server, {:replace_deps, deps}, @state_timeout_ms)
+  end
+
+  @doc false
+  @spec default_source_root() :: Path.t()
+  def default_source_root do
+    Path.expand("../../..", __DIR__)
   end
 
   defp server_from(opts) when is_list(opts), do: Keyword.get(opts, :server, __MODULE__)
@@ -270,29 +277,36 @@ defmodule SymphonyElixir.AutoUpdate do
   defp release_lock(lock_path), do: File.rm_rf(lock_path)
 
   defp execute_revision_update(state, started_at, revision) do
-    if Map.get(revision, :changed?, false) do
+    if update_requires_build?(state, revision) do
       with {:build, :ok} <- {:build, state.deps.build.()},
            {:instances, {:ok, instances}} <- {:instances, state.deps.list_instances.()} do
         {instance_results, _state} = restart_instances(instances, state)
-        finished_at = now(state.deps)
-        to_sha = Map.get(revision, :after_sha)
 
-        state = %{
-          state
-          | current_sha: to_sha,
-            pending_update?: pending_update?(to_sha, state.remote_sha),
-            last_update: %{
-              status: "updated",
-              started_at: started_at,
-              finished_at: finished_at,
-              from_sha: Map.get(revision, :before_sha),
-              to_sha: to_sha,
-              error: nil,
-              instance_results: instance_results
+        case mark_built_revision(state.deps, Map.get(revision, :after_sha)) do
+          :ok ->
+            finished_at = now(state.deps)
+            to_sha = Map.get(revision, :after_sha)
+
+            state = %{
+              state
+              | current_sha: to_sha,
+                pending_update?: pending_update?(to_sha, state.remote_sha),
+                last_update: %{
+                  status: update_status(revision),
+                  started_at: started_at,
+                  finished_at: finished_at,
+                  from_sha: Map.get(revision, :before_sha),
+                  to_sha: to_sha,
+                  error: nil,
+                  instance_results: instance_results
+                }
             }
-        }
 
-        {:ok, state}
+            {:ok, state}
+
+          {:error, reason} ->
+            {:error, fail_update(state, "failed", started_at, revision, format_error(reason), instance_results)}
+        end
       else
         {:build, {:error, reason}} ->
           {:error, fail_update(state, "failed", started_at, revision, format_error(reason), [])}
@@ -305,6 +319,41 @@ defmodule SymphonyElixir.AutoUpdate do
       {:ok, state}
     end
   end
+
+  defp update_requires_build?(state, revision) do
+    Map.get(revision, :changed?, false) or not built_revision_current?(state.deps, Map.get(revision, :after_sha))
+  end
+
+  defp update_status(revision) do
+    if Map.get(revision, :changed?, false), do: "updated", else: "rebuilt"
+  end
+
+  defp built_revision_current?(_deps, nil), do: true
+
+  defp built_revision_current?(deps, revision) do
+    deps
+    |> Map.get(:build_current?, fn _revision -> true end)
+    |> then(& &1.(revision))
+    |> normalize_truthy_result()
+  end
+
+  defp normalize_truthy_result(true), do: true
+  defp normalize_truthy_result({:ok, true}), do: true
+  defp normalize_truthy_result(_result), do: false
+
+  defp mark_built_revision(_deps, nil), do: :ok
+
+  defp mark_built_revision(deps, revision) do
+    deps
+    |> Map.get(:mark_built, fn _revision -> :ok end)
+    |> then(& &1.(revision))
+    |> normalize_ok_result()
+  end
+
+  defp normalize_ok_result(:ok), do: :ok
+  defp normalize_ok_result({:ok, _payload}), do: :ok
+  defp normalize_ok_result({:error, reason}), do: {:error, reason}
+  defp normalize_ok_result(error), do: {:error, error}
 
   defp up_to_date_update(state, started_at, revision) do
     finished_at = now(state.deps)
@@ -447,16 +496,12 @@ defmodule SymphonyElixir.AutoUpdate do
       dirty?: fn -> git_dirty?(source_root) end,
       fetch: fn -> git_fetch_and_fast_forward(source_root, branch) end,
       build: fn -> build(source_root) end,
+      build_current?: fn revision -> build_revision_current?(source_root, revision) end,
+      mark_built: fn revision -> write_build_revision(source_root, revision) end,
       list_instances: fn -> InstanceRegistry.list_instances() end,
       restart_instance: fn name -> restart_instance(name) end,
       now: fn -> DateTime.utc_now() |> DateTime.truncate(:second) end
     }
-  end
-
-  defp default_source_root do
-    __DIR__
-    |> Path.expand("../../..")
-    |> Path.expand()
   end
 
   defp git_current_revision(source_root) do
@@ -488,10 +533,49 @@ defmodule SymphonyElixir.AutoUpdate do
   defp build(source_root) do
     app_dir = Path.join(source_root, "elixir")
 
-    with {:ok, _trust_output} <- cmd("mise", ["trust"], cd: app_dir),
+    with :ok <- ensure_app_dir(app_dir),
+         {:ok, _trust_output} <- cmd("mise", ["trust"], cd: app_dir),
          {:ok, _setup_output} <- cmd("mise", ["exec", "--", "mix", "setup"], cd: app_dir),
          {:ok, _build_output} <- cmd("mise", ["exec", "--", "mix", "build"], cd: app_dir) do
       :ok
+    end
+  end
+
+  defp build_revision_current?(_source_root, nil), do: true
+
+  defp build_revision_current?(source_root, revision) do
+    source_root
+    |> build_revision_file()
+    |> File.read()
+    |> case do
+      {:ok, content} -> String.trim(content) == revision
+      {:error, _reason} -> false
+    end
+  end
+
+  defp write_build_revision(_source_root, nil), do: :ok
+
+  defp write_build_revision(source_root, revision) do
+    build_revision_path = build_revision_file(source_root)
+
+    with :ok <- File.mkdir_p(Path.dirname(build_revision_path)),
+         :ok <- File.write(build_revision_path, revision <> "\n") do
+      :ok
+    else
+      {:error, reason} ->
+        {:error, %{message: "Could not write Symphony build revision #{build_revision_path}: #{:file.format_error(reason)}"}}
+    end
+  end
+
+  defp build_revision_file(source_root) do
+    Path.join([source_root, "elixir", "_build", @build_revision_filename])
+  end
+
+  defp ensure_app_dir(app_dir) do
+    if File.dir?(app_dir) do
+      :ok
+    else
+      {:error, %{message: "Symphony app directory not found: #{app_dir}"}}
     end
   end
 

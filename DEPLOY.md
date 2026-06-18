@@ -186,8 +186,10 @@ curl -X POST http://127.0.0.1:20000/api/v1/admin/auto-update/update
 ```
 
 更新执行会先检查源码目录是否有本地未提交改动；有改动时会阻止更新并在 Dashboard/API
-显示错误。只有 `git fetch`/fast-forward 和 `mix build` 成功后，才进入实例重启决策。
-默认策略不会重启有活跃 Symphony 会话的实例，而是标记为等待空闲；失败实例不会被自动覆盖。
+显示错误。只有 `git fetch`/fast-forward 和 `mix build` 成功后，才记录
+`elixir/_build/symphony.build-revision` 并进入实例重启决策。这个标记用于区分“源码已经拉到
+最新”与“当前 `bin/symphony` 已经由该 commit 成功构建”，避免上一次构建失败后下次更新被误判为
+up to date。默认策略不会重启有活跃 Symphony 会话的实例，而是标记为等待空闲；失败实例不会被自动覆盖。
 
 每个实例可在 `~/.config/symphony/projects/<project>/env` 中配置更新策略：
 
@@ -229,8 +231,10 @@ scripts/install-systemd-template.sh ... --update-strategy manual_restart
 
 1. 检查 Symphony 源码仓库是否有本地未提交改动；运行目录 `projects/` 会被忽略。
 2. 在源码仓库执行 `git pull --ff-only`；如果不能 fast-forward，停止更新。
-3. 有新提交时，在 `elixir/` 下执行 `mise exec -- mix setup` 和 `mise exec -- mix build`。
-4. 重启所有已启用或正在运行的 `symphony@*.service` 实例。
+3. 如果源码 commit 变化，或 `elixir/_build/symphony.build-revision` 不等于当前 commit，在 `elixir/`
+   下执行 `mise exec -- mix setup` 和 `mise exec -- mix build`。
+4. 构建成功后写入 `elixir/_build/symphony.build-revision`。
+5. 重启所有已启用或正在运行的 `symphony@*.service` 实例。
 
 查看自动更新计划：
 

@@ -79,6 +79,7 @@ fi
 
 source_root="$(cd "$source_root" && pwd -P)"
 app_dir="${source_root%/}/elixir"
+build_revision_file="${app_dir}/_build/symphony.build-revision"
 
 if [ ! -d "${source_root}/.git" ] && ! git -C "$source_root" rev-parse --git-dir >/dev/null 2>&1; then
   echo "Symphony source root is not a Git repository: ${source_root}" >&2
@@ -123,8 +124,12 @@ git -C "$source_root" fetch origin "$source_branch"
 git -C "$source_root" checkout "$source_branch"
 git -C "$source_root" pull --ff-only origin "$source_branch"
 after_revision="$(git -C "$source_root" rev-parse HEAD)"
+build_revision=""
+if [ -f "$build_revision_file" ]; then
+  build_revision="$(tr -d '[:space:]' < "$build_revision_file")"
+fi
 
-if [ "$before_revision" = "$after_revision" ] && [ -x "${app_dir}/bin/symphony" ]; then
+if [ "$before_revision" = "$after_revision" ] && [ -x "${app_dir}/bin/symphony" ] && [ "$build_revision" = "$after_revision" ]; then
   echo "Symphony is already up to date at ${after_revision}."
   exit 0
 fi
@@ -134,6 +139,8 @@ fi
   mise trust
   mise exec -- mix setup
   mise exec -- mix build
+  mkdir -p "$(dirname "$build_revision_file")"
+  printf '%s\n' "$after_revision" > "$build_revision_file"
 )
 
 if [ "$restart_instances" -eq 0 ]; then
