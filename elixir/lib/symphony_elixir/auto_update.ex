@@ -75,6 +75,10 @@ defmodule SymphonyElixir.AutoUpdate do
     Path.expand("../../..", __DIR__)
   end
 
+  @doc false
+  @spec resolve_mise_executable() :: {:ok, Path.t()} | {:error, map()}
+  def resolve_mise_executable, do: mise_executable()
+
   defp server_from(opts) when is_list(opts), do: Keyword.get(opts, :server, __MODULE__)
   defp server_from(server), do: server
 
@@ -534,12 +538,52 @@ defmodule SymphonyElixir.AutoUpdate do
     app_dir = Path.join(source_root, "elixir")
 
     with :ok <- ensure_app_dir(app_dir),
-         {:ok, _trust_output} <- cmd("mise", ["trust"], cd: app_dir),
-         {:ok, _setup_output} <- cmd("mise", ["exec", "--", "mix", "setup"], cd: app_dir),
-         {:ok, _build_output} <- cmd("mise", ["exec", "--", "mix", "build"], cd: app_dir) do
+         {:ok, mise} <- mise_executable(),
+         {:ok, _trust_output} <- cmd(mise, ["trust"], cd: app_dir),
+         {:ok, _setup_output} <- cmd(mise, ["exec", "--", "mix", "setup"], cd: app_dir),
+         {:ok, _build_output} <- cmd(mise, ["exec", "--", "mix", "build"], cd: app_dir) do
       :ok
     end
   end
+
+  defp mise_executable do
+    case Enum.find(mise_candidates(), &executable_file?/1) do
+      nil -> {:error, %{message: "mise executable not found. Expected it in PATH or ~/.local/bin/mise."}}
+      path -> {:ok, path}
+    end
+  end
+
+  defp mise_candidates do
+    [
+      System.find_executable("mise"),
+      home_mise_path()
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp home_mise_path do
+    home =
+      System.get_env("HOME") ||
+        try do
+          System.user_home!()
+        rescue
+          _error -> nil
+        end
+
+    if is_binary(home) and home != "" do
+      Path.join([home, ".local", "bin", "mise"])
+    end
+  end
+
+  defp executable_file?(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %{type: :regular, mode: mode}} -> Bitwise.band(mode, 0o111) != 0
+      _stat -> false
+    end
+  end
+
+  defp executable_file?(_path), do: false
 
   defp build_revision_current?(_source_root, nil), do: true
 
