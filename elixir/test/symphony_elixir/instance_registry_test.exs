@@ -39,6 +39,7 @@ defmodule SymphonyElixir.InstanceRegistryTest do
              service: "symphony@project-a.service",
              status: "running",
              systemd: %{active: "active", enabled: "enabled", sub: "running", failed: false},
+             port: 20_001,
              dashboard_url: "http://127.0.0.1:20001/",
              api_url: "http://127.0.0.1:20001/api/v1/state",
              tracker: %{kind: "github", scope: "acme/project-a", required_labels: ["symphony"]},
@@ -91,6 +92,7 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     assert instance.status == "running"
     assert instance.systemd == %{active: "active", enabled: "enabled", sub: "running", failed: false}
     assert instance.config_path == Path.join([config_root, "orphan", "WORKFLOW.md"])
+    assert instance.port == nil
     assert instance.dashboard_url == nil
     assert instance.counts == %{running: 0, retrying: 0, blocked: 0}
     refute_received :unexpected_http_call
@@ -129,6 +131,199 @@ defmodule SymphonyElixir.InstanceRegistryTest do
              InstanceRegistry.restart_instance("project-a", opts)
 
     assert_receive {:systemctl_action, "restart", "symphony@project-a.service"}
+  end
+
+  test "create instance delegates to install script with allocated port and redacts output" do
+    root = temporary_root("instance-registry-create")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+    source_root = Path.join(root, "source")
+    install_script = Path.join([source_root, "scripts", "install-systemd-template.sh"])
+    File.mkdir_p!(Path.dirname(install_script))
+    File.write!(install_script, "#!/bin/sh\n")
+
+    write_instance!(config_root, runtime_root, "project-a", port: 20_000)
+
+    owner = self()
+
+    deps = %{
+      list_services: fn -> {:ok, []} end,
+      listening_ports: fn -> {:ok, [20_001]} end,
+      run_install_script: fn ^install_script, args, env ->
+        send(owner, {:install_script, args, env})
+        write_instance!(config_root, runtime_root, "project-b", port: 20_002)
+        {:ok, "Installed\nGITHUB_TOKEN=plain-secret\nraw plain-secret\n"}
+      end,
+      systemctl_status: fn _service -> {:ok, "inactive"} end,
+      systemctl_show: fn _service -> {:ok, %{active: "inactive", sub: "dead", failed: false}} end,
+      systemctl_enabled: fn _service -> {:ok, "disabled"} end,
+      http_get_state: fn _url -> {:error, :offline} end,
+      systemctl_action: fn _action, _service -> :ok end
+    }
+
+    opts = [
+      config_root: config_root,
+      runtime_root: runtime_root,
+      source_root: source_root,
+      install_script: install_script,
+      deps: deps
+    ]
+
+    params = %{
+      "project" => "project-b",
+      "tracker_kind" => "github",
+      "owner" => "acme",
+      "repo" => "project-b",
+      "project_number" => "14",
+      "token" => "plain-secret",
+      "port" => "",
+      "start" => "false",
+      "auto_update" => "true",
+      "update_strategy" => "manual_restart"
+    }
+
+    assert {:ok, %{instance: instance, output: output}} = InstanceRegistry.create_instance(params, opts)
+    assert instance.name == "project-b"
+    assert instance.port == 20_002
+    assert output == "Installed\nGITHUB_TOKEN=[REDACTED]\nraw [REDACTED]\n"
+
+    assert_receive {:install_script, args, [{"GITHUB_TOKEN", "plain-secret"}]}
+    assert "--project" in args
+    assert Enum.slice(args, Enum.find_index(args, &(&1 == "--project")), 2) == ["--project", "project-b"]
+    assert Enum.slice(args, Enum.find_index(args, &(&1 == "--port")), 2) == ["--port", "20002"]
+    assert "--no-start" in args
+    assert "--auto-update" in args
+    assert Enum.slice(args, Enum.find_index(args, &(&1 == "--update-strategy")), 2) == ["--update-strategy", "manual_restart"]
+  end
+
+  test "create instance rejects unsafe input, duplicate names and used ports" do
+    root = temporary_root("instance-registry-create-errors")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+    source_root = Path.join(root, "source")
+    install_script = Path.join([source_root, "scripts", "install-systemd-template.sh"])
+    File.mkdir_p!(Path.dirname(install_script))
+    File.write!(install_script, "#!/bin/sh\n")
+    write_instance!(config_root, runtime_root, "project-a", port: 20_001)
+
+    owner = self()
+
+    deps = %{
+      list_services: fn -> {:ok, ["symphony@project-a.service"]} end,
+      listening_ports: fn -> {:ok, [20_002]} end,
+      run_install_script: fn _script, _args, _env ->
+        send(owner, :unexpected_install)
+        {:ok, ""}
+      end
+    }
+
+    opts = [
+      config_root: config_root,
+      runtime_root: runtime_root,
+      source_root: source_root,
+      install_script: install_script,
+      deps: deps
+    ]
+
+    base = %{
+      "project" => "project-b",
+      "tracker_kind" => "github",
+      "owner" => "acme",
+      "repo" => "project-b",
+      "project_number" => "14",
+      "token_env" => "",
+      "port" => "20003"
+    }
+
+    assert {:error, %{code: "invalid_instance_name"}} =
+             InstanceRegistry.create_instance(%{base | "project" => "../bad"}, opts)
+
+    assert {:error, %{code: "instance_exists"}} =
+             InstanceRegistry.create_instance(%{base | "project" => "project-a"}, opts)
+
+    assert {:error, %{code: "port_in_use"}} =
+             InstanceRegistry.create_instance(%{base | "port" => "20001"}, opts)
+
+    assert {:error, %{code: "port_in_use"}} =
+             InstanceRegistry.create_instance(%{base | "port" => "20002"}, opts)
+
+    assert {:error, %{code: "unsupported_tracker_kind"}} =
+             InstanceRegistry.create_instance(%{base | "tracker_kind" => "linear"}, opts)
+
+    refute_received :unexpected_install
+  end
+
+  test "reads recent logs with token redaction and controls update timer" do
+    owner = self()
+
+    deps = %{
+      journalctl_logs: fn service, lines ->
+        send(owner, {:journalctl_logs, service, lines})
+        {:ok, "boot\nGITHUB_TOKEN=ghp_secret\n--token ghp_secret\n"}
+      end,
+      systemctl_status: fn service ->
+        send(owner, {:systemctl_status, service})
+        {:ok, "inactive"}
+      end,
+      systemctl_show: fn
+        "symphony-update.timer" ->
+          {:ok,
+           %{
+             active: "active",
+             sub: "waiting",
+             next_run: "Wed 2026-06-17 10:00:00 CST",
+             last_trigger: "Wed 2026-06-17 09:00:00 CST"
+           }}
+
+        "symphony-update.service" ->
+          {:ok, %{active: "inactive", sub: "dead", failed: false}}
+      end,
+      systemctl_enabled: fn service ->
+        send(owner, {:systemctl_enabled, service})
+        {:ok, "enabled"}
+      end,
+      systemctl_action: fn action, service ->
+        send(owner, {:systemctl_action, action, service})
+        :ok
+      end
+    }
+
+    opts = [deps: deps]
+
+    assert {:ok, %{service: "symphony@project-a.service", logs: logs}} =
+             InstanceRegistry.latest_logs("project-a", Keyword.put(opts, :lines, 20))
+
+    assert logs =~ "GITHUB_TOKEN=[REDACTED]"
+    assert logs =~ "--token [REDACTED]"
+    refute logs =~ "ghp_secret"
+    assert_receive {:journalctl_logs, "symphony@project-a.service", 20}
+
+    assert InstanceRegistry.update_timer_status(opts) == %{
+             timer: "symphony-update.timer",
+             service: "symphony-update.service",
+             active: "active",
+             sub: "waiting",
+             enabled: "enabled",
+             next_run: "Wed 2026-06-17 10:00:00 CST",
+             last_trigger: "Wed 2026-06-17 09:00:00 CST",
+             service_active: "inactive",
+             service_sub: "dead"
+           }
+
+    assert {:ok, %{action: "enable --now", service: "symphony-update.timer"}} =
+             InstanceRegistry.enable_update_timer(opts)
+
+    assert_receive {:systemctl_action, "enable --now", "symphony-update.timer"}
+
+    assert {:ok, %{action: "disable --now", service: "symphony-update.timer"}} =
+             InstanceRegistry.disable_update_timer(opts)
+
+    assert_receive {:systemctl_action, "disable --now", "symphony-update.timer"}
+
+    assert {:ok, %{action: "start", service: "symphony-update.service"}} =
+             InstanceRegistry.trigger_update_service(opts)
+
+    assert_receive {:systemctl_action, "start", "symphony-update.service"}
   end
 
   test "lifecycle rejects unsafe names and returns readable systemctl errors" do

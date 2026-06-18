@@ -17,6 +17,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            service: "symphony@project-a.service",
            status: "running",
            systemd: %{active: "active", enabled: "enabled", sub: "running", failed: false},
+           port: 20_001,
            dashboard_url: "http://127.0.0.1:20001/",
            api_url: "http://127.0.0.1:20001/api/v1/state",
            tracker: %{kind: "github", scope: "acme/project-a", required_labels: ["symphony"]},
@@ -34,6 +35,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            service: "symphony@project-b.service",
            status: "failed",
            systemd: %{active: "failed", enabled: "disabled", sub: "failed", failed: true},
+           port: 20_002,
            dashboard_url: "http://127.0.0.1:20002/",
            api_url: "http://127.0.0.1:20002/api/v1/state",
            tracker: %{kind: "gitlab", scope: "platform/group/repo", required_labels: ["symphony"]},
@@ -52,6 +54,51 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     def start_instance(name, opts), do: action("start", name, opts)
     def stop_instance(name, opts), do: action("stop", name, opts)
     def restart_instance(name, opts), do: action("restart", name, opts)
+    def enable_instance(name, opts), do: action("enable", name, opts)
+    def disable_instance(name, opts), do: action("disable", name, opts)
+
+    def create_instance(params, opts) do
+      send(owner(opts), {:create_instance, params, opts})
+
+      if params["project"] == "bad-token" do
+        {:error, %{code: "missing_token_env", message: "Environment variable TOKEN is not set or empty."}}
+      else
+        {:ok,
+         %{
+           instance: %{
+             name: params["project"],
+             service: "symphony@#{params["project"]}.service",
+             status: "unknown"
+           },
+           output: "Installed Symphony project instance: #{params["project"]}"
+         }}
+      end
+    end
+
+    def latest_logs(name, opts) do
+      send(owner(opts), {:latest_logs, name, opts})
+      {:ok, %{service: "symphony@#{name}.service", logs: "GITHUB_TOKEN=[REDACTED]\nservice booted\n"}}
+    end
+
+    def update_timer_status(opts) do
+      send(owner(opts), {:update_timer_status, opts})
+
+      %{
+        timer: "symphony-update.timer",
+        service: "symphony-update.service",
+        active: "active",
+        sub: "waiting",
+        enabled: "enabled",
+        next_run: "Wed 2026-06-17 10:00:00 CST",
+        last_trigger: "Wed 2026-06-17 09:00:00 CST",
+        service_active: "inactive",
+        service_sub: "dead"
+      }
+    end
+
+    def enable_update_timer(opts), do: update_timer_action("enable --now", "symphony-update.timer", opts)
+    def disable_update_timer(opts), do: update_timer_action("disable --now", "symphony-update.timer", opts)
+    def trigger_update_service(opts), do: update_timer_action("start", "symphony-update.service", opts)
 
     defp action(action, name, opts) do
       send(owner(opts), {:instance_action, action, name, opts})
@@ -63,6 +110,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
         _other ->
           {:ok, %{action: action, service: "symphony@#{name}.service"}}
       end
+    end
+
+    defp update_timer_action(action, service, opts) do
+      send(owner(opts), {:update_timer_action, action, service, opts})
+      {:ok, %{action: action, service: service}}
     end
 
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
@@ -194,6 +246,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert %{"instances" => [project_a, project_b]} = payload
     assert project_a["name"] == "project-a"
     assert project_a["status"] == "running"
+    assert project_a["port"] == 20_001
     assert project_a["counts"] == %{"running" => 2, "retrying" => 1, "blocked" => 0}
     assert project_a["dashboard_url"] == "http://127.0.0.1:20001/"
 
@@ -219,6 +272,73 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            }
 
     assert_receive {:instance_action, "start", "project-b", _opts}
+  end
+
+  test "admin instances API creates instances, toggles units, reads logs and manages update timer" do
+    create_params = %{
+      "project" => "project-c",
+      "tracker_kind" => "github",
+      "owner" => "acme",
+      "repo" => "project-c",
+      "project_number" => "14",
+      "token" => "ghp_secret",
+      "port" => "",
+      "start" => "true",
+      "auto_update" => "false"
+    }
+
+    create_response = post(build_conn(), "/api/v1/admin/instances", create_params)
+    assert json_response(create_response, 201)["instance"]["name"] == "project-c"
+    assert_receive {:create_instance, ^create_params, _opts}
+
+    enable_response = post(build_conn(), "/api/v1/admin/instances/project-a/enable", %{})
+    assert json_response(enable_response, 202) == %{"action" => "enable", "service" => "symphony@project-a.service"}
+    assert_receive {:instance_action, "enable", "project-a", _opts}
+
+    disable_response = post(build_conn(), "/api/v1/admin/instances/project-a/disable", %{})
+    assert json_response(disable_response, 202) == %{"action" => "disable", "service" => "symphony@project-a.service"}
+    assert_receive {:instance_action, "disable", "project-a", _opts}
+
+    logs_response = get(build_conn(), "/api/v1/admin/instances/project-a/logs")
+
+    assert json_response(logs_response, 200) == %{
+             "service" => "symphony@project-a.service",
+             "logs" => "GITHUB_TOKEN=[REDACTED]\nservice booted\n"
+           }
+
+    assert_receive {:latest_logs, "project-a", _opts}
+
+    timer_response = get(build_conn(), "/api/v1/admin/update-timer")
+    assert json_response(timer_response, 200)["next_run"] == "Wed 2026-06-17 10:00:00 CST"
+    assert_receive {:update_timer_status, _opts}
+
+    assert json_response(post(build_conn(), "/api/v1/admin/update-timer/enable", %{}), 202) == %{
+             "action" => "enable --now",
+             "service" => "symphony-update.timer"
+           }
+
+    assert_receive {:update_timer_action, "enable --now", "symphony-update.timer", _opts}
+
+    assert json_response(post(build_conn(), "/api/v1/admin/update-timer/trigger", %{}), 202) == %{
+             "action" => "start",
+             "service" => "symphony-update.service"
+           }
+
+    assert_receive {:update_timer_action, "start", "symphony-update.service", _opts}
+  end
+
+  test "admin API rejects remote clients for operator actions" do
+    conn =
+      build_conn()
+      |> Map.put(:remote_ip, {192, 0, 2, 10})
+      |> get("/api/v1/admin/instances")
+
+    assert json_response(conn, 403) == %{
+             "error" => %{
+               "code" => "admin_forbidden",
+               "message" => "Admin endpoints are restricted to local clients."
+             }
+           }
   end
 
   test "admin auto update API exposes status and manual triggers" do
@@ -272,11 +392,26 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "重试中 1"
     assert html =~ "阻塞 1"
     assert html =~ "http://127.0.0.1:20001/"
+    assert html =~ "端口 20001"
+    assert html =~ "/config/project-a/WORKFLOW.md"
     assert html =~ "/runtime/project-a/workspaces"
     assert html =~ "/runtime/project-b/logs"
     assert html =~ "启动"
     assert html =~ "停止"
     assert html =~ "重启"
+    assert html =~ "启用"
+    assert html =~ "禁用"
+    assert html =~ "最近日志"
+
+    assert html =~ "新增实例"
+    assert html =~ "Project Number"
+    assert html =~ "Token Env"
+    assert html =~ "创建实例"
+
+    assert html =~ "systemd 自动更新 timer"
+    assert html =~ "symphony-update.timer"
+    assert html =~ "Wed 2026-06-17 10:00:00 CST"
+    assert html =~ "手动触发"
 
     assert html =~ "GitHub main 自动更新"
     assert html =~ "当前部署"
@@ -288,6 +423,56 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "立即检查"
     assert html =~ "执行更新"
     assert html =~ "空闲自动重启"
+  end
+
+  test "admin dashboard creates instances and reads recent logs without exposing tokens" do
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    html =
+      view
+      |> form("form.instance-form",
+        instance: %{
+          project: "project-c",
+          tracker_kind: "github",
+          owner: "acme",
+          repo: "project-c",
+          project_number: "14",
+          token: "ghp_secret",
+          token_env: "",
+          port: "",
+          update_strategy: "idle_restart",
+          max_agents: "2",
+          start: "true"
+        }
+      )
+      |> render_submit()
+
+    assert_receive {:create_instance, params, _opts}
+    assert params["project"] == "project-c"
+    assert params["token"] == "ghp_secret"
+    assert html =~ "已创建实例 project-c"
+    refute html =~ "ghp_secret"
+
+    html =
+      view
+      |> element(~s(button[phx-click="logs"][phx-value-name="project-a"]))
+      |> render_click()
+
+    assert_receive {:latest_logs, "project-a", _opts}
+    assert html =~ "GITHUB_TOKEN=[REDACTED]"
+    refute html =~ "ghp_secret"
+  end
+
+  test "admin dashboard controls update timer" do
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    html =
+      view
+      |> element("button", "手动触发")
+      |> render_click()
+
+    assert_receive {:update_timer_action, "start", "symphony-update.service", _opts}
+    assert html =~ "已请求 trigger symphony-update.service"
   end
 
   test "admin dashboard check now button refreshes visible check details" do
