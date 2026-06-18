@@ -78,6 +78,13 @@ button:hover {
   box-shadow: 0 12px 24px rgba(16, 163, 127, 0.22);
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  transform: none;
+  box-shadow: none;
+}
+
 button.secondary {
   background: var(--card);
   color: var(--ink);
@@ -546,6 +553,83 @@ pre,
   margin-top: 1rem;
 }
 
+.instance-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.72rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.36rem;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.field input,
+.field select {
+  min-width: 0;
+  min-height: 2.55rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: white;
+  color: var(--ink);
+  padding: 0.58rem 0.72rem;
+  font: inherit;
+  font-size: 0.94rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 3px solid rgba(16, 163, 127, 0.18);
+  border-color: rgba(16, 163, 127, 0.5);
+}
+
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.check-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.check-row input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+}
+
+.form-actions {
+  padding: 0;
+}
+
+.timer-grid {
+  margin-top: 1rem;
+}
+
+.log-panel {
+  max-height: 28rem;
+  overflow: auto;
+}
+
 .panel-label {
   margin: 0 0 0.45rem;
   color: var(--muted);
@@ -654,7 +738,8 @@ pre,
 @media (max-width: 720px) {
   .instance-card-header,
   .instance-meta-grid,
-  .pressure-grid {
+  .pressure-grid,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

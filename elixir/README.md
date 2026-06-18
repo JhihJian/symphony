@@ -201,9 +201,20 @@ The multi-instance dashboard at `/admin/instances` is a thin operator management
 registered instances from `~/.config/symphony/projects` by default, checks each
 `symphony@<project>.service` via `systemctl --user`, and queries each reachable instance's
 `/api/v1/state`. Stopped, failed, or unreachable instances are rendered as per-instance health
-states and do not block the rest of the overview. The page can request `start`, `stop`, and
-`restart` for a service, but issue dispatch, retry semantics, workspace isolation, and Codex
-app-server behavior remain owned by each individual instance's orchestrator.
+states and do not block the rest of the overview. The page can create GitHub-backed instances by
+delegating to `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing
+env files and listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and
+recent-log actions for each service. Issue dispatch, retry semantics, workspace isolation, and
+Codex app-server behavior remain owned by each individual instance's orchestrator.
+
+Admin instance creation accepts either a one-time token entry or an environment variable reference;
+tokens are passed only to the install script environment and are not returned by the JSON API or
+rendered back into the page. Project names are restricted to safe systemd instance/path characters.
+Admin JSON endpoints and LiveView actions are restricted to loopback clients because they can run
+local `systemctl`, `journalctl`, and install-script commands.
+
+The same management page shows `symphony-update.timer` state, including enabled/active status and
+the next run time, and can enable, disable, or manually trigger `symphony-update.service`.
 
 The same page includes a GitHub `main` auto-update control panel. `SymphonyElixir.AutoUpdate`
 polls `jhihjian/symphony` with GitHub REST ETag/`If-None-Match` requests, records the current
