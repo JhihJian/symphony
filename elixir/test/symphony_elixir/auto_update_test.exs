@@ -11,6 +11,15 @@ defmodule SymphonyElixir.AutoUpdateTest do
       assert AutoUpdate.snapshot().repo == "jhihjian/symphony"
     end
 
+    test "uses the repository root as the default source root" do
+      source_root = AutoUpdate.default_source_root()
+
+      assert source_root == Path.expand("../../..", __DIR__)
+      assert File.dir?(Path.join(source_root, "elixir"))
+      assert File.dir?(Path.join(source_root, "scripts"))
+      refute source_root =~ "elixir/lib/symphony_elixir"
+    end
+
     test "checks main with etag and marks update availability" do
       owner = self()
 
@@ -161,6 +170,89 @@ defmodule SymphonyElixir.AutoUpdateTest do
       refute_received :unexpected_restart
     end
 
+    test "rebuilds and restarts when git is current but the built revision marker is stale" do
+      owner = self()
+
+      deps =
+        deps(owner,
+          dirty?: fn -> {:ok, false, ""} end,
+          fetch: fn -> {:ok, %{before_sha: "new", after_sha: "new", changed?: false}} end,
+          build_current?: fn "new" -> false end,
+          build: fn ->
+            send(owner, :build)
+            :ok
+          end,
+          mark_built: fn "new" ->
+            send(owner, {:mark_built, "new"})
+            :ok
+          end,
+          restart_instance: fn name ->
+            send(owner, {:restart, name})
+            :ok
+          end
+        )
+
+      {:ok, pid} = start_supervised({AutoUpdate, auto_update_opts(deps)})
+
+      assert {:ok, snapshot} = AutoUpdate.update_now(pid)
+      assert_receive :build
+      assert_receive {:mark_built, "new"}
+      assert_receive {:restart, "default"}
+      assert snapshot.last_update.status == "rebuilt"
+      assert snapshot.last_update.from_sha == "new"
+      assert snapshot.last_update.to_sha == "new"
+    end
+
+    test "does not rebuild when git and built revision are both current" do
+      owner = self()
+
+      deps =
+        deps(owner,
+          dirty?: fn -> {:ok, false, ""} end,
+          fetch: fn -> {:ok, %{before_sha: "new", after_sha: "new", changed?: false}} end,
+          build_current?: fn "new" -> true end,
+          build: fn ->
+            send(owner, :unexpected_build)
+            :ok
+          end,
+          restart_instance: fn _name ->
+            send(owner, :unexpected_restart)
+            :ok
+          end
+        )
+
+      {:ok, pid} = start_supervised({AutoUpdate, auto_update_opts(deps)})
+
+      assert {:ok, snapshot} = AutoUpdate.update_now(pid)
+      assert snapshot.last_update.status == "up_to_date"
+      refute_received :unexpected_build
+      refute_received :unexpected_restart
+    end
+
+    test "keeps restart decisions visible when recording the built revision fails" do
+      owner = self()
+
+      deps =
+        deps(owner,
+          dirty?: fn -> {:ok, false, ""} end,
+          fetch: fn -> {:ok, %{before_sha: "old", after_sha: "new", changed?: true}} end,
+          build: fn -> :ok end,
+          mark_built: fn "new" -> {:error, %{message: "marker write failed"}} end,
+          restart_instance: fn name ->
+            send(owner, {:restart, name})
+            :ok
+          end
+        )
+
+      {:ok, pid} = start_supervised({AutoUpdate, auto_update_opts(deps)})
+
+      assert {:error, snapshot} = AutoUpdate.update_now(pid)
+      assert_receive {:restart, "default"}
+      assert snapshot.last_update.status == "failed"
+      assert snapshot.last_update.error =~ "marker write failed"
+      assert [%{name: "default", decision: "restarted"}] = snapshot.last_update.instance_results
+    end
+
     test "restarts idle active instances and defers busy or unsafe instances" do
       owner = self()
 
@@ -224,6 +316,8 @@ defmodule SymphonyElixir.AutoUpdateTest do
       dirty?: fn -> {:ok, false, ""} end,
       fetch: fn -> {:ok, %{before_sha: "local-sha", after_sha: "remote-sha", changed?: true}} end,
       build: fn -> :ok end,
+      build_current?: fn _revision -> true end,
+      mark_built: fn _revision -> :ok end,
       list_instances: fn -> {:ok, [instance("default", status: "running", running: 0)]} end,
       restart_instance: fn name ->
         send(owner, {:restart, name})
