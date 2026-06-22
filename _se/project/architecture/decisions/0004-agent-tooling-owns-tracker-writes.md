@@ -2,7 +2,7 @@
 
 ## 状态
 
-目标状态；当前项目已有实现代码（主要在 `elixir/`），但本次架构基线尚未逐项完成代码一致性审计可验证。
+目标状态。2026-06-22 巡检确认当前 Elixir `Tracker` 契约包含 `create_comment/2` 和 `update_issue_state/2`，并由 agent-side dynamic tools 调用；这些写入接口应被视为受控 agent toolchain extension，而不是 orchestrator 核心业务写入流程。
 
 ## 背景
 
@@ -10,9 +10,9 @@ Symphony 需要从 issue tracker 读取工作并运行 agent，但 ticket 更新
 
 ## 决策
 
-Orchestrator 不要求一等 tracker write APIs。ticket mutations 通常由 coding agent 根据 workflow prompt 和可用工具完成。
+Orchestrator 不要求把 tracker write APIs 作为调度核心能力。ticket mutations 通常由 coding agent 根据 workflow prompt 和可用工具完成。
 
-如果实现 tracker 写入或 raw tracker access 工具，它属于 agent toolchain extension，而不是 orchestrator 核心业务逻辑。该规则同时适用于 Linear、GitHub 和 GitLab：评论、状态变更、PR/MR 关联、label 调整或 handoff 元数据都不能成为 orchestrator 核心写入流程。workflow-specific success 可以表示到达某个交接状态，不等于 tracker 的终止状态。
+如果实现 tracker 写入或 raw tracker access 工具，它属于 agent toolchain extension，而不是 orchestrator 核心业务逻辑。当前 Elixir 实现把最小评论/状态写入放在 `Tracker` callback 中，供 `tracker_issue`、`github_issue` 等 dynamic tool 复用；这不改变 orchestrator 的读/调度边界。该规则同时适用于 Linear、GitHub 和 GitLab：评论、状态变更、PR/MR 关联、label 调整或 handoff 元数据都不能成为 orchestrator 核心写入流程。workflow-specific success 可以表示到达某个交接状态，不等于 tracker 的终止状态。
 
 ## 影响
 

@@ -1,6 +1,6 @@
 ﻿# Workflow 与配置
 
-结论状态：SPEC 目标状态；当前项目已有实现代码（主要在 `elixir/`），但本次架构基线尚未逐项完成代码一致性审计可验证。
+结论状态：SPEC 目标状态。2026-06-22 巡检确认当前 Elixir schema 已支持 tracker kind、endpoint、scope、required labels、active/terminal states、GitHub project 字段等基础配置；`state_source`、`state_mapping`、`blocker_policy` 仍是架构目标，尚未作为独立 schema 字段落地。
 
 ## 模块定位与边界
 
