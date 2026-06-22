@@ -212,7 +212,9 @@ scripts/install-systemd-template.sh ... --update-strategy manual_restart
 - `force_restart`：显式危险操作，允许强制重启。
 
 下面的 systemd timer 仍保留为兼容的无人值守入口；如果希望完全由 Dashboard 控制，可以不传
-`--auto-update`，或对已有部署执行 `--no-auto-update` 关闭 timer。
+`--auto-update`，或对已有部署执行 `--no-auto-update` 关闭 timer。注意：Dashboard auto-update
+会读取每个实例的 `SYMPHONY_UPDATE_STRATEGY`，而 legacy timer 脚本是独立入口，不会检查实例是否有
+活跃 Symphony 会话。
 
 安装时加上 `--auto-update` 会创建并启用用户级 timer：
 
@@ -234,7 +236,8 @@ scripts/install-systemd-template.sh ... --update-strategy manual_restart
 3. 如果源码 commit 变化，或 `elixir/_build/symphony.build-revision` 不等于当前 commit，在 `elixir/`
    下执行 `mise exec -- mix setup` 和 `mise exec -- mix build`。
 4. 构建成功后写入 `elixir/_build/symphony.build-revision`。
-5. 重启所有已启用或正在运行的 `symphony@*.service` 实例。
+5. 重启所有已启用或正在运行的 `symphony@*.service` 实例；该 legacy 路径不执行 Dashboard 的
+   `idle_restart`/`manual_restart`/`download_only` 等 per-instance 策略判断。
 
 查看自动更新计划：
 

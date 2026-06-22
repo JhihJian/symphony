@@ -1,6 +1,6 @@
 ﻿# 来源映射
 
-记录关键架构结论与输入资料的对应关系。当前项目已有实现代码（主要在 `elixir/`），本次同步依据 `SPEC.md`、既有架构产物和查阅的 GitHub/GitLab 官方 issue API 文档；除目录输入事实、外部文档事实和少量目录级实现存在性事实外，行为性结论均为 SPEC 目标状态、合理推断、架构扩展或待确认。
+记录关键架构结论与输入资料的对应关系。当前项目已有实现代码（主要在 `elixir/`）。2026-06-22 巡检补充了有限代码/测试/运行证据；未列为“已确认”的行为性结论仍为 SPEC 目标状态、合理推断、架构扩展或待确认。
 
 | 结论 | 来源 | 状态 |
 |---|---|---|
@@ -44,12 +44,15 @@
 | Workflow 配置层需要为 `linear`、`github`、`gitlab` 输出 provider scope、状态来源、状态映射和 blocker policy 的 typed view。 | [SPEC.md](../../../SPEC.md) §5, §6；[GitHub REST API issues](https://docs.github.com/en/rest/issues/issues)；[GitLab Issues API](https://docs.gitlab.com/api/issues/)；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
 | ticket mutations 通常由 agent prompt/tooling 完成；可选 `linear_graphql` 属于 agent toolchain。 | [SPEC.md](../../../SPEC.md) §10.5, §11.5, §18.2 | 目标状态 |
 | GitHub/GitLab 评论、状态修改、PR/MR metadata 关联同样属于 agent toolchain extension，不进入 orchestrator 核心逻辑。 | [SPEC.md](../../../SPEC.md) §1, §11.5；[0004](decisions/0004-agent-tooling-owns-tracker-writes.md)；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
+| 当前 Elixir 实现已包含 Linear/GitHub/GitLab tracker adapter，以及 GitHub/GitLab client、agent-side tracker tools 和相关 E2E/contract 测试。 | [elixir/lib/symphony_elixir/tracker.ex](../../../elixir/lib/symphony_elixir/tracker.ex)；[elixir/lib/symphony_elixir/github/adapter.ex](../../../elixir/lib/symphony_elixir/github/adapter.ex)；[elixir/lib/symphony_elixir/gitlab/adapter.ex](../../../elixir/lib/symphony_elixir/gitlab/adapter.ex)；[elixir/lib/symphony_elixir/codex/dynamic_tool.ex](../../../elixir/lib/symphony_elixir/codex/dynamic_tool.ex)；[elixir/test/symphony_elixir/e2e_test.exs](../../../elixir/test/symphony_elixir/e2e_test.exs)；[elixir/test/symphony_elixir/provider_contract_e2e_test.exs](../../../elixir/test/symphony_elixir/provider_contract_e2e_test.exs) | 已确认 |
+| 当前 Elixir `Tracker` callback 包含最小评论/状态写入接口，实际通过 agent-side dynamic tool 使用；该事实需要按 0004 理解为 toolchain extension，而不是 orchestrator 核心写入流程。 | [elixir/lib/symphony_elixir/tracker.ex](../../../elixir/lib/symphony_elixir/tracker.ex)；[elixir/lib/symphony_elixir/codex/dynamic_tool.ex](../../../elixir/lib/symphony_elixir/codex/dynamic_tool.ex)；[0004](decisions/0004-agent-tooling-owns-tracker-writes.md) | 已确认 / 边界说明 |
+| 当前 Elixir 配置 schema 支持 tracker kind、endpoint、scope、required labels、active/terminal states、GitHub project number/status field；尚未提供独立 `state_source`、`state_mapping`、`blocker_policy` 字段。 | [elixir/lib/symphony_elixir/config/schema.ex](../../../elixir/lib/symphony_elixir/config/schema.ex)；[modules/workflow-and-configuration.md](modules/workflow-and-configuration.md) | 已确认 / 漂移 |
+| 当前 GitHub issue 规范化和测试仍使用裸 issue number 作为部分内部 ID；这弱于 0007 要求的 provider-scoped internal key。GitLab 路径已使用 `gitlab:<project>#<iid>` 形式。 | [elixir/lib/symphony_elixir/github/client.ex](../../../elixir/lib/symphony_elixir/github/client.ex)；[elixir/test/symphony_elixir/e2e_test.exs](../../../elixir/test/symphony_elixir/e2e_test.exs)；[elixir/test/symphony_elixir/provider_contract_e2e_test.exs](../../../elixir/test/symphony_elixir/provider_contract_e2e_test.exs)；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 已确认 / 漂移 |
 | Agent prompt context 需要保留 tracker kind、provider scope、provider-scoped identifier 和 URL，避免 agent 在 GitHub/GitLab 多仓库/多项目场景中丢失外部上下文。 | [SPEC.md](../../../SPEC.md) §5.4, §10.5, §12；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
 | structured logs 至少要让 operator 看见 startup、validation 和 dispatch failures。 | [SPEC.md](../../../SPEC.md) §13.1, §13.2 | 目标状态 |
 | runtime snapshot、human-readable status surface 和 HTTP server 是可选观测/控制扩展，不影响 correctness。 | [SPEC.md](../../../SPEC.md) §13.3, §13.4, §13.7 | 目标状态 |
 | observability failure 不应 crash orchestrator。 | [SPEC.md](../../../SPEC.md) §14.1, §14.2 | 目标状态 |
 | restart recovery 依赖 startup terminal cleanup、fresh polling 和 redispatching eligible work。 | [SPEC.md](../../../SPEC.md) §8.6, §14.3 | 目标状态 |
 | filesystem safety、secret handling、hook timeout 和 harness hardening 是安全模型组成部分。 | [SPEC.md](../../../SPEC.md) §15.2, §15.3, §15.4, §15.5 | 目标状态 |
-| 具体 deployment hardening、网络限制、OS/container/VM 隔离、凭据范围和 tracker scope 需要实现或部署记录。 | [SPEC.md](../../../SPEC.md) §15.1, §15.5 | 待确认 |
+| 具体 deployment hardening、网络限制、OS/container/VM 隔离、凭据范围和 tracker scope 需要实现或部署记录。当前仓库默认 schema 偏保守，但本机 `symphony` 实例的 WORKFLOW 使用 `approval_policy: never` 与 `networkAccess: true`，属于部署姿态差异。 | [SPEC.md](../../../SPEC.md) §15.1, §15.5；[elixir/lib/symphony_elixir/config/schema.ex](../../../elixir/lib/symphony_elixir/config/schema.ex)；`/home/jhihjian/.config/symphony/projects/symphony/WORKFLOW.md`（2026-06-22 本机巡检） | 已确认 / 部署差异 |
 | SSH worker 是 optional extension；如果实现，central orchestrator 仍是调度单一权威。 | [SPEC.md](../../../SPEC.md) Appendix A | 目标状态 |
-| 当前实现目录中存在 Linear/GitHub tracker 和 agent-side tool 相关代码迹象；GitLab adapter、GitLab agent-side tool、持久化 retry/session metadata 是否实现尚未从本次快速扫描确认。 | 本次目录扫描：`rg --files`、`rg` tracker/GitHub/GitLab 关键词；[SPEC.md](../../../SPEC.md) §13.7, §18.2, Appendix A；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 已确认 / 待确认 |

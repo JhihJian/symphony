@@ -1,6 +1,6 @@
 ﻿# Issue Tracker 集成
 
-结论状态：SPEC 目标状态，并补充 GitHub/GitLab issue 来源接入的架构扩展；当前项目已有实现代码（主要在 `elixir/`），但本次架构基线尚未逐项完成代码一致性审计可验证。
+结论状态：SPEC 目标状态，并补充 GitHub/GitLab issue 来源接入的架构扩展。2026-06-22 巡检确认当前 Elixir 实现已包含 GitHub/GitLab adapter、client、agent-side tracker tools 和相关 E2E/contract 测试；provider-scoped GitHub issue ID、blocker capability/policy、以及部分状态映射规则仍是架构目标或待修复漂移。
 
 ## 模块定位与边界
 
