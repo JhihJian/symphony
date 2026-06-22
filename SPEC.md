@@ -139,7 +139,7 @@ Symphony is easiest to port when kept in these layers:
 
 ### 3.3 External Dependencies
 
-- Issue tracker API (Linear for `tracker.kind: linear` in this specification version).
+- Issue tracker API for the configured tracker kind.
 - Local filesystem for workspaces and logs.
 - OPTIONAL workspace population tooling (for example Git CLI, if used).
 - Coding-agent executable that supports the targeted Codex app-server mode.
@@ -351,15 +351,27 @@ Fields:
 
 - `kind` (string)
   - REQUIRED for dispatch.
-  - Current supported value: `linear`
+  - Current supported values: `linear`, `github`, `gitlab`, `memory`
 - `endpoint` (string)
   - Default for `tracker.kind == "linear"`: `https://api.linear.app/graphql`
+  - Default for `tracker.kind == "gitlab"`: `https://gitlab.com/api/v4`
 - `api_key` (string)
   - MAY be a literal token or `$VAR_NAME`.
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
+  - Canonical environment variable for `tracker.kind == "github"`: `GITHUB_TOKEN`.
+  - Canonical environment variable for `tracker.kind == "gitlab"`: `GITLAB_TOKEN`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
   - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - REQUIRED for dispatch when `tracker.kind == "gitlab"`.
+- `owner` (string)
+  - REQUIRED for dispatch when `tracker.kind == "github"`.
+- `repo` (string)
+  - REQUIRED for dispatch when `tracker.kind == "github"`.
+- `project_number` (integer)
+  - OPTIONAL for `tracker.kind == "github"`.
+  - When present, GitHub Project v2 status is used as the normalized scheduling state.
+  - When omitted, GitHub native issue state is mapped to the configured active and terminal states.
 - `required_labels` (list of strings)
   - Default: `[]`.
   - An issue MUST contain every configured label to dispatch or continue.
@@ -577,10 +589,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 Extension fields are documented in the extension section that defines them. Core conformance does
 not require recognizing or validating extension fields unless that extension is implemented.
 
-- `tracker.kind`: string, REQUIRED, currently `linear`
+- `tracker.kind`: string, REQUIRED, currently `linear`, `github`, `gitlab`, or `memory`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.api_key`: string or `$VAR`, canonical env depends on tracker kind
+- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear` or `tracker.kind=gitlab`
+- `tracker.owner`: string, REQUIRED when `tracker.kind=github`
+- `tracker.repo`: string, REQUIRED when `tracker.kind=github`
+- `tracker.project_number`: integer, OPTIONAL when `tracker.kind=github`
 - `tracker.required_labels`: list of strings, default `[]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
@@ -2013,7 +2028,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Invalid YAML front matter returns typed error
 - Front matter non-map returns typed error
 - Config defaults apply when OPTIONAL values are missing
-- `tracker.kind` validation enforces currently supported kind (`linear`)
+- `tracker.kind` validation enforces currently supported kinds (`linear`, `github`, `gitlab`, `memory`)
 - `tracker.api_key` works (including `$VAR` indirection)
 - `$VAR` resolution works for tracker API key and path values
 - `~` path expansion works
