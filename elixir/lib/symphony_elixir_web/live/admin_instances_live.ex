@@ -15,6 +15,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       socket
       |> assign(:local_admin?, local_admin?)
       |> assign(:create_form, default_create_form())
+      |> assign(:create_form_open?, false)
       |> assign(:logs, nil)
 
     {:ok, assign_admin_state(socket, nil)}
@@ -27,18 +28,23 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     {:noreply, assign_admin_state(socket, message)}
   end
 
+  def handle_event("toggle_create_form", _params, socket) do
+    {:noreply, assign(socket, :create_form_open?, !socket.assigns.create_form_open?)}
+  end
+
   def handle_event("create_instance", %{"instance" => params}, socket) do
-    {message, form} =
+    {message, form, create_form_open?} =
       guarded_create(socket, params, fn ->
         case registry().create_instance(params, registry_opts()) do
-          {:ok, %{instance: instance}} -> {"已创建实例 #{instance.name}", default_create_form()}
-          {:error, %{message: message}} -> {message, normalize_form(params)}
+          {:ok, %{instance: instance}} -> {"已创建实例 #{instance.name}", default_create_form(), false}
+          {:error, %{message: message}} -> {message, normalize_form(params), true}
         end
       end)
 
     socket =
       socket
       |> assign(:create_form, form)
+      |> assign(:create_form_open?, create_form_open?)
       |> assign_admin_state(message)
 
     {:noreply, socket}
@@ -141,9 +147,18 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <h2 class="section-title">新增实例</h2>
             <p class="section-copy">通过现有 systemd template 安装脚本生成配置、env、logs 和 workspaces。</p>
           </div>
+          <div class="instance-actions form-actions">
+            <button
+              class="lifecycle-button lifecycle-button-primary"
+              type="button"
+              phx-click="toggle_create_form"
+              aria-expanded={@create_form_open?}
+              aria-controls="create-instance-form"
+            ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
+          </div>
         </div>
 
-        <form phx-submit="create_instance" class="instance-form">
+        <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?}>
           <div class="create-form-layout">
             <section class="form-section form-section-main">
               <div class="form-section-header">
@@ -607,7 +622,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp guarded(_socket, _fun), do: "管理操作只允许本机客户端访问"
 
   defp guarded_create(%{assigns: %{local_admin?: true}}, _params, fun), do: fun.()
-  defp guarded_create(_socket, params, _fun), do: {"管理操作只允许本机客户端访问", normalize_form(params)}
+  defp guarded_create(_socket, params, _fun), do: {"管理操作只允许本机客户端访问", normalize_form(params), true}
 
   defp guarded_logs(%{assigns: %{local_admin?: true}}, fun), do: fun.()
   defp guarded_logs(_socket, _fun), do: {"管理操作只允许本机客户端访问", nil}

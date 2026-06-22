@@ -412,8 +412,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "form-option"
     assert html =~ "Project Number"
     assert html =~ "Token Env"
+    assert html =~ "新建实例"
     assert html =~ "创建后将写入实例配置并刷新总览"
     assert html =~ "创建实例"
+    assert html =~ ~s(id="create-instance-form")
+    assert html =~ ~s(hidden)
 
     assert html =~ "systemd 自动更新 timer"
     assert html =~ "symphony-update.timer"
@@ -432,8 +435,29 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "空闲自动重启"
   end
 
+  test "admin dashboard new instance button reveals the create form" do
+    {:ok, view, html} = live(build_conn(), "/admin/instances")
+
+    assert html =~ "新建实例"
+    assert html =~ ~s(<form id="create-instance-form")
+    assert html =~ ~s(hidden)
+
+    html =
+      view
+      |> element("button", "新建实例")
+      |> render_click()
+
+    assert html =~ "收起表单"
+    assert html =~ ~s(<form id="create-instance-form")
+    refute html =~ ~s(<form id="create-instance-form" hidden)
+  end
+
   test "admin dashboard creates instances and reads recent logs without exposing tokens" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    view
+    |> element("button", "新建实例")
+    |> render_click()
 
     html =
       view
@@ -472,6 +496,10 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard create form submits explicit option toggles" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    view
+    |> element("button", "新建实例")
+    |> render_click()
 
     view
     |> form("form.instance-form",
