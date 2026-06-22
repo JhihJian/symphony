@@ -159,68 +159,129 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </div>
 
         <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?}>
-          <div class="form-grid">
-            <label class="field">
-              <span>Project</span>
-              <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
-            </label>
+          <div class="create-form-layout">
+            <section class="form-section form-section-main">
+              <div class="form-section-header">
+                <div>
+                  <p class="form-section-kicker">Identity</p>
+                  <h3 class="form-section-title">项目与仓库</h3>
+                </div>
+                <span class="form-section-step">1</span>
+              </div>
 
-            <label class="field">
-              <span>Tracker</span>
-              <select name="instance[tracker_kind]">
-                <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
-              </select>
-            </label>
+              <div class="form-grid">
+                <label class="field field-prominent">
+                  <span>Project</span>
+                  <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
+                  <small class="field-hint">生成实例名、配置目录和 systemd unit 后缀。</small>
+                </label>
 
-            <label class="field">
-              <span>Owner</span>
-              <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
-            </label>
+                <label class="field">
+                  <span>Tracker</span>
+                  <select name="instance[tracker_kind]">
+                    <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
+                  </select>
+                  <small class="field-hint">当前新增实例流程使用 GitHub Project。</small>
+                </label>
 
-            <label class="field">
-              <span>Repo</span>
-              <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
-            </label>
+                <label class="field">
+                  <span>Owner</span>
+                  <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
+                </label>
 
-            <label class="field">
-              <span>Project Number</span>
-              <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
-            </label>
+                <label class="field">
+                  <span>Repo</span>
+                  <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
+                </label>
 
-            <label class="field">
-              <span>Port</span>
-              <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
-            </label>
+                <label class="field">
+                  <span>Project Number</span>
+                  <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
+                </label>
 
-            <label class="field">
-              <span>Token</span>
-              <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
-            </label>
+                <label class="field">
+                  <span>Port</span>
+                  <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
+                  <small class="field-hint">留空时由安装脚本分配可用端口。</small>
+                </label>
+              </div>
+            </section>
 
-            <label class="field">
-              <span>Token Env</span>
-              <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
-            </label>
+            <div class="form-side-stack">
+              <section class="form-section">
+                <div class="form-section-header">
+                  <div>
+                    <p class="form-section-kicker">Runtime</p>
+                    <h3 class="form-section-title">运行策略</h3>
+                  </div>
+                  <span class="form-section-step">2</span>
+                </div>
 
-            <label class="field">
-              <span>更新策略</span>
-              <select name="instance[update_strategy]">
-                <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy %></option>
-              </select>
-            </label>
+                <div class="form-grid form-grid-single">
+                  <label class="field">
+                    <span>更新策略</span>
+                    <select name="instance[update_strategy]">
+                      <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy %></option>
+                    </select>
+                  </label>
 
-            <label class="field">
-              <span>Max Agents</span>
-              <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
-            </label>
+                  <label class="field">
+                    <span>Max Agents</span>
+                    <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
+                  </label>
+                </div>
+
+                <div class="form-option-grid">
+                  <label class="form-option">
+                    <input type="hidden" name="instance[start]" value="false" />
+                    <input type="checkbox" name="instance[start]" value="true" checked={@create_form["start"] == "true"} />
+                    <span>
+                      <strong>立即启动</strong>
+                      <small>创建完成后直接启动服务。</small>
+                    </span>
+                  </label>
+                  <label class="form-option">
+                    <input type="hidden" name="instance[auto_update]" value="false" />
+                    <input type="checkbox" name="instance[auto_update]" value="true" checked={@create_form["auto_update"] == "true"} />
+                    <span>
+                      <strong>自动更新 timer</strong>
+                      <small>启用 systemd 自动更新定时器。</small>
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-header">
+                  <div>
+                    <p class="form-section-kicker">Auth</p>
+                    <h3 class="form-section-title">访问令牌</h3>
+                  </div>
+                  <span class="form-section-step">3</span>
+                </div>
+
+                <div class="form-grid form-grid-single">
+                  <label class="field">
+                    <span>Token</span>
+                    <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
+                    <small class="field-hint">提交后不会回显 token。</small>
+                  </label>
+
+                  <label class="field">
+                    <span>Token Env</span>
+                    <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
+                    <small class="field-hint">可指定服务环境变量名。</small>
+                  </label>
+                </div>
+              </section>
+            </div>
           </div>
 
-          <div class="check-row">
-            <label><input type="checkbox" name="instance[start]" value="true" checked={@create_form["start"] == "true"} /> 立即启动</label>
-            <label><input type="checkbox" name="instance[auto_update]" value="true" checked={@create_form["auto_update"] == "true"} /> 启用 systemd 自动更新 timer</label>
-          </div>
-
-          <div class="instance-actions form-actions">
+          <div class="form-submit-strip">
+            <div>
+              <strong>创建后将写入实例配置并刷新总览</strong>
+              <span>本机管理员可提交；远端访问仅能预览当前表单。</span>
+            </div>
             <button class="lifecycle-button lifecycle-button-primary" type="submit" disabled={!@local_admin?}>创建实例</button>
           </div>
         </form>
@@ -236,11 +297,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           </div>
           <div class="instance-actions">
             <button
+              type="button"
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="auto_update"
               phx-value-action="check"
             >立即检查</button>
             <button
+              type="button"
               class="lifecycle-button lifecycle-button-primary"
               phx-click="auto_update"
               phx-value-action="update"
@@ -331,9 +394,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
-            <button class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
-            <button class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
           </div>
         </div>
 
@@ -445,36 +508,42 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
               <footer class="instance-actions">
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-primary"
                   phx-click="lifecycle"
                   phx-value-action="start"
                   phx-value-name={instance.name}
                 >启动</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-danger"
                   phx-click="lifecycle"
                   phx-value-action="stop"
                   phx-value-name={instance.name}
                 >停止</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="restart"
                   phx-value-name={instance.name}
                 >重启</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="enable"
                   phx-value-name={instance.name}
                 >启用</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="lifecycle"
                   phx-value-action="disable"
                   phx-value-name={instance.name}
                 >禁用</button>
                 <button
+                  type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="logs"
                   phx-value-name={instance.name}
