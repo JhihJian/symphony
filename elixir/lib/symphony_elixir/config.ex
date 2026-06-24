@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Tracker
   alias SymphonyElixir.TrackerConfig
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.Workflow.Definition
@@ -221,7 +222,7 @@ defmodule SymphonyElixir.Config do
   defp parse_workflow_stage_settings(config, %Definition{} = workflow_definition) do
     with nil <- TrackerConfig.legacy_tracker_config_error(config),
          {:ok, tracker_config} <- tracker_config_for_workflow(Workflow.workflow_file_path()),
-         :ok <- TrackerConfig.validate_stage_states(Definition.to_map(workflow_definition), tracker_config) do
+         :ok <- Tracker.validate_workflow_state_mapping(Definition.to_map(workflow_definition), tracker_config) do
       parse_two_file_settings(config, workflow_definition, tracker_config)
     else
       {:legacy_workflow_tracker_config, _keys} = reason -> {:error, reason}

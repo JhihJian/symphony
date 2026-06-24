@@ -9,6 +9,7 @@ defmodule SymphonyElixir.E2ESupport do
     use Agent
 
     alias SymphonyElixir.Linear.Issue
+    alias SymphonyElixir.Tracker
 
     def start_link(opts) do
       name = Keyword.fetch!(opts, :name)
@@ -29,6 +30,31 @@ defmodule SymphonyElixir.E2ESupport do
         id: Keyword.fetch!(opts, :name),
         start: {__MODULE__, :start_link, [opts]}
       }
+    end
+
+    def capabilities do
+      Tracker.unsupported_stage_capabilities(:e2e_tracker_double)
+    end
+
+    def validate_workflow_state_mapping(workflow, tracker_config) do
+      Tracker.validate_workflow_state_mapping_for_adapter(workflow, tracker_config)
+    end
+
+    def fetch_runnable_issues(_start_stage) do
+      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    end
+
+    def read_issue_stage(_issue_or_id) do
+      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    end
+
+    def write_issue_stage(_issue_id, _stage_id) do
+      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    end
+
+    # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+    def is_native_terminal?(_issue) do
+      Tracker.unsupported_stage_contract(:e2e_tracker_double)
     end
 
     def fetch_candidate_issues do

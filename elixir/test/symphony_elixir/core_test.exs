@@ -173,6 +173,33 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.tracker_config["tracker"]["stage_states"]["ready"]["state"] == "Ready"
     assert Config.workflow_prompt() == "Pick up new work."
     assert :ok = Config.validate!()
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      provider_states:
+        - " Ready "
+        - ""
+        - In Progress
+        - Human Review
+        - Done
+        - Blocked
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        review:
+          state: Human Review
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+    """)
+
+    assert Config.settings!().tracker.provider_states == ["Ready", "In Progress", "Human Review", "Done", "Blocked"]
   end
 
   test "workflow-stage WORKFLOW.md defaults to sibling TRACKER.yaml when tracker path is not explicit" do

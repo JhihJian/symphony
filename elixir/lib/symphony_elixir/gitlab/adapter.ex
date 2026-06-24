@@ -6,6 +6,29 @@ defmodule SymphonyElixir.GitLab.Adapter do
   @behaviour SymphonyElixir.Tracker
 
   alias SymphonyElixir.GitLab.Client
+  alias SymphonyElixir.Tracker
+  alias SymphonyElixir.Workflow.Definition
+
+  @spec capabilities() :: map()
+  def capabilities, do: Tracker.unsupported_stage_capabilities(:gitlab)
+
+  @spec validate_workflow_state_mapping(map() | Definition.t(), map()) :: Tracker.validation_result()
+  def validate_workflow_state_mapping(workflow, tracker_config) do
+    Tracker.validate_workflow_state_mapping_for_adapter(workflow, tracker_config)
+  end
+
+  @spec fetch_runnable_issues(Tracker.stage_id()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_runnable_issues(_start_stage), do: Tracker.unsupported_stage_contract(:gitlab)
+
+  @spec read_issue_stage(term()) :: {:ok, Tracker.stage_id()} | {:error, term()}
+  def read_issue_stage(_issue_or_id), do: Tracker.unsupported_stage_contract(:gitlab)
+
+  @spec write_issue_stage(String.t(), Tracker.stage_id()) :: :ok | {:error, term()}
+  def write_issue_stage(_issue_id, _stage_id), do: Tracker.unsupported_stage_contract(:gitlab)
+
+  @spec is_native_terminal?(term()) :: boolean() | {:error, term()}
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+  def is_native_terminal?(_issue), do: Tracker.unsupported_stage_contract(:gitlab)
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
