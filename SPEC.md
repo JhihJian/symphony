@@ -332,8 +332,9 @@ Parsing rules:
 - If front matter is absent, treat the entire file as prompt body and use an empty config map.
 - YAML front matter MUST decode to a map/object; non-map YAML is an error.
 - Prompt body is trimmed before use.
-- In workflow-stage mode, if the Markdown body is blank, the `prompt` for `workflow.start_stage`
-  is used as the current prompt template for the old runner path.
+- In workflow-stage mode, the stage turn prompt is rendered from a system-maintained template.
+  `WORKFLOW.md` supplies provider-neutral variables: current stage metadata, stage prompt text,
+  workflow outcomes, stage transitions, missing-outcome policy, and issue context.
 
 Returned workflow object:
 
@@ -372,8 +373,9 @@ Fields:
 - `stages` (object)
   - REQUIRED non-empty map keyed by stage name.
   - Each stage has:
-    - `prompt` (string): stage work content for the agent. It does not need to include a completion
-      protocol.
+    - `prompt` (string): stage work content for the agent. It MUST NOT include dynamic tool names,
+      structured completion implementation fields, required-tool settings, or the completion
+      protocol; the runtime owns those details.
     - `transitions` (object): map of outcome name to target stage. Every target MUST name a key in
       `workflow.stages`.
 
@@ -573,7 +575,10 @@ fields locally if they want stricter startup checks.
 
 ### 5.5 Prompt Template Contract
 
-The Markdown body of `WORKFLOW.md` is the per-issue prompt template.
+In workflow-stage mode, the Markdown body of `WORKFLOW.md` is not the full turn prompt. The runtime
+uses the current stage prompt plus workflow variables to render a system-owned stage turn template
+that includes stage, issue, outcomes, transitions, the unified completion protocol, and
+missing-outcome handling.
 
 Rendering requirements:
 
@@ -591,9 +596,8 @@ Template input variables:
 
 Fallback prompt behavior:
 
-- If the workflow prompt body is empty in workflow-stage mode, the runtime uses
-  `workflow.stages[workflow.start_stage].prompt` as the compatibility prompt for the old runner
-  path. Prompt selection by current workflow stage is future #45 work.
+- If no workflow-stage definition is present, the runtime MAY use the legacy Markdown prompt body as
+  the full prompt template.
 - If no workflow-stage prompt is available, the runtime MAY use a minimal default prompt
   (`You are working on an issue.`).
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
@@ -1395,7 +1399,9 @@ Orchestrator behavior on tracker errors:
 Symphony does not require first-class tracker write APIs in the orchestrator.
 
 - Ticket mutations (state transitions, comments, PR metadata) are typically handled by the coding
-  agent using tools defined by the workflow prompt.
+  agent using ordinary tracker/provider tools.
+- Runner-internal stage outcome submission is a distinct structured channel that drives workflow
+  transitions. Direct provider status updates MUST NOT be interpreted as the stage outcome.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
@@ -1406,7 +1412,7 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
 
 ### 12.1 Inputs
 
-Inputs to prompt rendering:
+Inputs to legacy prompt rendering:
 
 - `workflow.prompt_template`
 - normalized `issue` object
@@ -1446,6 +1452,25 @@ If prompt rendering fails:
 
 - Fail the run attempt immediately.
 - Let the orchestrator treat it like any other worker failure and decide retry behavior.
+
+### 12.5 Stage Turn Prompt and Outcome Channel
+
+In workflow-stage mode, implementations MUST render each non-legacy turn with a system-maintained
+stage prompt template. The rendered prompt MUST include:
+
+- current stage id/name
+- issue context
+- rendered stage work prompt
+- workflow outcomes
+- current stage transitions
+- unified stage completion protocol
+- missing-outcome retry/fallback policy
+
+The completion protocol MUST require exactly one structured stage outcome for non-terminal stages.
+The outcome channel MAY be implemented as a dynamic tool, but `WORKFLOW.md` MUST NOT expose tool
+names, structured completion types, or required-tool implementation fields. If a turn completes
+without one valid structured outcome, the runner MUST represent that as a stage outcome protocol
+error for later retry handling instead of parsing the final natural-language response.
 
 ## 13. Logging, Status, and Observability
 

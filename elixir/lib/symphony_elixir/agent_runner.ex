@@ -4,8 +4,20 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Codex.{AppServer, DynamicTool}
+  alias SymphonyElixir.Linear.Issue
+
+  alias SymphonyElixir.{
+    Config,
+    PromptBuilder,
+    StageOutcomeChannel,
+    StagePromptRenderer,
+    Tracker,
+    Workflow,
+    Workspace
+  }
+
+  alias SymphonyElixir.Workflow.Definition
 
   @type worker_host :: String.t() | nil
 
@@ -88,7 +100,9 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    app_server_opts = app_server_opts_for_issue(issue, opts, worker_host)
+
+    with {:ok, session} <- AppServer.start_session(workspace, app_server_opts) do
       try do
         do_run_codex_turns(
           session,
@@ -116,155 +130,165 @@ defmodule SymphonyElixir.AgentRunner do
          turn_number,
          max_turns
        ) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    {prompt, run_turn_opts} = build_turn_prompt(issue, opts, turn_number, max_turns)
+    outcome_capture = Keyword.get(run_turn_opts, :stage_outcome_capture)
 
-    with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
-             issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
-           ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+    try do
+      with {:ok, turn_session} <-
+             AppServer.run_turn(
+               app_session,
+               prompt,
+               issue,
+               Keyword.merge(
+                 run_turn_opts,
+                 on_message: codex_message_handler(codex_update_recipient, issue)
+               )
+             ) do
+        Logger.info(
+          "Completed agent run for #{issue_context(issue)} " <>
+            "session_id=#{turn_session[:session_id]} workspace=#{workspace} " <>
+            "turn=#{turn_number}/#{max_turns}"
+        )
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-          do_run_codex_turns(
+        with :ok <- validate_stage_outcome(outcome_capture) do
+          continue_after_turn(
+            issue,
+            issue_state_fetcher,
+            turn_number,
+            max_turns,
             app_session,
             workspace,
-            refreshed_issue,
             codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
+            opts
           )
-
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-          :ok
-
-        {:done, _refreshed_issue} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
+        end
       end
+    after
+      StageOutcomeChannel.stop(outcome_capture)
+    end
+  end
+
+  defp continue_after_turn(
+         issue,
+         issue_state_fetcher,
+         turn_number,
+         max_turns,
+         app_session,
+         workspace,
+         codex_update_recipient,
+         opts
+       ) do
+    case continue_with_issue?(issue, issue_state_fetcher) do
+      {:continue, refreshed_issue} when turn_number < max_turns ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          app_session,
+          workspace,
+          refreshed_issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          turn_number + 1,
+          max_turns
+        )
+
+      {:continue, refreshed_issue} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+        :ok
+
+      {:done, _refreshed_issue} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
-    """
-    #{PromptBuilder.build_prompt(issue, opts)}
+    case stage_turn_context(issue, opts) do
+      {:ok, %{prompt: prompt, outcome_capture: outcome_capture}} ->
+        {prompt,
+         [
+           tool_executor: stage_outcome_tool_executor(outcome_capture, opts),
+           stage_outcome_capture: outcome_capture
+         ]}
 
-    #{state_route_prompt(issue)}
-    """
-  end
+      {:error, :workflow_stage_config_unavailable} ->
+        {PromptBuilder.build_prompt(issue, opts), []}
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
-    build_continuation_prompt(turn_number, max_turns)
-  end
-
-  defp state_route_prompt(%Issue{state: state_name}) do
-    case normalize_issue_state(state_name) do
-      "todo" -> todo_route_prompt()
-      "in progress" -> in_progress_route_prompt()
-      "rework" -> rework_route_prompt()
-      "human review" -> human_review_route_prompt()
-      "merging" -> merging_route_prompt()
-      "done" -> done_route_prompt()
-      _ -> generic_active_route_prompt(display_state_name(state_name))
+      {:error, _reason} ->
+        raise RuntimeError, "stage_turn_prompt_unavailable"
     end
   end
 
-  defp todo_route_prompt do
-    """
-    State route: Todo -> In Progress.
-
-    First move the issue to `In Progress`, then create or refresh the single workpad. Before code changes,
-    inspect issue context, fill missing execution context from repository/tracker evidence, mirror acceptance
-    and validation requirements into the workpad, and record reproduction evidence.
-
-    Next target state: `Human Review` only after implementation, validation, PR linkage, PR feedback sweep,
-    green checks, and all workpad completion criteria are satisfied. If a true external blocker remains,
-    record it in the workpad and use the workflow's blocker handoff rules.
-    """
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+    {build_continuation_prompt(turn_number, max_turns), []}
   end
 
-  defp in_progress_route_prompt do
-    """
-    State route: In Progress -> Human Review.
+  defp app_server_opts_for_issue(_issue, _opts, worker_host) do
+    base_opts = [worker_host: worker_host]
 
-    Continue from the existing workspace and workpad. Reconcile current issue context, complete the planned
-    implementation, keep acceptance criteria and validation requirements current, run required checks, create
-    or update the PR, resolve actionable PR feedback, and attach/link the PR.
+    case Workflow.current() do
+      {:ok, %{workflow: %Definition{} = workflow}} ->
+        dynamic_tools = [StageOutcomeChannel.tool_spec(workflow.outcomes)]
+        Keyword.merge(base_opts, dynamic_tools: dynamic_tools)
 
-    Next target state: `Human Review` only after validation and PR feedback gates are complete. If validation
-    or review feedback fails, keep the issue in `In Progress` and continue fixing.
-    """
+      _other ->
+        base_opts
+    end
   end
 
-  defp rework_route_prompt do
-    """
-    State route: Rework -> Human Review.
+  defp stage_turn_context(issue, opts) do
+    case Workflow.current() do
+      {:ok, %{workflow: %Definition{} = workflow}} ->
+        tracker_config = Config.settings!().tracker_config
 
-    Treat reviewer feedback as the driver for this turn. Re-read issue context and all PR/review comments,
-    identify what must change, update the workpad, implement the required changes, rerun validation, push the
-    branch, and complete the full PR feedback sweep.
+        with {:ok, stage_id} <- StagePromptRenderer.stage_for_issue(workflow, issue, tracker_config),
+             {:ok, prompt} <- StagePromptRenderer.render_for_issue(workflow, issue, tracker_config, opts) do
+          stage = Map.fetch!(workflow.stages, stage_id)
+          outcome_capture = StageOutcomeChannel.new(stage_id, workflow.outcomes, Map.get(stage, "transitions", %{}))
 
-    Next target state: `Human Review` only after every actionable feedback item is resolved or explicitly
-    answered, validation is green, and the workpad records the result.
-    """
+          {:ok, %{workflow: workflow, stage_id: stage_id, prompt: prompt, outcome_capture: outcome_capture}}
+        end
+
+      {:ok, _workflow} ->
+        {:error, :workflow_stage_config_unavailable}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp human_review_route_prompt do
-    """
-    State route: Human Review -> Merging or Rework.
+  defp stage_outcome_tool_executor(outcome_capture, opts) do
+    fallback_executor =
+      Keyword.get(opts, :tool_executor, fn tool, arguments ->
+        DynamicTool.execute(tool, arguments)
+      end)
 
-    Do not implement new changes just because this turn started. Poll the PR/review state and issue comments.
-    If feedback requires changes, move or leave the issue in `Rework` and record the required changes. If a
-    human approval is present, wait for or preserve the `Merging` handoff according to the workflow.
-
-    Next target state: `Merging` when approved by a human, or `Rework` when changes are requested.
-    """
+    fn tool, arguments ->
+      if tool == StageOutcomeChannel.tool_name() do
+        outcome_capture
+        |> StageOutcomeChannel.execute(arguments)
+        |> elem(1)
+      else
+        fallback_executor.(tool, arguments)
+      end
+    end
   end
 
-  defp merging_route_prompt do
-    """
-    State route: Merging -> Done.
+  defp validate_stage_outcome(outcome_capture) do
+    case outcome_capture do
+      nil ->
+        :ok
 
-    Execute the workflow's land/merge path exactly as instructed. Do not bypass the land skill or required
-    merge checks. After the PR is merged and the post-merge requirements are satisfied, update the workpad.
-
-    Next target state: `Done` after the merge is complete.
-    """
-  end
-
-  defp done_route_prompt do
-    """
-    State route: Done.
-
-    The issue is already terminal. Do not change code, ticket content, or PR state. Summarize that no work is
-    required and end the turn.
-    """
-  end
-
-  defp display_state_name(state_name) when is_binary(state_name) and state_name != "", do: state_name
-  defp display_state_name(_state_name), do: "unknown"
-
-  defp generic_active_route_prompt(state_name) do
-    """
-    State route: #{state_name}.
-
-    Re-read the issue state and route using the workflow's status map. If the state is active but not one of
-    the named workflow states, avoid code changes until the safe next state is clear from tracker context.
-
-    Next target state: use the closest matching workflow transition, and record the routing decision in the
-    workpad before acting.
-    """
+      outcome_capture ->
+        case StageOutcomeChannel.validate(outcome_capture) do
+          {:ok, _outcome} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   defp build_continuation_prompt(turn_number, max_turns) do

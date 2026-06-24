@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.StageOutcomeChannel
+
   test "app server preserves shell-style codex.command semantics for local runs" do
     test_root =
       Path.join(
@@ -629,7 +631,8 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:ok, _result} = AppServer.run(workspace, "Handle approval request", issue)
+      assert {:ok, _result} =
+               AppServer.run(workspace, "Handle approval request", issue, dynamic_tools: [StageOutcomeChannel.tool_spec(["completed"])])
 
       trace = File.read!(trace_file)
       lines = String.split(trace, "\n", trim: true)
@@ -687,6 +690,20 @@ defmodule SymphonyElixir.AppServerTest do
                              "name" => "github_pr"
                            } ->
                              description =~ "GitHub pull request"
+
+                           _ ->
+                             false
+                         end) and
+                         Enum.any?(dynamic_tools, fn
+                           %{
+                             "description" => description,
+                             "inputSchema" => %{
+                               "properties" => %{"outcome" => %{"enum" => ["completed"]}},
+                               "required" => ["outcome"]
+                             },
+                             "name" => "symphony_stage_outcome"
+                           } ->
+                             description =~ "stage outcome"
 
                            _ ->
                              false

@@ -50,7 +50,8 @@ issue can become a dispatch candidate again after restart.
      operations such as comment editing or upload flows.
 5. Customize the copied files for your project.
    - `WORKFLOW.md` defines provider-neutral workflow stages, outcomes, transitions, and stage
-     prompts.
+     work prompts. Symphony wraps those values in the system-maintained stage prompt template and
+     supplies the structured stage outcome channel at runtime.
    - `TRACKER.yaml` defines provider access, workspace/runtime settings, and maps workflow stages
      to provider-visible states under `tracker.stage_states`.
    - For Linear, `tracker.project_slug` in `TRACKER.yaml` is the Linear project slug from the
@@ -103,6 +104,9 @@ Optional flags:
 
 `WORKFLOW.md` uses YAML front matter for the provider-neutral workflow-stage schema. `TRACKER.yaml`
 contains provider access fields, stage-state mapping, workspace hooks, and runtime knobs.
+Stage `prompt` values should describe only the work to do in that stage. Do not include dynamic tool
+names, structured completion schemas, or required-tool implementation details in `WORKFLOW.md`; the
+runner supplies the completion protocol and outcome tool internally.
 
 Minimal example:
 
@@ -177,6 +181,9 @@ Notes:
 - `tracker.stage_states` maps provider-neutral workflow stage ids to provider-visible states. These
   provider states are an external observable and recoverable record; they are not the normal trigger
   for progressing one issue through workflow stages.
+- The runner-internal stage outcome channel drives workflow transitions. Direct provider status
+  writes through ordinary tracker tools may still be useful for comments or external metadata, but
+  they are not accepted as the stage result.
 - `tracker.provider_states` is optional. When present, Symphony validates every
   `tracker.stage_states.*.state` value against this declared provider-visible state set.
 - Linear uses `tracker.project_slug` and defaults to `https://api.linear.app/graphql`.

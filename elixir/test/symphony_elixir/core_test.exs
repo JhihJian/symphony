@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Codex.DynamicTool
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1380,6 +1382,53 @@ defmodule SymphonyElixir.CoreTest do
     """
   end
 
+  defp runner_stage_workflow_file(workspace_root, codex_binary, template_repo) do
+    """
+    ---
+    workflow:
+      start_stage: ready
+      terminal_stages: [done, blocked]
+      outcomes: [accepted, completed, blocked]
+      missing_outcome:
+        max_retries: 2
+        on_exhausted: blocked
+      stages:
+        ready:
+          prompt: Pick up new work.
+          transitions:
+            accepted: working
+            blocked: blocked
+        working:
+          prompt: Implement the accepted scope.
+          transitions:
+            completed: done
+            blocked: blocked
+        review:
+          prompt: Prepare validated work for review.
+          transitions:
+            completed: done
+            blocked: blocked
+        done:
+          prompt: Terminal completion stage.
+          transitions: {}
+        blocked:
+          prompt: Terminal blocked stage.
+          transitions: {}
+    workspace:
+      root: #{yaml_value(workspace_root)}
+    hooks:
+      timeout_ms: 60000
+      after_create: |
+        cp #{Path.join(template_repo, "README.md")} README.md
+    agent:
+      max_concurrent_agents: 10
+      max_turns: 3
+    codex:
+      command: #{yaml_value("#{codex_binary} app-server")}
+    ---
+    """
+  end
+
   defp memory_tracker_stage_config do
     """
     tracker:
@@ -1762,6 +1811,20 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Identifier: MT-778"
     assert prompt =~ "Title: Handle empty body"
     assert prompt =~ "No description provided."
+  end
+
+  test "prompt builder render_template defaults optional assigns" do
+    issue = %Issue{
+      identifier: "MT-779",
+      title: "Render direct template",
+      description: "Use render_template directly",
+      state: "Todo",
+      url: "https://example.org/issues/MT-779",
+      labels: []
+    }
+
+    assert PromptBuilder.render_template("Ticket {{ issue.identifier }} attempt={{ attempt }}", issue) ==
+             "Ticket MT-779 attempt="
   end
 
   test "prompt builder reports workflow load failures separately from template parse errors" do
@@ -2216,7 +2279,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "agent runner adds state route guidance to the first turn prompt" do
+  test "agent runner renders workflow stage prompt and captures structured outcome" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2257,6 +2320,9 @@ defmodule SymphonyElixir.CoreTest do
             ;;
           4)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-1"}}}'
+            printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route","threadId":"thread-route","turnId":"turn-route-1","arguments":{"outcome":"accepted","summary":"Ready stage accepted."}}}'
+            ;;
+          5)
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac
@@ -2268,12 +2334,13 @@ defmodule SymphonyElixir.CoreTest do
 
       on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server",
-        max_turns: 3
-      )
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
+      File.write!(tracker_config_path, memory_tracker_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
 
       state_fetcher = fn [_issue_id] ->
         {:ok,
@@ -2293,7 +2360,7 @@ defmodule SymphonyElixir.CoreTest do
         identifier: "MT-249",
         title: "Run state routed workflow",
         description: "Complete from Todo",
-        state: "Todo",
+        state: "Ready",
         url: "https://example.org/issues/MT-249",
         labels: []
       }
@@ -2314,11 +2381,101 @@ defmodule SymphonyElixir.CoreTest do
         end)
 
       assert length(turn_texts) == 1
-      assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
-      assert Enum.at(turn_texts, 0) =~ "State route: Todo -> In Progress."
-      assert Enum.at(turn_texts, 0) =~ "Next target state: `Human Review`"
+      assert Enum.at(turn_texts, 0) =~ "# Symphony Stage Turn"
+      assert Enum.at(turn_texts, 0) =~ "## Stage"
+      assert Enum.at(turn_texts, 0) =~ "- id: ready"
+      assert Enum.at(turn_texts, 0) =~ "Pick up new work."
+      assert Enum.at(turn_texts, 0) =~ "## Workflow Outcomes"
+      assert Enum.at(turn_texts, 0) =~ "- accepted"
+      assert Enum.at(turn_texts, 0) =~ "## Current Stage Transitions"
+      assert Enum.at(turn_texts, 0) =~ "- accepted -> working"
+      assert Enum.at(turn_texts, 0) =~ "structured stage outcome"
+      refute Enum.at(turn_texts, 0) =~ "State route: Todo -> In Progress"
+      refute Enum.at(turn_texts, 0) =~ "Human Review"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner rejects direct provider status update as stage outcome" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-provider-status-not-outcome-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-provider-status"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-provider-status-1"}}}'
+            printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"tracker_issue","callId":"call-provider-status","threadId":"thread-provider-status","turnId":"turn-provider-status-1","arguments":{"operation":"set_status","issueId":"issue-provider-status","state":"In Progress"}}}'
+            ;;
+          5)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
+      File.write!(tracker_config_path, memory_tracker_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+      issue = %Issue{
+        id: "issue-provider-status",
+        identifier: "MT-250",
+        title: "Do not accept provider status as outcome",
+        description: "Provider tools must not drive stage transitions.",
+        state: "Ready",
+        url: "https://example.org/issues/MT-250",
+        labels: []
+      }
+
+      assert_raise RuntimeError, ~r/stage_outcome_protocol_error.*missing_outcome/, fn ->
+        AgentRunner.run(issue, nil,
+          tool_executor: fn
+            "tracker_issue", %{"operation" => "set_status"} ->
+              %{"success" => true, "output" => ~s({"updated":true})}
+
+            tool, arguments ->
+              DynamicTool.execute(tool, arguments)
+          end
+        )
+      end
+    after
       File.rm_rf(test_root)
     end
   end

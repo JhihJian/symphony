@@ -35,10 +35,12 @@ help with the setup:
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
 The Elixir implementation now supports the workflow-stage configuration shape used for the #45
-migration: `WORKFLOW.md` defines provider-neutral stages, outcomes, transitions, and prompts, while
-`TRACKER.yaml` defines provider access plus workflow-stage to provider-state mapping. The legacy
-single-file tracker state model remains only as a temporary compatibility path and will be removed
-by follow-up #45 cleanup work.
+migration: `WORKFLOW.md` defines provider-neutral stages, outcomes, transitions, and stage work
+prompts, while `TRACKER.yaml` defines provider access plus workflow-stage to provider-state mapping.
+Symphony owns the stable stage prompt wrapper and structured stage outcome channel; project files
+provide variables and workflow policy, not tool implementation details. The legacy single-file
+tracker state model remains only as a temporary compatibility path and will be removed by follow-up
+#45 cleanup work.
 
 ---
 

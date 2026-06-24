@@ -46,7 +46,7 @@ workflow:
         No description provided.
         {% endif %}
 
-        Instructions:
+        Stage work:
 
         1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
         2. Only stop early for a true blocker: missing required auth, permissions, secrets, or external service availability.
@@ -55,7 +55,7 @@ workflow:
         5. Before implementation, record the plan, acceptance criteria, and validation approach in the workpad.
         6. When implementation is complete, run validation that matches the changed scope.
         7. If code needs to be submitted, create a clear commit and PR. The PR body must include `Issue: {{ issue.closing_reference }}`.
-        8. When changing tracker state, use the tracker tool provided by the runtime.
+        8. When a tracker status change is needed for human visibility, use the tracker tool provided by the runtime.
         9. Final handoff must record completion summary, validation results, commit, and PR link in the workpad.
 
         Human-readable delivery requirements:
