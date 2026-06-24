@@ -283,36 +283,33 @@ defmodule SymphonyElixir.AutoUpdate do
   defp execute_revision_update(state, started_at, revision) do
     if update_requires_build?(state, revision) do
       with {:build, :ok} <- {:build, state.deps.build.()},
+           {:mark_built, :ok} <- {:mark_built, mark_built_revision(state.deps, Map.get(revision, :after_sha))},
            {:instances, {:ok, instances}} <- {:instances, state.deps.list_instances.()} do
         {instance_results, _state} = restart_instances(instances, state)
+        finished_at = now(state.deps)
+        to_sha = Map.get(revision, :after_sha)
 
-        case mark_built_revision(state.deps, Map.get(revision, :after_sha)) do
-          :ok ->
-            finished_at = now(state.deps)
-            to_sha = Map.get(revision, :after_sha)
-
-            state = %{
-              state
-              | current_sha: to_sha,
-                pending_update?: pending_update?(to_sha, state.remote_sha),
-                last_update: %{
-                  status: update_status(revision),
-                  started_at: started_at,
-                  finished_at: finished_at,
-                  from_sha: Map.get(revision, :before_sha),
-                  to_sha: to_sha,
-                  error: nil,
-                  instance_results: instance_results
-                }
+        state = %{
+          state
+          | current_sha: to_sha,
+            pending_update?: pending_update?(to_sha, state.remote_sha),
+            last_update: %{
+              status: update_status(revision),
+              started_at: started_at,
+              finished_at: finished_at,
+              from_sha: Map.get(revision, :before_sha),
+              to_sha: to_sha,
+              error: nil,
+              instance_results: instance_results
             }
+        }
 
-            {:ok, state}
-
-          {:error, reason} ->
-            {:error, fail_update(state, "failed", started_at, revision, format_error(reason), instance_results)}
-        end
+        {:ok, state}
       else
         {:build, {:error, reason}} ->
+          {:error, fail_update(state, "failed", started_at, revision, format_error(reason), [])}
+
+        {:mark_built, {:error, reason}} ->
           {:error, fail_update(state, "failed", started_at, revision, format_error(reason), [])}
 
         {:instances, {:error, reason}} ->
