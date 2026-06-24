@@ -38,9 +38,11 @@ The Elixir implementation now supports the workflow-stage configuration shape us
 migration: `WORKFLOW.md` defines provider-neutral stages, outcomes, transitions, and stage work
 prompts, while `TRACKER.yaml` defines provider access plus workflow-stage to provider-state mapping.
 Symphony owns the stable stage prompt wrapper and structured stage outcome channel; project files
-provide variables and workflow policy, not tool implementation details. The legacy single-file
-tracker state model remains only as a temporary compatibility path and will be removed by follow-up
-#45 cleanup work.
+provide variables and workflow policy, not tool implementation details. In workflow-stage mode the
+runner advances stages inside one workspace and app-server session from structured outcomes, writing
+provider-visible stages for observability instead of rereading provider state between stages. The
+legacy single-file tracker state model remains only as a temporary compatibility path and will be
+removed by follow-up #45 cleanup work.
 
 ---
 

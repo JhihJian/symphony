@@ -4,6 +4,7 @@ workflow:
   terminal_stages:
     - done
     - blocked
+    - protocol_blocked
   outcomes:
     - started
     - needs_review
@@ -13,7 +14,7 @@ workflow:
     - blocked
   missing_outcome:
     max_retries: 3
-    on_exhausted: blocked
+    on_exhausted: protocol_blocked
   stages:
     ready:
       prompt: |
@@ -120,5 +121,9 @@ workflow:
     blocked:
       prompt: |
         Terminal blocked stage.
+      transitions: {}
+    protocol_blocked:
+      prompt: |
+        Terminal protocol blocked stage.
       transitions: {}
 ---

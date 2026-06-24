@@ -384,11 +384,11 @@ Example:
 ```yaml
 workflow:
   start_stage: ready
-  terminal_stages: [done, blocked]
+  terminal_stages: [done, blocked, protocol_blocked]
   outcomes: [started, completed, blocked]
   missing_outcome:
     max_retries: 3
-    on_exhausted: blocked
+    on_exhausted: protocol_blocked
   stages:
     ready:
       prompt: |
@@ -407,6 +407,9 @@ workflow:
       transitions: {}
     blocked:
       prompt: Terminal blocked stage.
+      transitions: {}
+    protocol_blocked:
+      prompt: Terminal protocol blocked stage.
       transitions: {}
 ```
 
@@ -780,15 +783,17 @@ claim state.
 Important nuance:
 
 - A successful worker exit does not mean the issue is done forever.
-- The worker MAY continue through multiple back-to-back coding-agent turns before it exits.
-- After each normal turn completion, the worker re-checks the tracker issue state.
-- If the issue is still in an active state, the worker SHOULD start another turn on the same live
-  coding-agent thread in the same workspace, up to `agent.max_turns`.
-- The first turn SHOULD use the full rendered task prompt plus state-route guidance derived from
-  the current tracker state. State-route guidance SHOULD name the intended next tracker state for
-  the route (for example `Todo -> In Progress`, `In Progress -> Human Review`, or `Merging -> Done`).
-- Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
-  original task prompt that is already present in thread history.
+- In workflow-stage mode, the worker MAY continue through multiple back-to-back stage turns before
+  it exits. It keeps the same workspace, app-server subprocess, and coding-agent thread for those
+  stage turns.
+- After each successful non-terminal stage turn, the worker validates the structured stage outcome,
+  computes the next stage from the current stage transitions, writes that next stage through the
+  tracker adapter, and immediately starts the next stage turn if the next stage is not terminal.
+- Workflow-stage progression MUST NOT use provider issue state refresh as the normal decision point
+  between in-process stages. Provider-visible stage writes are external observability/recovery
+  records.
+- In legacy prompt mode, a worker MAY still re-check tracker issue state after normal turn
+  completion and send continuation guidance to the existing thread, up to `agent.max_turns`.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
   (about 1 second) so it can re-check whether the issue remains active and needs another worker
   session.
@@ -1109,10 +1114,11 @@ client to:
 - Create or resume a coding-agent thread according to the targeted protocol.
 - Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
   targeted protocol accepts cwd.
-- Start the first turn with the rendered issue prompt plus state-route guidance derived from the
-  current tracker state.
-- Start later in-worker continuation turns on the same live thread with continuation guidance rather
-  than resending the original issue prompt.
+- In workflow-stage mode, start every non-terminal stage turn with the system-maintained stage turn
+  prompt rendered for the current workflow stage.
+- In legacy prompt mode, start the first turn with the rendered issue prompt and start later
+  in-worker continuation turns on the same live thread with continuation guidance rather than
+  resending the original issue prompt.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
@@ -1143,6 +1149,10 @@ Continuation processing:
 
 - If the worker decides to continue after a successful turn, it SHOULD start another turn on the same
   live thread using the targeted protocol.
+- In workflow-stage mode, that decision comes from the structured stage outcome and current stage
+  transition graph. Turn completion without one valid non-terminal outcome is a protocol error that
+  retries the same stage up to `workflow.missing_outcome.max_retries`; after exhaustion, the worker
+  writes `workflow.missing_outcome.on_exhausted`.
 - The app-server subprocess SHOULD remain alive across those continuation turns and be stopped only
   when the worker run is ending.
 
@@ -1281,10 +1291,14 @@ The `Agent Runner` wraps workspace + prompt + app-server client.
 Behavior:
 
 1. Create/reuse workspace for issue.
-2. Build prompt from workflow template.
+2. Build the legacy prompt or workflow-stage turn prompt.
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+5. In workflow-stage mode, validate each completed turn's structured outcome, write the next stage,
+   and keep advancing in the same workspace/session/thread until a terminal stage, failure, or
+   runner turn limit is reached.
+6. On any turn failure/cancellation/timeout or tracker stage-write error, fail the worker attempt
+   (the orchestrator will retry).
 
 Note:
 

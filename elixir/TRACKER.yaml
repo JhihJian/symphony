@@ -19,6 +19,9 @@ tracker:
     blocked:
       state: Cancelled
       terminal: true
+    protocol_blocked:
+      state: Cancelled
+      terminal: true
 polling:
   interval_ms: 5000
 workspace:
