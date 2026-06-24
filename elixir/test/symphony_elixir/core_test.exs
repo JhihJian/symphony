@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Codex.DynamicTool
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1811,6 +1813,20 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "No description provided."
   end
 
+  test "prompt builder render_template defaults optional assigns" do
+    issue = %Issue{
+      identifier: "MT-779",
+      title: "Render direct template",
+      description: "Use render_template directly",
+      state: "Todo",
+      url: "https://example.org/issues/MT-779",
+      labels: []
+    }
+
+    assert PromptBuilder.render_template("Ticket {{ issue.identifier }} attempt={{ attempt }}", issue) ==
+             "Ticket MT-779 attempt="
+  end
+
   test "prompt builder reports workflow load failures separately from template parse errors" do
     original_workflow_path = Workflow.workflow_file_path()
     workflow_store_pid = Process.whereis(SymphonyElixir.WorkflowStore)
@@ -2455,7 +2471,7 @@ defmodule SymphonyElixir.CoreTest do
               %{"success" => true, "output" => ~s({"updated":true})}
 
             tool, arguments ->
-              SymphonyElixir.Codex.DynamicTool.execute(tool, arguments)
+              DynamicTool.execute(tool, arguments)
           end
         )
       end

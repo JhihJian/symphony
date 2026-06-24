@@ -89,4 +89,89 @@ defmodule SymphonyElixir.StageOutcomeChannelTest do
       StageOutcomeChannel.stop(capture)
     end
   end
+
+  test "tool metadata exposes runner internal outcome schema" do
+    spec = StageOutcomeChannel.tool_spec(["accepted", "blocked"])
+
+    assert StageOutcomeChannel.tool_name() == "symphony_stage_outcome"
+    assert spec["name"] == "symphony_stage_outcome"
+    assert get_in(spec, ["inputSchema", "required"]) == ["outcome"]
+    assert get_in(spec, ["inputSchema", "properties", "outcome", "enum"]) == ["accepted", "blocked"]
+  end
+
+  test "blank or non-map arguments are recorded as missing outcome submissions" do
+    capture = StageOutcomeChannel.new("ready", [:started], %{started: :in_progress})
+
+    try do
+      {_capture, blank_response} = StageOutcomeChannel.execute(capture, %{outcome: " ", summary: " "})
+      {_capture, non_map_response} = StageOutcomeChannel.execute(capture, "not a map")
+
+      assert Jason.decode!(blank_response["output"])["error"]["reason"] == "missing_outcome"
+      assert Jason.decode!(non_map_response["output"])["error"]["reason"] == "missing_outcome"
+
+      assert {:error,
+              {:stage_outcome_protocol_error, :missing_outcome,
+               %{
+                 invalid_outcomes: [nil, nil],
+                 submissions: [
+                   %{"outcome" => nil, "summary" => nil},
+                   %{"outcome" => nil, "summary" => nil}
+                 ]
+               }}} = StageOutcomeChannel.validate(capture)
+    after
+      StageOutcomeChannel.stop(capture)
+    end
+  end
+
+  test "multiple valid submissions are protocol errors" do
+    capture = StageOutcomeChannel.new("ready", ["started"], %{"started" => "in_progress"})
+
+    try do
+      StageOutcomeChannel.execute(capture, %{"outcome" => "started"})
+      StageOutcomeChannel.execute(capture, %{"outcome" => "started"})
+
+      assert {:error,
+              {:stage_outcome_protocol_error, :multiple_outcomes,
+               %{
+                 invalid_outcomes: [],
+                 submissions: [%{"outcome" => "started"}, %{"outcome" => "started"}]
+               }}} = StageOutcomeChannel.validate(capture)
+    after
+      StageOutcomeChannel.stop(capture)
+    end
+  end
+
+  test "stop tolerates already stopped or invalid captures" do
+    capture = StageOutcomeChannel.new("ready", ["started"], %{"started" => "in_progress"})
+    recorder = capture.recorder
+
+    Agent.stop(recorder)
+
+    assert StageOutcomeChannel.validate(capture) ==
+             {:error,
+              {:stage_outcome_protocol_error, :missing_outcome,
+               %{
+                 stage_id: "ready",
+                 workflow_outcomes: ["started"],
+                 allowed_outcomes: ["started"],
+                 submissions: [],
+                 invalid_outcomes: []
+               }}}
+
+    assert :ok = StageOutcomeChannel.stop(capture)
+    assert :ok = StageOutcomeChannel.stop(nil)
+  end
+
+  test "stop catches exits from non-agent recorder processes" do
+    recorder =
+      spawn(fn ->
+        Process.sleep(:infinity)
+      end)
+
+    try do
+      assert :ok = StageOutcomeChannel.stop(%{recorder: recorder})
+    after
+      if Process.alive?(recorder), do: Process.exit(recorder, :kill)
+    end
+  end
 end

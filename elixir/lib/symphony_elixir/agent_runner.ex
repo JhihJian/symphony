@@ -4,8 +4,19 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, StageOutcomeChannel, StagePromptRenderer, Tracker, Workspace, Workflow}
+  alias SymphonyElixir.Codex.{AppServer, DynamicTool}
+  alias SymphonyElixir.Linear.Issue
+
+  alias SymphonyElixir.{
+    Config,
+    PromptBuilder,
+    StageOutcomeChannel,
+    StagePromptRenderer,
+    Tracker,
+    Workflow,
+    Workspace
+  }
+
   alias SymphonyElixir.Workflow.Definition
 
   @type worker_host :: String.t() | nil
@@ -128,12 +139,28 @@ defmodule SymphonyElixir.AgentRunner do
                app_session,
                prompt,
                issue,
-               Keyword.merge(run_turn_opts, on_message: codex_message_handler(codex_update_recipient, issue))
+               Keyword.merge(
+                 run_turn_opts,
+                 on_message: codex_message_handler(codex_update_recipient, issue)
+               )
              ) do
-        Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+        Logger.info(
+          "Completed agent run for #{issue_context(issue)} " <>
+            "session_id=#{turn_session[:session_id]} workspace=#{workspace} " <>
+            "turn=#{turn_number}/#{max_turns}"
+        )
 
         with :ok <- validate_stage_outcome(outcome_capture) do
-          continue_after_turn(issue, issue_state_fetcher, turn_number, max_turns, app_session, workspace, codex_update_recipient, opts)
+          continue_after_turn(
+            issue,
+            issue_state_fetcher,
+            turn_number,
+            max_turns,
+            app_session,
+            workspace,
+            codex_update_recipient,
+            opts
+          )
         end
       end
     after
@@ -141,7 +168,16 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_after_turn(issue, issue_state_fetcher, turn_number, max_turns, app_session, workspace, codex_update_recipient, opts) do
+  defp continue_after_turn(
+         issue,
+         issue_state_fetcher,
+         turn_number,
+         max_turns,
+         app_session,
+         workspace,
+         codex_update_recipient,
+         opts
+       ) do
     case continue_with_issue?(issue, issue_state_fetcher) do
       {:continue, refreshed_issue} when turn_number < max_turns ->
         Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
@@ -173,7 +209,11 @@ defmodule SymphonyElixir.AgentRunner do
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
     case stage_turn_context(issue, opts) do
       {:ok, %{prompt: prompt, outcome_capture: outcome_capture}} ->
-        {prompt, [tool_executor: stage_outcome_tool_executor(outcome_capture, opts), stage_outcome_capture: outcome_capture]}
+        {prompt,
+         [
+           tool_executor: stage_outcome_tool_executor(outcome_capture, opts),
+           stage_outcome_capture: outcome_capture
+         ]}
 
       {:error, :workflow_stage_config_unavailable} ->
         {PromptBuilder.build_prompt(issue, opts), []}
@@ -224,7 +264,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp stage_outcome_tool_executor(outcome_capture, opts) do
     fallback_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
-        SymphonyElixir.Codex.DynamicTool.execute(tool, arguments)
+        DynamicTool.execute(tool, arguments)
       end)
 
     fn tool, arguments ->

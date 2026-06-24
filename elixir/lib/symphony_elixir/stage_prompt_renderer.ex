@@ -257,7 +257,6 @@ defmodule SymphonyElixir.StagePromptRenderer do
   defp normalize_required_string(_value, field), do: raise(ArgumentError, "#{field} must be a non-empty string")
 
   defp normalize_state(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
-  defp normalize_state(value), do: value |> to_string() |> normalize_state()
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
