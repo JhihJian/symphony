@@ -27,7 +27,7 @@
 | Agent Runner | 包装 workspace、prompt 和 Codex app-server client 的执行模块。 | 目标状态 | `SPEC.md` §3.1, §10.7 |
 | Agent 会话 | coding-agent app-server 进程、thread、turn 和最近事件的运行时记录。 | 目标状态 | `SPEC.md` §4.1.6, §10 |
 | Continuation | 同一工作上下文中对 agent thread 的后续继续执行。 | 目标状态 | `SPEC.md` §7.1, §10.3 |
-| Linear Adapter | 当前 SPEC 原始目标中的 Linear-compatible tracker 读取适配器。 | 目标状态 | `SPEC.md` §11 |
+| Linear Adapter | 面向 Linear 的 tracker 适配器，负责 GraphQL 查询、认证、分页和 Linear workflow state 规范化。 | 目标状态 | `SPEC.md` §11.2 |
 | GitHub Adapter | 读取 GitHub Issues、过滤 pull request payload、映射 `open`/`closed` 和可选依赖关系的 tracker 适配器。 | 目标状态 | GitHub REST API 文档 |
 | GitLab Adapter | 读取 GitLab Issues、映射 `opened`/`closed` 和可选 issue link 阻塞关系的 tracker 适配器。 | 目标状态 | GitLab REST API 文档 |
 | Tracker Writes | ticket 状态转换、评论和 PR metadata 等写入动作。 | 目标状态 | `SPEC.md` §1, §11.5 |

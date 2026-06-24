@@ -15,9 +15,9 @@ behavior.
 
 ## 1. Problem Statement
 
-Symphony is a long-running automation service that continuously reads work from an issue tracker
-(Linear in this specification version), creates an isolated workspace for each issue, and runs a
-coding agent session for that issue inside the workspace.
+Symphony is a long-running automation service that continuously reads work from a configured issue
+tracker, creates an isolated workspace for each issue, and runs a coding agent session for that
+issue inside the workspace.
 
 The service solves four operational problems:
 
@@ -131,8 +131,8 @@ Symphony is easiest to port when kept in these layers:
 4. `Execution Layer` (workspace + agent subprocess)
    - Filesystem lifecycle, workspace preparation, coding-agent protocol.
 
-5. `Integration Layer` (Linear adapter)
-   - API calls and normalization for tracker data.
+5. `Integration Layer` (tracker adapter)
+   - API calls and normalization for the configured tracker kind.
 
 6. `Observability Layer` (logs + OPTIONAL status surface)
    - Operator visibility into orchestrator and agent behavior.
@@ -498,7 +498,7 @@ Template input variables:
 Fallback prompt behavior:
 
 - If the workflow prompt body is empty, the runtime MAY use a minimal default prompt
-  (`You are working on an issue from Linear.`).
+  (`You are working on an issue from an issue tracker.`).
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
 
@@ -1230,8 +1230,8 @@ Important:
 - GitHub and GitLab API details can drift. Keep REST/GraphQL construction isolated and test the
   provider payload fields required for normalization.
 
-A non-Linear implementation MAY change transport details, but the normalized outputs MUST match the
-domain model in Section 4.
+Each tracker adapter MAY change transport details, but the normalized outputs MUST match the domain
+model in Section 4.
 
 ### 11.3 Normalization Rules
 

@@ -30,8 +30,8 @@
 | Codex app-server protocol 的 source of truth 是目标 Codex 版本文档或 generated schema，而不是 Symphony SPEC。 | [SPEC.md](../../../SPEC.md) §10 | 目标状态 |
 | continuation turns 在同一 live thread 上继续，不重新发送原始任务 prompt。 | [SPEC.md](../../../SPEC.md) §7.1, §10.2, §10.3 | 目标状态 |
 | approval、sandbox、operator confirmation 和 user-input 策略由实现记录，但不得无限期 stalled。 | [SPEC.md](../../../SPEC.md) §10.5, §15.1 | 待确认 |
-| 当前 SPEC 目标要求 Linear-compatible tracker 读取操作：候选读取、按状态读取和按 ID 刷新。 | [SPEC.md](../../../SPEC.md) §11.1 | 目标状态 |
-| Linear-specific 查询、分页、认证和 payload normalization 应被隔离，防止外部 schema 漂移污染调度核心。 | [SPEC.md](../../../SPEC.md) §11.2, §11.3, §11.4 | 合理推断 |
+| Tracker adapter 目标要求候选读取、按状态读取和按 ID 刷新，并输出规范化工作项。 | [SPEC.md](../../../SPEC.md) §11.1 | 目标状态 |
+| Provider-specific 查询、分页、认证和 payload normalization 应被隔离，防止外部 schema 漂移污染调度核心。 | [SPEC.md](../../../SPEC.md) §11.2, §11.3, §11.4 | 合理推断 |
 | Issue Tracker 集成应抽象为 `TrackerAdapter`，以同一规范化工作项模型支持 Linear、GitHub 和 GitLab。 | [SPEC.md](../../../SPEC.md) §3.1, §4.1.1, §11；[GitHub REST API issues](https://docs.github.com/en/rest/issues/issues)；[GitLab Issues API](https://docs.gitlab.com/api/issues/)；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
 | Orchestrator 只消费规范化调度状态，不直接解释 GitHub `open`、GitLab `opened`、Linear workflow state 或 provider labels。 | [SPEC.md](../../../SPEC.md) §7, §8.2；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
 | GitHub/GitLab issue 编号需要带 repository/project scope 才能作为内部 ID、claim/retry key 和 workspace 命名来源。 | [SPEC.md](../../../SPEC.md) §4.2, §9.5；[GitHub REST API issues](https://docs.github.com/en/rest/issues/issues)；[GitLab Issues API](https://docs.gitlab.com/api/issues/)；[0007](decisions/0007-multi-tracker-adapter-contract.md) | 架构扩展 |
