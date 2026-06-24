@@ -4,7 +4,9 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.TrackerConfig
   alias SymphonyElixir.Workflow
+  alias SymphonyElixir.Workflow.Definition
 
   @default_prompt_template """
   You are working on an issue.
@@ -29,8 +31,38 @@ defmodule SymphonyElixir.Config do
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
+      {:ok, %{config: config, workflow: %Definition{} = workflow_definition}} when is_map(config) ->
+        parse_workflow_stage_settings(config, workflow_definition)
+
       {:ok, %{config: config}} when is_map(config) ->
-        Schema.parse(config)
+        case TrackerConfig.tracker_file_path() do
+          path when is_binary(path) ->
+            with nil <- TrackerConfig.legacy_tracker_config_error(config),
+                 {:ok, tracker_config} <- TrackerConfig.load(path),
+                 {:ok, workflow_definition} <- Definition.parse_config(config) do
+              parse_two_file_settings(config, workflow_definition, tracker_config)
+            else
+              {:legacy_workflow_tracker_config, _keys} = reason -> {:error, reason}
+              {:error, reason} -> {:error, reason}
+            end
+
+          nil ->
+            Schema.parse(config)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec tracker_config() :: {:ok, map()} | {:error, term()}
+  def tracker_config do
+    case settings() do
+      {:ok, %Schema{tracker_config: tracker_config}} when is_map(tracker_config) ->
+        {:ok, tracker_config}
+
+      {:ok, settings} ->
+        {:ok, Map.from_struct(settings.tracker)}
 
       {:error, reason} ->
         {:error, reason}
@@ -148,10 +180,29 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp format_config_error(reason) do
+  @spec format_config_error(term()) :: String.t()
+  def format_config_error(reason) do
     case reason do
       {:invalid_workflow_config, message} ->
         "Invalid WORKFLOW.md config: #{message}"
+
+      {:invalid_workflow_definition, message} ->
+        "Invalid WORKFLOW.md workflow schema: #{message}"
+
+      {:invalid_tracker_config, message} ->
+        "Invalid TRACKER.yaml config: #{message}"
+
+      {:legacy_workflow_tracker_config, keys} ->
+        "Legacy tracker configuration found in WORKFLOW.md (#{Enum.join(keys, ", ")}). Move provider settings and stage-state mapping to TRACKER.yaml, leaving WORKFLOW.md with provider-neutral workflow stages."
+
+      {:missing_tracker_config_file, path, raw_reason} ->
+        "Missing TRACKER.yaml at #{path}: #{inspect(raw_reason)}"
+
+      :tracker_config_not_a_map ->
+        "Failed to parse TRACKER.yaml: tracker config must decode to a map"
+
+      {:tracker_config_parse_error, raw_reason} ->
+        "Failed to parse TRACKER.yaml: #{inspect(raw_reason)}"
 
       {:missing_workflow_file, path, raw_reason} ->
         "Missing WORKFLOW.md at #{path}: #{inspect(raw_reason)}"
@@ -164,6 +215,37 @@ defmodule SymphonyElixir.Config do
 
       other ->
         "Invalid WORKFLOW.md config: #{inspect(other)}"
+    end
+  end
+
+  defp parse_workflow_stage_settings(config, %Definition{} = workflow_definition) do
+    with nil <- TrackerConfig.legacy_tracker_config_error(config),
+         {:ok, tracker_config} <- tracker_config_for_workflow(Workflow.workflow_file_path()),
+         :ok <- TrackerConfig.validate_stage_states(Definition.to_map(workflow_definition), tracker_config) do
+      parse_two_file_settings(config, workflow_definition, tracker_config)
+    else
+      {:legacy_workflow_tracker_config, _keys} = reason -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp parse_two_file_settings(config, %Definition{} = workflow_definition, tracker_config) do
+    workflow_map = Definition.to_map(workflow_definition)
+
+    runtime_config =
+      config
+      |> Map.drop(["workflow", "start_stage", "terminal_stages", "outcomes", "missing_outcome", "stages"])
+      |> Map.merge(TrackerConfig.normalize_for_settings(tracker_config, workflow_map))
+      |> Map.put("workflow", workflow_map)
+      |> Map.put("tracker_config", tracker_config)
+
+    Schema.parse(runtime_config)
+  end
+
+  defp tracker_config_for_workflow(workflow_path) do
+    case TrackerConfig.tracker_file_path() do
+      path when is_binary(path) -> TrackerConfig.load(path)
+      nil -> TrackerConfig.load(TrackerConfig.default_tracker_file_path(workflow_path))
     end
   end
 end

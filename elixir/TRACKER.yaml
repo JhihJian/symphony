@@ -1,0 +1,44 @@
+tracker:
+  kind: linear
+  project_slug: "symphony-0c79b11b75ea"
+  required_labels: []
+  stage_states:
+    ready:
+      state: Todo
+    in_progress:
+      state: In Progress
+    human_review:
+      state: Human Review
+    rework:
+      state: Rework
+    merging:
+      state: Merging
+    done:
+      state: Done
+      terminal: true
+    blocked:
+      state: Cancelled
+      terminal: true
+polling:
+  interval_ms: 5000
+workspace:
+  root: /data/dev/symphony/workspaces
+hooks:
+  timeout_ms: 300000
+  after_create: |
+    git clone --depth 1 https://github.com/openai/symphony .
+    if command -v mise >/dev/null 2>&1; then
+      cd elixir && mise trust && mise exec -- mix deps.get
+    fi
+  before_remove: |
+    cd elixir && mise exec -- mix workspace.before_remove
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+codex:
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  approval_policy: never
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+    networkAccess: true

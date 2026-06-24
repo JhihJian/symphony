@@ -17,6 +17,10 @@ defmodule SymphonyElixir.CLITest do
         send(parent, :workflow_set)
         :ok
       end,
+      set_tracker_config_file_path: fn _path ->
+        send(parent, :tracker_config_set)
+        :ok
+      end,
       set_logs_root: fn _path ->
         send(parent, :logs_root_set)
         :ok
@@ -38,6 +42,7 @@ defmodule SymphonyElixir.CLITest do
     assert banner =~ @ack_flag
     refute_received :file_checked
     refute_received :workflow_set
+    refute_received :tracker_config_set
     refute_received :logs_root_set
     refute_received :port_set
     refute_received :started
@@ -47,6 +52,7 @@ defmodule SymphonyElixir.CLITest do
     deps = %{
       file_regular?: fn path -> Path.basename(path) == "WORKFLOW.md" end,
       set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
       ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
@@ -69,6 +75,7 @@ defmodule SymphonyElixir.CLITest do
         send(parent, {:workflow_set, path})
         :ok
       end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
       ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
@@ -85,6 +92,7 @@ defmodule SymphonyElixir.CLITest do
     deps = %{
       file_regular?: fn _path -> true end,
       set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn path ->
         send(parent, {:logs_root, path})
         :ok
@@ -98,10 +106,63 @@ defmodule SymphonyElixir.CLITest do
     assert expanded_path == Path.expand("tmp/custom-logs")
   end
 
+  test "accepts --tracker-config and passes an expanded tracker config path to runtime deps" do
+    parent = self()
+    workflow_path = "tmp/custom/WORKFLOW.md"
+    tracker_config_path = "tmp/custom/TRACKER.yaml"
+    expanded_workflow_path = Path.expand(workflow_path)
+    expanded_tracker_config_path = Path.expand(tracker_config_path)
+
+    deps = %{
+      file_regular?: fn path ->
+        send(parent, {:checked, path})
+        path in [expanded_workflow_path, expanded_tracker_config_path]
+      end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_tracker_config_file_path: fn path ->
+        send(parent, {:tracker_config_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    assert :ok = CLI.evaluate([@ack_flag, "--tracker-config", tracker_config_path, workflow_path], deps)
+    assert_received {:checked, ^expanded_workflow_path}
+    assert_received {:checked, ^expanded_tracker_config_path}
+    assert_received {:workflow_set, ^expanded_workflow_path}
+    assert_received {:tracker_config_set, ^expanded_tracker_config_path}
+  end
+
+  test "returns not found when explicit tracker config file does not exist" do
+    workflow_path = Path.expand("WORKFLOW.md")
+    tracker_config_path = Path.expand("TRACKER.yaml")
+
+    deps = %{
+      file_regular?: fn
+        ^workflow_path -> true
+        ^tracker_config_path -> false
+      end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
+    }
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "--tracker-config", "TRACKER.yaml", "WORKFLOW.md"], deps)
+    assert message == "Tracker config file not found: #{tracker_config_path}"
+  end
+
   test "returns not found when workflow file does not exist" do
     deps = %{
       file_regular?: fn _path -> false end,
       set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
       ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
@@ -115,6 +176,7 @@ defmodule SymphonyElixir.CLITest do
     deps = %{
       file_regular?: fn _path -> true end,
       set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
       ensure_all_started: fn -> {:error, :boom} end
@@ -129,6 +191,7 @@ defmodule SymphonyElixir.CLITest do
     deps = %{
       file_regular?: fn _path -> true end,
       set_workflow_file_path: fn _path -> :ok end,
+      set_tracker_config_file_path: fn _path -> :ok end,
       set_logs_root: fn _path -> :ok end,
       set_server_port_override: fn _port -> :ok end,
       ensure_all_started: fn -> {:ok, [:symphony_elixir]} end

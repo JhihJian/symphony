@@ -93,43 +93,311 @@ defmodule SymphonyElixir.CoreTest do
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
     Workflow.clear_workflow_file_path()
 
-    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
+    assert {:ok, %{config: config, prompt: prompt, prompt_template: prompt_template}} = Workflow.load()
     assert is_map(config)
 
-    tracker = Map.get(config, "tracker", %{})
-    assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
-    assert is_list(Map.get(tracker, "active_states"))
-    assert is_list(Map.get(tracker, "terminal_states"))
+    refute Map.has_key?(config, "tracker")
+    workflow = Map.fetch!(config, "workflow")
+    assert workflow["start_stage"] == "ready"
+    assert workflow["terminal_stages"] == ["done", "blocked"]
+    assert workflow["missing_outcome"]["on_exhausted"] == "blocked"
+    assert workflow["stages"]["ready"]["prompt"] =~ "This is an unattended orchestration session."
+    assert workflow["stages"]["ready"]["prompt"] =~ "### 完成摘要"
+    assert prompt == ""
+    assert prompt_template =~ "You are working on tracker issue"
 
-    workspace = Map.get(config, "workspace", %{})
-    assert is_map(workspace)
-    assert Map.get(workspace, "root") == "/data/dev/symphony/workspaces"
+    assert {:ok, tracker_config} = TrackerConfig.load(Path.expand("TRACKER.yaml", File.cwd!()))
+    assert tracker_config["tracker"]["kind"] == "linear"
+    assert is_binary(tracker_config["tracker"]["project_slug"])
+    assert tracker_config["tracker"]["stage_states"]["ready"]["state"] == "Todo"
 
-    hooks = Map.get(config, "hooks", %{})
-    assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
-
-    assert String.trim(prompt) != ""
+    settings = Config.settings!()
+    assert settings.workflow["start_stage"] == "ready"
+    assert settings.tracker.kind == "linear"
+    assert settings.tracker.stage_states["in_progress"]["state"] == "In Progress"
+    assert settings.workspace.root == "/data/dev/symphony/workspaces"
+    assert settings.hooks.after_create =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert settings.hooks.before_remove =~ "cd elixir && mise exec -- mix workspace.before_remove"
     assert is_binary(Config.workflow_prompt())
-    assert Config.workflow_prompt() == prompt
+    assert Config.workflow_prompt() == prompt_template
+  end
+
+  test "workflow-stage WORKFLOW.md and TRACKER.yaml load into runtime settings" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: github
+      api_key: token
+      owner: JhihJian
+      repo: symphony
+      project_number: 50
+      project_status_field_name: Status
+      required_labels:
+        - symphony
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        review:
+          state: Human Review
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    settings = Config.settings!()
+
+    assert settings.workflow["start_stage"] == "ready"
+    assert settings.workflow["terminal_stages"] == ["done", "blocked"]
+    assert settings.workflow["missing_outcome"] == %{"max_retries" => 2, "on_exhausted" => "blocked"}
+    assert settings.workflow["stages"]["working"]["prompt"] == "Implement the accepted scope."
+    assert settings.tracker.kind == "github"
+    assert settings.tracker.owner == "JhihJian"
+    assert settings.tracker.repo == "symphony"
+    assert settings.tracker.project_number == 50
+    assert settings.tracker.required_labels == ["symphony"]
+    assert settings.tracker.stage_states["working"]["state"] == "In Progress"
+    assert settings.tracker.active_states == ["Ready", "In Progress", "Human Review"]
+    assert settings.tracker.terminal_states == ["Done", "Blocked"]
+    assert settings.tracker_config["tracker"]["stage_states"]["ready"]["state"] == "Ready"
+    assert Config.workflow_prompt() == "Pick up new work."
+    assert :ok = Config.validate!()
+  end
+
+  test "workflow-stage WORKFLOW.md defaults to sibling TRACKER.yaml when tracker path is not explicit" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.clear_tracker_file_path()
+
+    assert Config.settings!().tracker.kind == "memory"
+  end
+
+  test "workflow-stage schema rejects unknown start stage" do
+    File.write!(
+      Workflow.workflow_file_path(),
+      workflow_stage_file(%{start_stage: "missing"})
+    )
+
+    assert {:error, {:invalid_workflow_definition, message}} = Workflow.load()
+    assert message =~ "workflow.start_stage"
+    assert message =~ "unknown stage"
+  end
+
+  test "workflow-stage schema rejects empty terminal stages" do
+    File.write!(
+      Workflow.workflow_file_path(),
+      workflow_stage_file(%{terminal_stages: []})
+    )
+
+    assert {:error, {:invalid_workflow_definition, message}} = Workflow.load()
+    assert message =~ "workflow.terminal_stages must be a non-empty list"
+  end
+
+  test "workflow-stage schema rejects transition targets outside stages" do
+    File.write!(
+      Workflow.workflow_file_path(),
+      workflow_stage_file(%{ready_transitions: %{accepted: "missing"}})
+    )
+
+    assert {:error, {:invalid_workflow_definition, message}} = Workflow.load()
+    assert message =~ "workflow.stages.ready.transitions.accepted"
+    assert message =~ "unknown stage"
+  end
+
+  test "workflow-stage schema rejects missing outcome exhausted target outside stages" do
+    File.write!(
+      Workflow.workflow_file_path(),
+      workflow_stage_file(%{missing_outcome_on_exhausted: "missing"})
+    )
+
+    assert {:error, {:invalid_workflow_definition, message}} = Workflow.load()
+    assert message =~ "workflow.missing_outcome.on_exhausted"
+    assert message =~ "unknown stage"
+  end
+
+  test "workflow-stage schema rejects unknown transition outcomes" do
+    File.write!(
+      Workflow.workflow_file_path(),
+      workflow_stage_file(%{ready_transitions: %{unknown: "working"}})
+    )
+
+    assert {:error, {:invalid_workflow_definition, message}} = Workflow.load()
+    assert message =~ "workflow.stages.ready.transitions"
+    assert message =~ "unknown outcome"
+  end
+
+  test "workflow-stage settings reject legacy tracker front matter with migration hint" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(
+      workflow_path,
+      """
+      ---
+      tracker:
+        kind: github
+        active_states:
+          - Ready
+        terminal_states:
+          - Done
+      workflow:
+        start_stage: ready
+        terminal_stages: [done]
+        outcomes: [accepted]
+        missing_outcome:
+          max_retries: 1
+          on_exhausted: done
+        stages:
+          ready:
+            prompt: Pick up new work.
+            transitions:
+              accepted: done
+          done:
+            prompt: Terminal stage.
+            transitions: {}
+      ---
+      """
+    )
+
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    assert {:error, {:legacy_workflow_tracker_config, keys}} = Config.settings()
+    assert "tracker.kind" in keys
+    assert "tracker.active_states" in keys
+    assert "tracker.terminal_states" in keys
+
+    assert_raise ArgumentError, ~r/Move provider settings and stage-state mapping to TRACKER.yaml/, fn ->
+      Config.settings!()
+    end
+  end
+
+  test "workflow-stage settings reject missing stage-state mappings in TRACKER.yaml" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    assert {:error, {:invalid_tracker_config, message}} = Config.settings()
+    assert message =~ "TRACKER.yaml tracker.stage_states"
+    assert message =~ "working"
+    assert message =~ "done"
+  end
+
+  test "workflow-stage settings reject unknown stage-state mappings in TRACKER.yaml" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        review:
+          state: Human Review
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+        typo_stage:
+          state: Typo
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    assert {:error, {:invalid_tracker_config, message}} = Config.settings()
+    assert message =~ "TRACKER.yaml tracker.stage_states"
+    assert message =~ "unknown workflow stage keys"
+    assert message =~ "typo_stage"
+
+    refute message =~ "active_states"
+  end
+
+  test "orchestrator surfaces workflow-stage tracker config errors as configuration diagnostics" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        missing:
+          state: Wrong
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    state = %Orchestrator.State{
+      running: %{},
+      blocked: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{},
+      max_concurrent_agents: 1
+    }
+
+    log =
+      capture_log(fn ->
+        assert ^state = Orchestrator.maybe_dispatch_for_test(state)
+      end)
+
+    assert log =~ "Invalid TRACKER.yaml config"
+    assert log =~ "unknown workflow stage keys"
+    refute log =~ "Failed to fetch from tracker"
   end
 
   test "delivery guidance requires concise Chinese handoff summaries" do
     Workflow.clear_workflow_file_path()
-    assert {:ok, %{prompt: prompt}} = Workflow.load()
+    assert {:ok, %{prompt_template: prompt_template}} = Workflow.load()
 
     commit_skill = File.read!(Path.expand("../.codex/skills/commit/SKILL.md", File.cwd!()))
     push_skill = File.read!(Path.expand("../.codex/skills/push/SKILL.md", File.cwd!()))
     pr_template = File.read!(Path.expand("../.github/pull_request_template.md", File.cwd!()))
 
-    assert prompt =~ "### 完成摘要"
-    assert prompt =~ "详细执行过程继续保留"
-    assert prompt =~ "详细日志不能替代完成摘要"
+    assert prompt_template =~ "### 完成摘要"
+    assert prompt_template =~ "详细执行过程继续保留"
+    assert prompt_template =~ "详细日志不能替代完成摘要"
 
     assert commit_skill =~ "变更："
     assert commit_skill =~ "原因："
@@ -1045,6 +1313,84 @@ defmodule SymphonyElixir.CoreTest do
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
+  defp workflow_stage_file(overrides \\ %{}) do
+    start_stage = Map.get(overrides, :start_stage, "ready")
+    terminal_stages = Map.get(overrides, :terminal_stages, ["done", "blocked"])
+    ready_transitions = Map.get(overrides, :ready_transitions, %{accepted: "working"})
+    missing_outcome_on_exhausted = Map.get(overrides, :missing_outcome_on_exhausted, "blocked")
+
+    """
+    ---
+    workflow:
+      start_stage: #{yaml_value(start_stage)}
+      terminal_stages: #{yaml_value(terminal_stages)}
+      outcomes: [accepted, needs_review, completed, blocked]
+      missing_outcome:
+        max_retries: 2
+        on_exhausted: #{yaml_value(missing_outcome_on_exhausted)}
+      stages:
+        ready:
+          prompt: Pick up new work.
+          transitions: #{yaml_value(ready_transitions)}
+        working:
+          prompt: Implement the accepted scope.
+          transitions:
+            needs_review: review
+            completed: done
+            blocked: blocked
+        review:
+          prompt: Prepare validated work for review.
+          transitions:
+            completed: done
+            blocked: blocked
+        done:
+          prompt: Terminal completion stage.
+          transitions: {}
+        blocked:
+          prompt: Terminal blocked stage.
+          transitions: {}
+    ---
+    """
+  end
+
+  defp memory_tracker_stage_config do
+    """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        review:
+          state: Human Review
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+    """
+  end
+
+  defp yaml_value(value) when is_binary(value) do
+    "\"" <> String.replace(value, "\"", "\\\"") <> "\""
+  end
+
+  defp yaml_value(value) when is_atom(value), do: yaml_value(Atom.to_string(value))
+  defp yaml_value(value) when is_integer(value), do: to_string(value)
+
+  defp yaml_value(values) when is_list(values) do
+    "[" <> Enum.map_join(values, ", ", &yaml_value/1) <> "]"
+  end
+
+  defp yaml_value(values) when is_map(values) do
+    "{" <>
+      Enum.map_join(values, ", ", fn {key, value} ->
+        "#{yaml_value(to_string(key))}: #{yaml_value(value)}"
+      end) <> "}"
+  end
+
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])
   end
@@ -1438,7 +1784,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
+    assert prompt =~ "You are working on tracker issue `MT-616`"
     assert prompt =~ "Issue context:"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
@@ -1446,9 +1792,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
-    assert prompt =~ "Do not include \"next steps for user\""
-    assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
-    assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "Final handoff must record completion summary"
+    assert prompt =~ "Commit message for non-trivial changes"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end

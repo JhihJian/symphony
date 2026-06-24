@@ -244,12 +244,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_dispatch(%State{} = state) do
-    state =
-      state
-      |> reconcile_running_issues()
-      |> reconcile_blocked_issues()
+    validation_result = Config.validate!()
+    state = maybe_reconcile_before_dispatch(state, validation_result)
 
-    with :ok <- Config.validate!(),
+    with :ok <- validation_result,
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -296,6 +294,30 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Invalid WORKFLOW.md config: #{message}")
         state
 
+      {:error, {:invalid_workflow_definition, _message} = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
+      {:error, {:invalid_tracker_config, _message} = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
+      {:error, {:legacy_workflow_tracker_config, _keys} = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
+      {:error, {:missing_tracker_config_file, _path, _raw_reason} = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
+      {:error, :tracker_config_not_a_map = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
+      {:error, {:tracker_config_parse_error, _raw_reason} = reason} ->
+        Logger.error(Config.format_config_error(reason))
+        state
+
       {:error, {:missing_workflow_file, path, reason}} ->
         Logger.error("Missing WORKFLOW.md at #{path}: #{inspect(reason)}")
         state
@@ -316,6 +338,32 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  defp reconcile_before_dispatch(%State{} = state) do
+    state
+    |> reconcile_running_issues()
+    |> reconcile_blocked_issues()
+  end
+
+  defp maybe_reconcile_before_dispatch(%State{} = state, validation_result) do
+    if config_load_error?(validation_result) do
+      state
+    else
+      reconcile_before_dispatch(state)
+    end
+  end
+
+  defp config_load_error?({:error, {:invalid_workflow_config, _message}}), do: true
+  defp config_load_error?({:error, {:invalid_workflow_definition, _message}}), do: true
+  defp config_load_error?({:error, {:invalid_tracker_config, _message}}), do: true
+  defp config_load_error?({:error, {:legacy_workflow_tracker_config, _keys}}), do: true
+  defp config_load_error?({:error, {:missing_tracker_config_file, _path, _raw_reason}}), do: true
+  defp config_load_error?({:error, :tracker_config_not_a_map}), do: true
+  defp config_load_error?({:error, {:tracker_config_parse_error, _raw_reason}}), do: true
+  defp config_load_error?({:error, {:missing_workflow_file, _path, _raw_reason}}), do: true
+  defp config_load_error?({:error, :workflow_front_matter_not_a_map}), do: true
+  defp config_load_error?({:error, {:workflow_parse_error, _raw_reason}}), do: true
+  defp config_load_error?(_validation_result), do: false
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -415,6 +463,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec select_worker_host_for_test(term(), String.t() | nil) :: String.t() | nil | :no_worker_capacity
   def select_worker_host_for_test(%State{} = state, preferred_worker_host) do
     select_worker_host(state, preferred_worker_host)
+  end
+
+  @doc false
+  @spec maybe_dispatch_for_test(term()) :: term()
+  def maybe_dispatch_for_test(%State{} = state) do
+    maybe_dispatch(state)
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state

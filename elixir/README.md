@@ -44,12 +44,17 @@ issue can become a dispatch candidate again after restart.
    - Linear: set `LINEAR_API_KEY`.
    - GitHub Issues: set `GITHUB_TOKEN`.
    - GitLab Issues: set `GITLAB_TOKEN`.
-3. Copy this directory's `WORKFLOW.md` to your repo.
+3. Copy this directory's `WORKFLOW.md` and `TRACKER.yaml` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - For Linear, `tracker.project_slug` is the Linear project slug from the project URL.
+5. Customize the copied files for your project.
+   - `WORKFLOW.md` defines provider-neutral workflow stages, outcomes, transitions, and stage
+     prompts.
+   - `TRACKER.yaml` defines provider access, workspace/runtime settings, and maps workflow stages
+     to provider-visible states under `tracker.stage_states`.
+   - For Linear, `tracker.project_slug` in `TRACKER.yaml` is the Linear project slug from the
+     project URL.
    - For GitLab, `tracker.project_slug` is the GitLab project path such as `group/project`, or a
      numeric project ID. To express fine-grained workflow states in GitLab labels, set
      `tracker.state_label_prefix`, for example `status::`.
@@ -76,34 +81,82 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md
 ```
 
 ## Configuration
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+Pass custom workflow and tracker config paths to `./bin/symphony` when starting the service:
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony --tracker-config /path/to/custom/TRACKER.yaml /path/to/custom/WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+If no workflow path is passed, Symphony defaults to `./WORKFLOW.md`. In workflow-stage mode, when
+`--tracker-config` is omitted Symphony looks for `TRACKER.yaml` next to the selected `WORKFLOW.md`.
 
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
+- `--tracker-config` explicitly selects the provider-specific tracker config file
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+`WORKFLOW.md` uses YAML front matter for the provider-neutral workflow-stage schema. `TRACKER.yaml`
+contains provider access fields, stage-state mapping, workspace hooks, and runtime knobs.
 
 Minimal example:
 
 ```md
 ---
+workflow:
+  start_stage: ready
+  terminal_stages: [done, blocked]
+  outcomes: [started, completed, blocked]
+  missing_outcome:
+    max_retries: 3
+    on_exhausted: blocked
+  stages:
+    ready:
+      prompt: |
+        You are working on issue {{ issue.identifier }}.
+
+        Title: {{ issue.title }}
+        Body: {{ issue.description }}
+      transitions:
+        started: in_progress
+        blocked: blocked
+    in_progress:
+      prompt: |
+        Implement and validate the accepted scope.
+      transitions:
+        completed: done
+        blocked: blocked
+    done:
+      prompt: Terminal completion stage.
+      transitions: {}
+    blocked:
+      prompt: Terminal blocked stage.
+      transitions: {}
+---
+```
+
+Matching `TRACKER.yaml`:
+
+```yaml
 tracker:
   kind: linear
   project_slug: "..."
+  stage_states:
+    ready:
+      state: Todo
+    in_progress:
+      state: In Progress
+    done:
+      state: Done
+      terminal: true
+    blocked:
+      state: Cancelled
+      terminal: true
 workspace:
   root: ~/code/workspaces
 hooks:
@@ -114,11 +167,6 @@ agent:
   max_turns: 20
 codex:
   command: codex app-server
----
-
-You are working on an issue {{ issue.identifier }}.
-
-Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
 Notes:
@@ -138,6 +186,9 @@ Notes:
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
+- Legacy provider fields in `WORKFLOW.md` front matter remain available only for the old runtime
+  path while #45 migration work continues. New configurations should use `WORKFLOW.md` +
+  `TRACKER.yaml`; the old state-model config will be removed in a later #45 cleanup.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -185,6 +236,7 @@ codex:
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
+- In workflow-stage mode, if `TRACKER.yaml` is missing or invalid, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
@@ -251,6 +303,7 @@ not started by default.
 - `lib/`: application code and Mix tasks
 - `test/`: ExUnit coverage for runtime behavior
 - `WORKFLOW.md`: in-repo workflow contract used by local runs
+- `TRACKER.yaml`: in-repo provider/runtime config used by local runs
 - `../.codex/`: repository-local Codex skills and setup helpers
 
 ## Testing
@@ -297,9 +350,10 @@ the transport representative without depending on long-lived external machines.
 
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e-live` to target real SSH hosts instead.
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
-Linear issue, then marks the project completed so the run remains visible in Linear.
+The live test creates a temporary Linear project and issue, writes temporary workflow/tracker
+configuration, runs a real agent turn, verifies the workspace side effect, requires Codex to
+comment on and close the Linear issue, then marks the project completed so the run remains visible
+in Linear.
 
 ## FAQ
 
