@@ -90,14 +90,32 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(
+          session,
+          workspace,
+          issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          1,
+          max_turns
+        )
       after
         AppServer.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_codex_turns(
+         app_session,
+         workspace,
+         issue,
+         codex_update_recipient,
+         opts,
+         issue_state_fetcher,
+         turn_number,
+         max_turns
+       ) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
@@ -138,9 +156,117 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    """
+    #{PromptBuilder.build_prompt(issue, opts)}
+
+    #{state_route_prompt(issue)}
+    """
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+    build_continuation_prompt(turn_number, max_turns)
+  end
+
+  defp state_route_prompt(%Issue{state: state_name}) do
+    case normalize_issue_state(state_name) do
+      "todo" -> todo_route_prompt()
+      "in progress" -> in_progress_route_prompt()
+      "rework" -> rework_route_prompt()
+      "human review" -> human_review_route_prompt()
+      "merging" -> merging_route_prompt()
+      "done" -> done_route_prompt()
+      _ -> generic_active_route_prompt(state_name)
+    end
+  end
+
+  defp state_route_prompt(_issue), do: generic_active_route_prompt(nil)
+
+  defp todo_route_prompt do
+    """
+    State route: Todo -> In Progress.
+
+    First move the issue to `In Progress`, then create or refresh the single workpad. Before code changes,
+    inspect issue context, fill missing execution context from repository/tracker evidence, mirror acceptance
+    and validation requirements into the workpad, and record reproduction evidence.
+
+    Next target state: `Human Review` only after implementation, validation, PR linkage, PR feedback sweep,
+    green checks, and all workpad completion criteria are satisfied. If a true external blocker remains,
+    record it in the workpad and use the workflow's blocker handoff rules.
+    """
+  end
+
+  defp in_progress_route_prompt do
+    """
+    State route: In Progress -> Human Review.
+
+    Continue from the existing workspace and workpad. Reconcile current issue context, complete the planned
+    implementation, keep acceptance criteria and validation requirements current, run required checks, create
+    or update the PR, resolve actionable PR feedback, and attach/link the PR.
+
+    Next target state: `Human Review` only after validation and PR feedback gates are complete. If validation
+    or review feedback fails, keep the issue in `In Progress` and continue fixing.
+    """
+  end
+
+  defp rework_route_prompt do
+    """
+    State route: Rework -> Human Review.
+
+    Treat reviewer feedback as the driver for this turn. Re-read issue context and all PR/review comments,
+    identify what must change, update the workpad, implement the required changes, rerun validation, push the
+    branch, and complete the full PR feedback sweep.
+
+    Next target state: `Human Review` only after every actionable feedback item is resolved or explicitly
+    answered, validation is green, and the workpad records the result.
+    """
+  end
+
+  defp human_review_route_prompt do
+    """
+    State route: Human Review -> Merging or Rework.
+
+    Do not implement new changes just because this turn started. Poll the PR/review state and issue comments.
+    If feedback requires changes, move or leave the issue in `Rework` and record the required changes. If a
+    human approval is present, wait for or preserve the `Merging` handoff according to the workflow.
+
+    Next target state: `Merging` when approved by a human, or `Rework` when changes are requested.
+    """
+  end
+
+  defp merging_route_prompt do
+    """
+    State route: Merging -> Done.
+
+    Execute the workflow's land/merge path exactly as instructed. Do not bypass the land skill or required
+    merge checks. After the PR is merged and the post-merge requirements are satisfied, update the workpad.
+
+    Next target state: `Done` after the merge is complete.
+    """
+  end
+
+  defp done_route_prompt do
+    """
+    State route: Done.
+
+    The issue is already terminal. Do not change code, ticket content, or PR state. Summarize that no work is
+    required and end the turn.
+    """
+  end
+
+  defp generic_active_route_prompt(state_name) do
+    """
+    State route: #{state_name || "unknown"}.
+
+    Re-read the issue state and route using the workflow's status map. If the state is active but not one of
+    the named workflow states, avoid code changes until the safe next state is clear from tracker context.
+
+    Next target state: use the closest matching workflow transition, and record the routing decision in the
+    workpad before acting.
+    """
+  end
+
+  defp build_continuation_prompt(turn_number, max_turns) do
     """
     Continuation guidance:
 

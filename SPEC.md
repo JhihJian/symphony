@@ -442,7 +442,6 @@ Fields:
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
-
 #### 5.3.6 `codex` (object)
 
 Fields:
@@ -652,7 +651,9 @@ Important nuance:
 - After each normal turn completion, the worker re-checks the tracker issue state.
 - If the issue is still in an active state, the worker SHOULD start another turn on the same live
   coding-agent thread in the same workspace, up to `agent.max_turns`.
-- The first turn SHOULD use the full rendered task prompt.
+- The first turn SHOULD use the full rendered task prompt plus state-route guidance derived from
+  the current tracker state. State-route guidance SHOULD name the intended next tracker state for
+  the route (for example `Todo -> In Progress`, `In Progress -> Human Review`, or `Merging -> Done`).
 - Continuation turns SHOULD send only continuation guidance to the existing thread, not resend the
   original task prompt that is already present in thread history.
 - Once the worker exits normally, the orchestrator still schedules a short continuation retry
@@ -975,7 +976,8 @@ client to:
 - Create or resume a coding-agent thread according to the targeted protocol.
 - Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
   targeted protocol accepts cwd.
-- Start the first turn with the rendered issue prompt.
+- Start the first turn with the rendered issue prompt plus state-route guidance derived from the
+  current tracker state.
 - Start later in-worker continuation turns on the same live thread with continuation guidance rather
   than resending the original issue prompt.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
@@ -1910,7 +1912,13 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   turn_number = 1
 
   while true:
-    prompt = build_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns)
+    prompt = build_turn_prompt(
+      workflow_template,
+      issue,
+      attempt,
+      turn_number,
+      max_turns
+    )
     if prompt failed:
       app_server.stop_session(session)
       run_hook_best_effort("after_run", workspace.path)
