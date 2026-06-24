@@ -197,11 +197,72 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 
+  test "workflow store watches sibling tracker config changes in workflow-stage mode" do
+    ensure_workflow_store_running()
+
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, """
+    ---
+    workflow:
+      start_stage: ready
+      terminal_stages: [done]
+      outcomes: [started, completed]
+      missing_outcome:
+        max_retries: 1
+        on_exhausted: done
+      stages:
+        ready:
+          prompt: Ready stage.
+          transitions:
+            started: working
+        working:
+          prompt: Working stage.
+          transitions:
+            completed: done
+        done:
+          prompt: Done stage.
+          transitions: {}
+    ---
+    """)
+
+    File.write!(tracker_config_path, workflow_stage_tracker_config("In Progress"))
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.clear_tracker_file_path()
+
+    assert_eventually(fn ->
+      Config.settings!().tracker.stage_states["working"]["state"] == "In Progress"
+    end)
+
+    File.write!(tracker_config_path, workflow_stage_tracker_config("Doing"))
+    send(WorkflowStore, :poll)
+
+    assert_eventually(fn ->
+      Config.settings!().tracker.stage_states["working"]["state"] == "Doing"
+    end)
+  end
+
   test "workflow store init stops on missing workflow file" do
     missing_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "MISSING_WORKFLOW.md")
     Workflow.set_workflow_file_path(missing_path)
 
     assert {:stop, {:missing_workflow_file, ^missing_path, :enoent}} = WorkflowStore.init([])
+  end
+
+  defp workflow_stage_tracker_config(working_state) do
+    """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: #{working_state}
+        done:
+          state: Done
+          terminal: true
+    """
   end
 
   test "workflow store start_link and poll callback cover missing-file error paths" do

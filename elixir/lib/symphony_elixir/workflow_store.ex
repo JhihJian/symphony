@@ -6,6 +6,7 @@ defmodule SymphonyElixir.WorkflowStore do
   use GenServer
   require Logger
 
+  alias SymphonyElixir.TrackerConfig
   alias SymphonyElixir.Workflow
 
   @poll_interval_ms 1_000
@@ -139,11 +140,32 @@ defmodule SymphonyElixir.WorkflowStore do
   end
 
   defp current_stamp(path) when is_binary(path) do
+    with {:ok, workflow_stamp} <- file_stamp(path),
+         {:ok, tracker_stamp} <- tracker_stamp(path) do
+      {:ok, {workflow_stamp, tracker_stamp}}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp tracker_stamp(workflow_path) do
+    tracker_path =
+      case TrackerConfig.tracker_file_path() do
+        path when is_binary(path) -> path
+        nil -> TrackerConfig.default_tracker_file_path(workflow_path)
+      end
+
+    case file_stamp(tracker_path) do
+      {:ok, stamp} -> {:ok, {tracker_path, stamp}}
+      {:error, :enoent} -> {:ok, {tracker_path, :missing}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp file_stamp(path) do
     with {:ok, stat} <- File.stat(path, time: :posix),
          {:ok, content} <- File.read(path) do
       {:ok, {stat.mtime, stat.size, :erlang.phash2(content)}}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 

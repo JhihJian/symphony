@@ -50,6 +50,10 @@ scripts/install-systemd-template.sh \
 如果不希望自动更新，去掉 `--auto-update`；如果之前启用过，可以传 `--no-auto-update` 关闭。
 如果只想生成文件、不执行 `systemctl --user`，可以传 `--no-systemd`。
 
+注意：当前 systemd installer 仍生成兼容旧运行实例的单文件 `WORKFLOW.md`。应用本身已经支持
+`WORKFLOW.md + TRACKER.yaml` 和 `--tracker-config`，但共享 systemd template、现有实例配置迁移
+和回滚保护由 #57 后续完成。
+
 ## 目录约定
 
 安装脚本不假设用户已经手动 clone 仓库。默认情况下，它会使用下面的源码目录：
@@ -81,7 +85,7 @@ scripts/install-systemd-template.sh ... \
 
 ```text
 ~/.config/symphony/projects/<project>/
-  WORKFLOW.md  # 项目 tracker、workspace、prompt 配置
+  WORKFLOW.md  # 当前 systemd installer 生成的 legacy 单文件 tracker/workspace/prompt 配置
   env          # 项目密钥、端口、日志目录
 ```
 

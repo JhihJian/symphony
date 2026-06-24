@@ -24,8 +24,9 @@ The service solves four operational problems:
 - It turns issue execution into a repeatable daemon workflow instead of manual scripts.
 - It isolates agent execution in per-issue workspaces so agent commands run only inside per-issue
   workspace directories.
-- It keeps the workflow policy in-repo (`WORKFLOW.md`) so teams version the agent prompt and runtime
-  settings with their code.
+- It keeps workflow policy in-repo (`WORKFLOW.md`) and tracker/runtime config in explicit
+  `TRACKER.yaml` files so teams version agent prompts, workflow stages, and runtime settings with
+  their code.
 - It provides enough observability to operate and debug multiple concurrent agent runs.
 
 Implementations are expected to document their trust and safety posture explicitly. This
@@ -74,11 +75,12 @@ Important boundary:
 
 1. `Workflow Loader`
    - Reads `WORKFLOW.md`.
-   - Parses YAML front matter and prompt body.
-   - Returns `{config, prompt_template}`.
+   - Parses provider-neutral workflow YAML front matter and prompt body.
+   - Returns raw config, parsed workflow definition, and prompt template.
 
 2. `Config Layer`
-   - Exposes typed getters for workflow config values.
+   - Loads `TRACKER.yaml` in workflow-stage mode.
+   - Exposes typed getters for workflow and tracker/runtime config values.
    - Applies defaults and environment variable indirection.
    - Performs validation used by the orchestrator before dispatch.
 
@@ -118,11 +120,11 @@ Important boundary:
 Symphony is easiest to port when kept in these layers:
 
 1. `Policy Layer` (repo-defined)
-   - `WORKFLOW.md` prompt body.
+   - `WORKFLOW.md` workflow-stage schema and stage prompts.
    - Team-specific rules for ticket handling, validation, and handoff.
 
 2. `Configuration Layer` (typed getters)
-   - Parses front matter into typed runtime settings.
+   - Parses `WORKFLOW.md` and `TRACKER.yaml` into typed runtime settings.
    - Handles defaults, environment tokens, and path normalization.
 
 3. `Coordination Layer` (orchestrator)
@@ -184,18 +186,22 @@ Parsed `WORKFLOW.md` payload:
 
 - `config` (map)
   - YAML front matter root object.
+- `workflow` (map or typed structure)
+  - Provider-neutral workflow stages, outcomes, missing-outcome handling, and transitions.
 - `prompt_template` (string)
   - Markdown body after front matter, trimmed.
 
 #### 4.1.3 Service Config (Typed View)
 
-Typed runtime values derived from `WorkflowDefinition.config` plus environment resolution.
+Typed runtime values derived from `WorkflowDefinition.config`, `TRACKER.yaml`, and environment
+resolution.
 
 Examples:
 
 - poll interval
 - workspace root
-- active and terminal issue states
+- workflow definition and tracker stage-state mapping
+- derived active and terminal issue states for legacy scheduler compatibility
 - concurrency limits
 - coding-agent executable/args/timeouts
 - workspace hooks
@@ -304,13 +310,17 @@ Loader behavior:
 
 ### 5.2 File Format
 
-`WORKFLOW.md` is a Markdown file with OPTIONAL YAML front matter.
+`WORKFLOW.md` is a Markdown file with YAML front matter for provider-neutral workflow stages.
+`TRACKER.yaml` is a separate YAML file for provider-specific tracker access, stage-state mapping,
+workspace/runtime settings, hooks, and agent/Codex runtime knobs.
 
 Design note:
 
-- `WORKFLOW.md` SHOULD be self-contained enough to describe and run different workflows (prompt,
-  runtime settings, hooks, and tracker selection/config) without requiring out-of-band
-  service-specific configuration.
+- New configurations SHOULD keep provider access and provider-visible state names out of
+  `WORKFLOW.md`. Use `WORKFLOW.md` + `TRACKER.yaml` for workflow-stage configurations.
+- The legacy single-file model with provider `tracker.active_states` and
+  `tracker.terminal_states` in `WORKFLOW.md` remains a temporary compatibility path during the #45
+  migration and will be removed by follow-up cleanup work.
 
 Parsing rules:
 
@@ -319,13 +329,83 @@ Parsing rules:
 - If front matter is absent, treat the entire file as prompt body and use an empty config map.
 - YAML front matter MUST decode to a map/object; non-map YAML is an error.
 - Prompt body is trimmed before use.
+- In workflow-stage mode, if the Markdown body is blank, the `prompt` for `workflow.start_stage`
+  is used as the current prompt template for the old runner path.
 
 Returned workflow object:
 
 - `config`: front matter root object (not nested under a `config` key).
+- `workflow`: parsed provider-neutral workflow definition when workflow-stage front matter is
+  present.
 - `prompt_template`: trimmed Markdown body.
 
-### 5.3 Front Matter Schema
+### 5.3 `WORKFLOW.md` Front Matter Schema
+
+Top-level keys:
+
+- `workflow`
+- legacy runtime keys such as `polling`, `workspace`, `hooks`, `agent`, and `codex` MAY be accepted
+  by an implementation for compatibility, but new workflow-stage examples should keep them in
+  `TRACKER.yaml`.
+
+Unknown keys SHOULD be ignored for forward compatibility.
+
+#### 5.3.1 `workflow` (object)
+
+Fields:
+
+- `start_stage` (string)
+  - REQUIRED.
+  - MUST name a key in `workflow.stages`.
+- `terminal_stages` (non-empty list of strings)
+  - REQUIRED.
+  - Every entry MUST name a key in `workflow.stages`.
+- `outcomes` (non-empty list of strings)
+  - REQUIRED.
+  - Stage transition keys MUST be present in this list.
+- `missing_outcome` (object)
+  - `max_retries` (non-negative integer), REQUIRED.
+  - `on_exhausted` (string), REQUIRED and MUST name a key in `workflow.stages`.
+- `stages` (object)
+  - REQUIRED non-empty map keyed by stage name.
+  - Each stage has:
+    - `prompt` (string): stage work content for the agent. It does not need to include a completion
+      protocol.
+    - `transitions` (object): map of outcome name to target stage. Every target MUST name a key in
+      `workflow.stages`.
+
+Example:
+
+```yaml
+workflow:
+  start_stage: ready
+  terminal_stages: [done, blocked]
+  outcomes: [started, completed, blocked]
+  missing_outcome:
+    max_retries: 3
+    on_exhausted: blocked
+  stages:
+    ready:
+      prompt: |
+        Work on issue {{ issue.identifier }}.
+      transitions:
+        started: in_progress
+        blocked: blocked
+    in_progress:
+      prompt: |
+        Implement and validate the accepted scope.
+      transitions:
+        completed: done
+        blocked: blocked
+    done:
+      prompt: Terminal completion stage.
+      transitions: {}
+    blocked:
+      prompt: Terminal blocked stage.
+      transitions: {}
+```
+
+### 5.4 `TRACKER.yaml` Schema
 
 Top-level keys:
 
@@ -340,12 +420,12 @@ Unknown keys SHOULD be ignored for forward compatibility.
 
 Note:
 
-- The workflow front matter is extensible. Extensions MAY define additional top-level keys without
+- The tracker config is extensible. Extensions MAY define additional top-level keys without
   changing the core schema above.
 - Extensions SHOULD document their field schema, defaults, validation rules, and whether changes
   apply dynamically or require restart.
 
-#### 5.3.1 `tracker` (object)
+#### 5.4.1 `tracker` (object)
 
 Fields:
 
@@ -382,12 +462,19 @@ Fields:
   - For `tracker.kind == "gitlab"`, when set, Symphony derives fine-grained workflow state from
     GitLab labels named `<prefix><normalized-state>`, for example `status::human-review`.
   - State label matching ignores case and surrounding whitespace.
-- `active_states` (list of strings)
-  - Default: `Todo`, `In Progress`
-- `terminal_states` (list of strings)
-  - Default: `Closed`, `Cancelled`, `Canceled`, `Duplicate`, `Done`
+- `stage_states` (object)
+  - REQUIRED in workflow-stage mode.
+  - Keys are workflow stage names.
+  - Each value has:
+    - `state` (string): provider-visible state/status/label name.
+    - `terminal` (boolean, OPTIONAL): marks the mapped provider state as terminal for the old
+      runner/scheduler compatibility path. Terminal workflow stages are also terminal even if this
+      flag is omitted.
+- `active_states` and `terminal_states` are legacy compatibility fields for the old issue-state
+  scheduler. In workflow-stage mode, implementations MAY derive these values from
+  `tracker.stage_states` until the #45 scheduler migration removes the old model.
 
-#### 5.3.2 `polling` (object)
+#### 5.4.2 `polling` (object)
 
 Fields:
 
@@ -395,7 +482,7 @@ Fields:
   - Default: `30000`
   - Changes SHOULD be re-applied at runtime and affect future tick scheduling without restart.
 
-#### 5.3.3 `workspace` (object)
+#### 5.4.3 `workspace` (object)
 
 Fields:
 
@@ -405,7 +492,7 @@ Fields:
   - Relative paths are resolved relative to the directory containing `WORKFLOW.md`.
   - The effective workspace root is normalized to an absolute path before use.
 
-#### 5.3.4 `hooks` (object)
+#### 5.4.4 `hooks` (object)
 
 Fields:
 
@@ -429,7 +516,7 @@ Fields:
   - Invalid values fail configuration validation.
   - Changes SHOULD be re-applied at runtime for future hook executions.
 
-#### 5.3.5 `agent` (object)
+#### 5.4.5 `agent` (object)
 
 Fields:
 
@@ -447,7 +534,7 @@ Fields:
   - Default: empty map.
   - State keys are normalized (`lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
-#### 5.3.6 `codex` (object)
+#### 5.4.6 `codex` (object)
 
 Fields:
 
@@ -477,7 +564,7 @@ fields locally if they want stricter startup checks.
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
 
-### 5.4 Prompt Template Contract
+### 5.5 Prompt Template Contract
 
 The Markdown body of `WORKFLOW.md` is the per-issue prompt template.
 
@@ -497,18 +584,27 @@ Template input variables:
 
 Fallback prompt behavior:
 
-- If the workflow prompt body is empty, the runtime MAY use a minimal default prompt
-  (`You are working on an issue from an issue tracker.`).
+- If the workflow prompt body is empty in workflow-stage mode, the runtime uses
+  `workflow.stages[workflow.start_stage].prompt` as the compatibility prompt for the old runner
+  path. Prompt selection by current workflow stage is future #45 work.
+- If no workflow-stage prompt is available, the runtime MAY use a minimal default prompt
+  (`You are working on an issue.`).
 - Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
   back to a prompt.
 
-### 5.5 Workflow Validation and Error Surface
+### 5.6 Workflow Validation and Error Surface
 
 Error classes:
 
 - `missing_workflow_file`
 - `workflow_parse_error`
 - `workflow_front_matter_not_a_map`
+- `invalid_workflow_definition`
+- `missing_tracker_config_file`
+- `tracker_config_parse_error`
+- `tracker_config_not_a_map`
+- `invalid_tracker_config`
+- `legacy_workflow_tracker_config`
 - `template_parse_error` (during prompt rendering)
 - `template_render_error` (unknown variable/filter, invalid interpolation)
 
@@ -524,10 +620,14 @@ Dispatch gating behavior:
 Configuration is resolved in this order:
 
 1. Select the workflow file path (explicit runtime setting, otherwise cwd default).
-2. Parse YAML front matter into a raw config map.
-3. Apply built-in defaults for missing OPTIONAL fields.
-4. Resolve `$VAR_NAME` indirection only for config values that explicitly contain `$VAR_NAME`.
-5. Coerce and validate typed values.
+2. Parse `WORKFLOW.md` YAML front matter into a raw provider-neutral workflow map.
+3. In workflow-stage mode, select `TRACKER.yaml` from explicit runtime setting or the selected
+   `WORKFLOW.md` directory and parse provider/runtime configuration from it.
+4. Reject legacy provider tracker fields in workflow-stage `WORKFLOW.md` with a migration diagnostic
+   that points to `WORKFLOW.md + TRACKER.yaml`.
+5. Apply built-in defaults for missing OPTIONAL fields.
+6. Resolve `$VAR_NAME` indirection only for config values that explicitly contain `$VAR_NAME`.
+7. Coerce and validate typed values.
 
 Environment variables do not globally override YAML values. They are used only when a config value
 explicitly references them.
@@ -547,7 +647,9 @@ Value coercion semantics:
 Dynamic reload is REQUIRED:
 
 - The software MUST detect `WORKFLOW.md` changes.
-- On change, it MUST re-read and re-apply workflow config and prompt template without restart.
+- In workflow-stage mode, the software MUST also detect the selected `TRACKER.yaml` changes.
+- On change, it MUST re-read and re-apply workflow config, tracker config, and prompt template
+  without restart.
 - The software MUST attempt to adjust live behavior to the new config (for example polling
   cadence, concurrency limits, active/terminal states, codex settings, workspace paths/hooks, and
   prompt content for future runs).
@@ -582,6 +684,10 @@ Per-tick dispatch validation:
 Validation checks:
 
 - Workflow file can be loaded and parsed.
+- Workflow-stage schema validates `start_stage`, `terminal_stages`, transitions, and
+  `missing_outcome.on_exhausted`.
+- Tracker config can be loaded and maps every workflow stage to a provider-visible state in
+  `tracker.stage_states`.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
 - `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
@@ -593,31 +699,40 @@ This section is intentionally redundant so a coding agent can implement the conf
 Extension fields are documented in the extension section that defines them. Core conformance does
 not require recognizing or validating extension fields unless that extension is implemented.
 
-- `tracker.kind`: string, REQUIRED, currently `linear`, `github`, `gitlab`, or `memory`
-- `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
-- `tracker.api_key`: string or `$VAR`, canonical env depends on tracker kind
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear` or `tracker.kind=gitlab`
-- `tracker.owner`: string, REQUIRED when `tracker.kind=github`
-- `tracker.repo`: string, REQUIRED when `tracker.kind=github`
-- `tracker.project_number`: integer, OPTIONAL when `tracker.kind=github`
-- `tracker.required_labels`: list of strings, default `[]`
-- `tracker.state_label_prefix`: string, OPTIONAL for GitLab scoped label workflow states
-- `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
-- `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
-- `polling.interval_ms`: integer, default `30000`
-- `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
-- `hooks.after_create`: shell script or null
-- `hooks.before_run`: shell script or null
-- `hooks.after_run`: shell script or null
-- `hooks.before_remove`: shell script or null
-- `hooks.timeout_ms`: integer, default `60000`
-- `agent.max_concurrent_agents`: integer, default `10`
-- `agent.max_turns`: integer, default `20`
-- `agent.max_retry_backoff_ms`: integer, default `300000` (5m)
-- `agent.max_concurrent_agents_by_state`: map of positive integers, default `{}`
-- `codex.command`: shell command string, default `codex app-server`
-- `codex.approval_policy`: Codex `AskForApproval` value, default implementation-defined
-- `codex.thread_sandbox`: Codex `SandboxMode` value, default implementation-defined
+- `workflow.start_stage`: string in `WORKFLOW.md`, REQUIRED and present in `workflow.stages`
+- `workflow.terminal_stages`: non-empty list in `WORKFLOW.md`; all entries present in
+  `workflow.stages`
+- `workflow.outcomes`: non-empty list in `WORKFLOW.md`; every transition key is listed here
+- `workflow.missing_outcome.max_retries`: non-negative integer in `WORKFLOW.md`
+- `workflow.missing_outcome.on_exhausted`: string in `WORKFLOW.md`, present in `workflow.stages`
+- `workflow.stages.<stage>.prompt`: string in `WORKFLOW.md`
+- `workflow.stages.<stage>.transitions`: map of outcome to target stage in `WORKFLOW.md`
+- `tracker.kind`: string in `TRACKER.yaml`, REQUIRED, currently `linear`, `github`, `gitlab`, or `memory`
+- `tracker.endpoint`: string in `TRACKER.yaml`, default `https://api.linear.app/graphql` when `tracker.kind=linear`
+- `tracker.api_key`: string or `$VAR` in `TRACKER.yaml`, canonical env depends on tracker kind
+- `tracker.project_slug`: string in `TRACKER.yaml`, REQUIRED when `tracker.kind=linear` or `tracker.kind=gitlab`
+- `tracker.owner`: string in `TRACKER.yaml`, REQUIRED when `tracker.kind=github`
+- `tracker.repo`: string in `TRACKER.yaml`, REQUIRED when `tracker.kind=github`
+- `tracker.project_number`: integer in `TRACKER.yaml`, OPTIONAL when `tracker.kind=github`
+- `tracker.required_labels`: list of strings in `TRACKER.yaml`, default `[]`
+- `tracker.state_label_prefix`: string in `TRACKER.yaml`, OPTIONAL for GitLab scoped label workflow states
+- `tracker.stage_states`: map in `TRACKER.yaml` from workflow stage to provider-visible state
+- `tracker.active_states` / `tracker.terminal_states`: legacy compatibility fields derived from
+  `tracker.stage_states` in workflow-stage mode until the old scheduler is removed
+- `polling.interval_ms`: integer in `TRACKER.yaml`, default `30000`
+- `workspace.root`: path in `TRACKER.yaml` resolved to absolute, default `<system-temp>/symphony_workspaces`
+- `hooks.after_create`: shell script or null in `TRACKER.yaml`
+- `hooks.before_run`: shell script or null in `TRACKER.yaml`
+- `hooks.after_run`: shell script or null in `TRACKER.yaml`
+- `hooks.before_remove`: shell script or null in `TRACKER.yaml`
+- `hooks.timeout_ms`: integer in `TRACKER.yaml`, default `60000`
+- `agent.max_concurrent_agents`: integer in `TRACKER.yaml`, default `10`
+- `agent.max_turns`: integer in `TRACKER.yaml`, default `20`
+- `agent.max_retry_backoff_ms`: integer in `TRACKER.yaml`, default `300000` (5m)
+- `agent.max_concurrent_agents_by_state`: map of positive integers in `TRACKER.yaml`, default `{}`
+- `codex.command`: shell command string in `TRACKER.yaml`, default `codex app-server`
+- `codex.approval_policy`: Codex `AskForApproval` value in `TRACKER.yaml`, default implementation-defined
+- `codex.thread_sandbox`: Codex `SandboxMode` value in `TRACKER.yaml`, default implementation-defined
 - `codex.turn_sandbox_policy`: Codex `SandboxPolicy` value, default implementation-defined
 - `codex.turn_timeout_ms`: integer, default `3600000`
 - `codex.read_timeout_ms`: integer, default `5000`
@@ -1444,7 +1559,7 @@ Extension config:
 Enablement (extension):
 
 - Start the HTTP server when a CLI `--port` argument is provided.
-- Start the HTTP server when `server.port` is present in `WORKFLOW.md` front matter.
+- Start the HTTP server when `server.port` is present in `TRACKER.yaml`.
 - The `server` top-level key is owned by this extension.
 - Positive `server.port` values bind that port.
 - Implementations SHOULD bind loopback by default (`127.0.0.1` or host equivalent) unless explicitly
@@ -1709,9 +1824,9 @@ After restart:
 
 Operators can control behavior by:
 
-- Editing `WORKFLOW.md` (prompt and most runtime settings).
-- `WORKFLOW.md` changes are detected and re-applied automatically without restart according to
-  Section 6.2.
+- Editing `WORKFLOW.md` (workflow stages and prompts) or `TRACKER.yaml` (provider/runtime settings).
+- `WORKFLOW.md` and `TRACKER.yaml` changes are detected and re-applied automatically without
+  restart according to Section 6.2.
 - Changing issue states in the tracker:
   - terminal state -> running session is stopped and workspace cleaned when reconciled
   - non-active state -> running session is stopped without cleanup
@@ -1749,13 +1864,13 @@ RECOMMENDED additional hardening for ports:
 
 ### 15.3 Secret Handling
 
-- Support `$VAR` indirection in workflow config.
+- Support `$VAR` indirection in tracker/runtime config.
 - Do not log API tokens or secret env values.
 - Validate presence of secrets without printing them.
 
 ### 15.4 Hook Script Safety
 
-Workspace hooks are arbitrary shell scripts from `WORKFLOW.md`.
+Workspace hooks are arbitrary shell scripts from `TRACKER.yaml`.
 
 Implications:
 
@@ -2058,12 +2173,19 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Workflow file path precedence:
   - explicit runtime path is used when provided
   - cwd default is `WORKFLOW.md` when no explicit runtime path is provided
-- Workflow file changes are detected and trigger re-read/re-apply without restart
+- Tracker config path precedence:
+  - explicit `--tracker-config` path is used when provided
+  - in workflow-stage mode, default is `TRACKER.yaml` next to the selected `WORKFLOW.md`
+- Workflow and tracker config changes are detected and trigger re-read/re-apply without restart
 - Invalid workflow reload keeps last known good effective configuration and emits an
   operator-visible error
 - Missing `WORKFLOW.md` returns typed error
+- Missing explicit or sibling `TRACKER.yaml` returns typed error in workflow-stage mode
 - Invalid YAML front matter returns typed error
 - Front matter non-map returns typed error
+- Workflow-stage schema validates `start_stage`, non-empty `terminal_stages`, transition targets,
+  and `missing_outcome.on_exhausted`
+- Legacy provider tracker fields in workflow-stage `WORKFLOW.md` return a typed migration error
 - Config defaults apply when OPTIONAL values are missing
 - `tracker.kind` validation enforces currently supported kinds (`linear`, `github`, `gitlab`, `memory`)
 - `tracker.api_key` works (including `$VAR` indirection)
@@ -2163,8 +2285,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.7 CLI and Host Lifecycle
 
 - CLI accepts a positional workflow path argument (`path-to-WORKFLOW.md`)
+- CLI accepts `--tracker-config <path-to-TRACKER.yaml>`
 - CLI uses `./WORKFLOW.md` when no workflow path argument is provided
+- CLI uses sibling `TRACKER.yaml` for workflow-stage configs when `--tracker-config` is omitted
 - CLI errors on nonexistent explicit workflow path or missing default `./WORKFLOW.md`
+- CLI errors on nonexistent explicit tracker config path
 - CLI surfaces startup failure cleanly
 - CLI exits with success when application starts and shuts down normally
 - CLI exits nonzero when startup fails or the host process exits abnormally
@@ -2193,9 +2318,11 @@ Use the same validation profiles as Section 17:
 ### 18.1 REQUIRED for Conformance
 
 - Workflow path selection supports explicit runtime path and cwd default
+- Tracker config path selection supports explicit `--tracker-config` and workflow-sibling default
 - `WORKFLOW.md` loader with YAML front matter + prompt body split
+- `TRACKER.yaml` loader with YAML map parsing
 - Typed config layer with defaults and `$` resolution
-- Dynamic `WORKFLOW.md` watch/reload/re-apply for config and prompt
+- Dynamic `WORKFLOW.md` and `TRACKER.yaml` watch/reload/re-apply for config and prompt
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
@@ -2218,7 +2345,7 @@ Use the same validation profiles as Section 17:
 - `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
 - TODO: Persist retry queue and session metadata across process restarts.
-- TODO: Make observability settings configurable in workflow front matter without prescribing UI
+- TODO: Make observability settings configurable in tracker/runtime config without prescribing UI
   implementation details.
 - TODO: Add first-class tracker write APIs (comments/state transitions) in the orchestrator instead
   of only via agent tools.

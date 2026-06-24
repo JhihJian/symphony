@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Workflow do
   Loads workflow configuration and prompt from WORKFLOW.md.
   """
 
+  alias SymphonyElixir.Workflow.Definition
   alias SymphonyElixir.WorkflowStore
 
   @workflow_file_name "WORKFLOW.md"
@@ -30,7 +31,8 @@ defmodule SymphonyElixir.Workflow do
   @type loaded_workflow :: %{
           config: map(),
           prompt: String.t(),
-          prompt_template: String.t()
+          prompt_template: String.t(),
+          workflow: Definition.t() | nil
         }
 
   @spec current() :: {:ok, loaded_workflow()} | {:error, term()}
@@ -65,20 +67,49 @@ defmodule SymphonyElixir.Workflow do
 
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
-        prompt = Enum.join(prompt_lines, "\n") |> String.trim()
+        with {:ok, workflow_definition} <- maybe_parse_workflow_definition(front_matter) do
+          prompt = Enum.join(prompt_lines, "\n") |> String.trim()
 
-        {:ok,
-         %{
-           config: front_matter,
-           prompt: prompt,
-           prompt_template: prompt
-         }}
+          {:ok,
+           %{
+             config: front_matter,
+             prompt: prompt,
+             prompt_template: prompt_template(prompt, workflow_definition),
+             workflow: workflow_definition
+           }}
+        end
 
       {:error, :workflow_front_matter_not_a_map} ->
         {:error, :workflow_front_matter_not_a_map}
 
       {:error, reason} ->
         {:error, {:workflow_parse_error, reason}}
+    end
+  end
+
+  defp maybe_parse_workflow_definition(front_matter) do
+    if workflow_definition_config?(front_matter) do
+      Definition.parse_config(front_matter)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp workflow_definition_config?(%{} = front_matter) do
+    Enum.any?(["workflow", "start_stage", "terminal_stages", "outcomes", "missing_outcome", "stages"], fn key ->
+      Map.has_key?(front_matter, key)
+    end)
+  end
+
+  defp prompt_template(prompt, nil), do: prompt
+
+  defp prompt_template(prompt, %Definition{} = definition) do
+    if String.trim(prompt) == "" do
+      definition.stages
+      |> Map.get(definition.start_stage, %{})
+      |> Map.get("prompt", "")
+    else
+      prompt
     end
   end
 

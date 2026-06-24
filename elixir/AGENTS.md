@@ -13,7 +13,10 @@ app-server mode.
 
 ## Codebase-Specific Conventions
 
-- Runtime config is loaded from `WORKFLOW.md` front matter via `SymphonyElixir.Workflow` and `SymphonyElixir.Config`.
+- Runtime config is loaded from provider-neutral `WORKFLOW.md` workflow stages plus provider-specific
+  `TRACKER.yaml` via `SymphonyElixir.Workflow`, `SymphonyElixir.TrackerConfig`, and
+  `SymphonyElixir.Config`. Legacy tracker fields in `WORKFLOW.md` are still supported only for the
+  pre-#45 runtime path and will be removed in a later #45 cleanup.
 - Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.
@@ -63,4 +66,4 @@ If behavior/config changes, update docs in the same PR:
 
 - `../README.md` for project concept and goals.
 - `README.md` for Elixir implementation and run instructions.
-- `WORKFLOW.md` for workflow/config contract changes.
+- `WORKFLOW.md` and `TRACKER.yaml` for workflow/config contract changes.
