@@ -31,6 +31,19 @@ restart_all=1
 restart_services=()
 restart_instances=1
 
+configure_user_systemd_bus() {
+  local runtime_dir
+  runtime_dir="/run/user/$(id -u)"
+
+  if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "$runtime_dir" ]; then
+    export XDG_RUNTIME_DIR="$runtime_dir"
+  fi
+
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "${XDG_RUNTIME_DIR:-}/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --source-root)
@@ -101,6 +114,8 @@ if ! command -v mise >/dev/null 2>&1; then
   exit 1
 fi
 
+configure_user_systemd_bus
+
 git_dir="$(git -C "$source_root" rev-parse --git-dir)"
 if [[ "$git_dir" != /* ]]; then
   git_dir="${source_root%/}/${git_dir}"
@@ -151,7 +166,7 @@ fi
 if [ "$restart_all" -eq 1 ]; then
   mapfile -t restart_services < <(
     {
-      systemctl --user list-units 'symphony@*.service' --all --no-legend --no-pager 2>/dev/null | awk '{ print $1 }'
+      systemctl --user list-units 'symphony@*.service' --all --no-legend --no-pager 2>/dev/null | awk '{ print $1 }' || true
       if [ -d "$HOME/.config/systemd/user" ]; then
         find "$HOME/.config/systemd/user" -type l -name 'symphony@*.service' -printf '%f\n'
       fi
