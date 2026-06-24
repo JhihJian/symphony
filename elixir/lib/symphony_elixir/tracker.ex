@@ -103,6 +103,7 @@ defmodule SymphonyElixir.Tracker do
 
   @doc false
   @spec adapter_for_kind(term()) :: module()
+  def adapter_for_kind(kind) when is_atom(kind), do: kind |> Atom.to_string() |> adapter_for_kind()
   def adapter_for_kind("memory"), do: SymphonyElixir.Tracker.Memory
   def adapter_for_kind("github"), do: SymphonyElixir.GitHub.Adapter
   def adapter_for_kind("gitlab"), do: SymphonyElixir.GitLab.Adapter

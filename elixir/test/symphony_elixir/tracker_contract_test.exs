@@ -158,6 +158,28 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert :ok = Tracker.validate_workflow_state_mapping(workflow, tracker_config)
   end
 
+  test "top-level mapping validation dispatches atom tracker kinds to provider adapters" do
+    workflow = workflow_definition()
+
+    tracker_config = %{
+      tracker: %{
+        kind: :github,
+        provider_states: ["Open", "In Progress", "Closed"],
+        stage_states: %{
+          ready: "Open",
+          working: "In Progress",
+          done: %{state: "Closed", terminal: true},
+          blocked: %{state: "Closed", terminal: true}
+        }
+      }
+    }
+
+    assert {:error, {:invalid_tracker_config, message}} =
+             Tracker.validate_workflow_state_mapping(workflow, tracker_config)
+
+    assert message =~ "GitHub issues-only tracker cannot represent multiple"
+  end
+
   test "provider adapters validate mapping with normalized atom-key configs" do
     workflow = workflow_definition()
 
