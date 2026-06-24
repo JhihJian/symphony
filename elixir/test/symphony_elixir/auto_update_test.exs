@@ -242,7 +242,37 @@ defmodule SymphonyElixir.AutoUpdateTest do
       refute_received :unexpected_restart
     end
 
-    test "keeps restart decisions visible when recording the built revision fails" do
+    test "records the built revision before restarting instances" do
+      owner = self()
+
+      deps =
+        deps(owner,
+          dirty?: fn -> {:ok, false, ""} end,
+          fetch: fn -> {:ok, %{before_sha: "old", after_sha: "new", changed?: true}} end,
+          build: fn ->
+            send(owner, {:step, :build})
+            :ok
+          end,
+          mark_built: fn "new" ->
+            send(owner, {:step, :mark_built})
+            :ok
+          end,
+          restart_instance: fn name ->
+            send(owner, {:step, {:restart, name}})
+            :ok
+          end
+        )
+
+      {:ok, pid} = start_supervised({AutoUpdate, auto_update_opts(deps)})
+
+      assert {:ok, snapshot} = AutoUpdate.update_now(pid)
+      assert_receive {:step, :build}
+      assert_receive {:step, :mark_built}
+      assert_receive {:step, {:restart, "default"}}
+      assert snapshot.last_update.status == "updated"
+    end
+
+    test "does not restart instances when recording the built revision fails" do
       owner = self()
 
       deps =
@@ -260,10 +290,10 @@ defmodule SymphonyElixir.AutoUpdateTest do
       {:ok, pid} = start_supervised({AutoUpdate, auto_update_opts(deps)})
 
       assert {:error, snapshot} = AutoUpdate.update_now(pid)
-      assert_receive {:restart, "default"}
       assert snapshot.last_update.status == "failed"
       assert snapshot.last_update.error =~ "marker write failed"
-      assert [%{name: "default", decision: "restarted"}] = snapshot.last_update.instance_results
+      assert snapshot.last_update.instance_results == []
+      refute_received {:restart, "default"}
     end
 
     test "restarts idle active instances and defers busy or unsafe instances" do
