@@ -8,6 +8,7 @@ defmodule SymphonyElixir.E2ESupport do
 
     use Agent
 
+    alias SymphonyElixir.Config
     alias SymphonyElixir.Linear.Issue
     alias SymphonyElixir.Tracker
 
@@ -33,29 +34,70 @@ defmodule SymphonyElixir.E2ESupport do
     end
 
     def capabilities do
-      Tracker.unsupported_stage_capabilities(:e2e_tracker_double)
+      %{
+        tracker: :e2e_tracker_double,
+        stage_contract: :supported,
+        fetch_runnable_issues: true,
+        read_issue_stage: true,
+        write_issue_stage: true,
+        native_terminal: :explicit_stage_state_terminal_flag
+      }
     end
 
     def validate_workflow_state_mapping(workflow, tracker_config) do
       Tracker.validate_workflow_state_mapping_for_adapter(workflow, tracker_config)
     end
 
-    def fetch_runnable_issues(_start_stage) do
-      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    def fetch_runnable_issues(start_stage) do
+      with {:ok, state} <- provider_state_for_stage(start_stage) do
+        fetch_issues_by_states([state])
+      end
     end
 
-    def read_issue_stage(_issue_or_id) do
-      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    def read_issue_stage(%Issue{} = issue) do
+      stage_for_provider_state(issue.state)
     end
 
-    def write_issue_stage(_issue_id, _stage_id) do
-      Tracker.unsupported_stage_contract(:e2e_tracker_double)
+    def read_issue_stage(issue_id) when is_binary(issue_id) do
+      issue_id
+      |> find_issue()
+      |> case do
+        %Issue{} = issue -> read_issue_stage(issue)
+        nil -> {:error, :issue_not_found}
+      end
+    end
+
+    def read_issue_stage(issue_or_id), do: {:error, {:invalid_issue, issue_or_id}}
+
+    def write_issue_stage(issue_id, stage_id) when is_binary(issue_id) and is_binary(stage_id) do
+      with {:ok, provider_state} <- provider_state_for_stage(stage_id) do
+        Agent.get_and_update(server!(), fn state ->
+          if state.issue.id == issue_id do
+            %Issue{} = issue = state.issue
+
+            next_state =
+              state
+              |> Map.put(:issue, %Issue{issue | state: provider_state})
+              |> record_event({:write_issue_stage, issue_id, stage_id, provider_state})
+
+            {:ok, next_state}
+          else
+            {{:error, :issue_not_found}, record_event(state, {:write_issue_stage, issue_id, stage_id, provider_state})}
+          end
+        end)
+      end
+    end
+
+    def write_issue_stage(issue_id, stage_id), do: {:error, {:invalid_stage_write, issue_id, stage_id}}
+
+    # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
+    def is_native_terminal?(%Issue{state: state}) do
+      terminal_provider_states()
+      |> MapSet.member?(normalize_state(state))
     end
 
     # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
-    def is_native_terminal?(_issue) do
-      Tracker.unsupported_stage_contract(:e2e_tracker_double)
-    end
+    def is_native_terminal?(issue), do: {:error, {:invalid_issue, issue}}
 
     def fetch_candidate_issues do
       Agent.get_and_update(server!(), fn state ->
@@ -155,6 +197,41 @@ defmodule SymphonyElixir.E2ESupport do
 
     defp candidate_issues(%{issue: %Issue{} = issue}), do: [issue]
 
+    defp provider_state_for_stage(stage_id) do
+      case Map.get(stage_states(), stage_id) do
+        %{"state" => state} when is_binary(state) -> {:ok, state}
+        _ -> {:error, {:unknown_workflow_stage, stage_id}}
+      end
+    end
+
+    defp stage_for_provider_state(state) do
+      normalized_state = normalize_state(state)
+
+      stage_states()
+      |> Enum.find_value(fn {stage_id, %{"state" => provider_state}} ->
+        if normalize_state(provider_state) == normalized_state, do: stage_id
+      end)
+      |> case do
+        stage_id when is_binary(stage_id) -> {:ok, stage_id}
+        nil -> {:error, {:unmapped_provider_state, state}}
+      end
+    end
+
+    defp terminal_provider_states do
+      stage_states()
+      |> Enum.filter(fn {_stage_id, config} -> Map.get(config, "terminal", false) == true end)
+      |> Enum.map(fn {_stage_id, %{"state" => state}} -> normalize_state(state) end)
+      |> MapSet.new()
+    end
+
+    defp stage_states do
+      Config.settings!().tracker.stage_states
+    end
+
+    defp find_issue(issue_id) do
+      Enum.find(candidate_issues(Agent.get(server!(), & &1)), &(&1.id == issue_id))
+    end
+
     defp record_event(state, event) do
       Map.update!(state, :events, &[event | &1])
     end
@@ -180,6 +257,12 @@ defmodule SymphonyElixir.E2ESupport do
     defdelegate fetch_candidate_issues(), to: TrackerDouble
     defdelegate fetch_issues_by_states(states), to: TrackerDouble
     defdelegate fetch_issue_states_by_ids(issue_ids), to: TrackerDouble
+    defdelegate fetch_runnable_issues(start_stage), to: TrackerDouble
+    defdelegate read_issue_stage(issue_or_id), to: TrackerDouble
+    defdelegate write_issue_stage(issue_id, stage_id), to: TrackerDouble
+    defdelegate is_native_terminal?(issue), to: TrackerDouble
+    defdelegate capabilities(), to: TrackerDouble
+    defdelegate validate_workflow_state_mapping(workflow, tracker_config), to: TrackerDouble
     defdelegate fetch_issue(issue_id), to: TrackerDouble
     defdelegate list_comments(issue_id), to: TrackerDouble
     defdelegate upsert_workpad_comment(issue_id, body, header), to: TrackerDouble
@@ -198,6 +281,12 @@ defmodule SymphonyElixir.E2ESupport do
     defdelegate fetch_candidate_issues(), to: TrackerDouble
     defdelegate fetch_issues_by_states(states), to: TrackerDouble
     defdelegate fetch_issue_states_by_ids(issue_ids), to: TrackerDouble
+    defdelegate fetch_runnable_issues(start_stage), to: TrackerDouble
+    defdelegate read_issue_stage(issue_or_id), to: TrackerDouble
+    defdelegate write_issue_stage(issue_id, stage_id), to: TrackerDouble
+    defdelegate is_native_terminal?(issue), to: TrackerDouble
+    defdelegate capabilities(), to: TrackerDouble
+    defdelegate validate_workflow_state_mapping(workflow, tracker_config), to: TrackerDouble
     defdelegate create_comment(issue_id, body), to: TrackerDouble
     defdelegate update_issue_state(issue_id, state_name), to: TrackerDouble
     defdelegate events(server), to: TrackerDouble

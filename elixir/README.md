@@ -108,17 +108,24 @@ Stage `prompt` values should describe only the work to do in that stage. Do not 
 names, structured completion schemas, or required-tool implementation details in `WORKFLOW.md`; the
 runner supplies the completion protocol and outcome tool internally.
 
+In workflow-stage mode, a runner keeps one workspace and one app-server session while it advances
+the issue through workflow stages. After each successful non-terminal turn, the agent must submit one
+structured outcome; the runner computes the next stage from the current stage transitions, writes
+that stage through `write_issue_stage(issue_id, next_stage)`, and immediately starts the next stage
+turn on the same thread. Provider-visible state is updated for observability, not reread to decide
+the next in-process stage.
+
 Minimal example:
 
 ```md
 ---
 workflow:
   start_stage: ready
-  terminal_stages: [done, blocked]
+  terminal_stages: [done, blocked, protocol_blocked]
   outcomes: [started, completed, blocked]
   missing_outcome:
     max_retries: 3
-    on_exhausted: blocked
+    on_exhausted: protocol_blocked
   stages:
     ready:
       prompt: |
@@ -141,6 +148,9 @@ workflow:
     blocked:
       prompt: Terminal blocked stage.
       transitions: {}
+    protocol_blocked:
+      prompt: Terminal protocol blocked stage.
+      transitions: {}
 ---
 ```
 
@@ -150,7 +160,7 @@ Matching `TRACKER.yaml`:
 tracker:
   kind: linear
   project_slug: "..."
-  provider_states: [Todo, In Progress, Done, Cancelled]
+  provider_states: [Todo, In Progress, Done, Cancelled, Protocol Blocked]
   stage_states:
     ready:
       state: Todo
@@ -161,6 +171,9 @@ tracker:
       terminal: true
     blocked:
       state: Cancelled
+      terminal: true
+    protocol_blocked:
+      state: Protocol Blocked
       terminal: true
 workspace:
   root: ~/code/workspaces
@@ -184,6 +197,9 @@ Notes:
 - The runner-internal stage outcome channel drives workflow transitions. Direct provider status
   writes through ordinary tracker tools may still be useful for comments or external metadata, but
   they are not accepted as the stage result.
+- If a completed non-terminal turn submits no valid outcome, the runner retries the same stage up to
+  `workflow.missing_outcome.max_retries`. After retries are exhausted, it writes
+  `workflow.missing_outcome.on_exhausted`, commonly a terminal `protocol_blocked` stage.
 - `tracker.provider_states` is optional. When present, Symphony validates every
   `tracker.stage_states.*.state` value against this declared provider-visible state set.
 - Linear uses `tracker.project_slug` and defaults to `https://api.linear.app/graphql`.

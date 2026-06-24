@@ -101,8 +101,8 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(config, "tracker")
     workflow = Map.fetch!(config, "workflow")
     assert workflow["start_stage"] == "ready"
-    assert workflow["terminal_stages"] == ["done", "blocked"]
-    assert workflow["missing_outcome"]["on_exhausted"] == "blocked"
+    assert workflow["terminal_stages"] == ["done", "blocked", "protocol_blocked"]
+    assert workflow["missing_outcome"]["on_exhausted"] == "protocol_blocked"
     assert workflow["stages"]["ready"]["prompt"] =~ "This is an unattended orchestration session."
     assert workflow["stages"]["ready"]["prompt"] =~ "### 完成摘要"
     assert prompt == ""
@@ -153,6 +153,9 @@ defmodule SymphonyElixir.CoreTest do
         blocked:
           state: Blocked
           terminal: true
+        protocol_blocked:
+          state: Protocol Blocked
+          terminal: true
     """)
 
     Workflow.set_workflow_file_path(workflow_path)
@@ -161,8 +164,8 @@ defmodule SymphonyElixir.CoreTest do
     settings = Config.settings!()
 
     assert settings.workflow["start_stage"] == "ready"
-    assert settings.workflow["terminal_stages"] == ["done", "blocked"]
-    assert settings.workflow["missing_outcome"] == %{"max_retries" => 2, "on_exhausted" => "blocked"}
+    assert settings.workflow["terminal_stages"] == ["done", "blocked", "protocol_blocked"]
+    assert settings.workflow["missing_outcome"] == %{"max_retries" => 2, "on_exhausted" => "protocol_blocked"}
     assert settings.workflow["stages"]["working"]["prompt"] == "Implement the accepted scope."
     assert settings.tracker.kind == "github"
     assert settings.tracker.owner == "JhihJian"
@@ -171,7 +174,7 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.tracker.required_labels == ["symphony"]
     assert settings.tracker.stage_states["working"]["state"] == "In Progress"
     assert settings.tracker.active_states == ["Ready", "In Progress", "Human Review"]
-    assert settings.tracker.terminal_states == ["Done", "Blocked"]
+    assert settings.tracker.terminal_states == ["Done", "Blocked", "Protocol Blocked"]
     assert settings.tracker_config["tracker"]["stage_states"]["ready"]["state"] == "Ready"
     assert Config.workflow_prompt() == "Pick up new work."
     assert :ok = Config.validate!()
@@ -186,6 +189,7 @@ defmodule SymphonyElixir.CoreTest do
         - Human Review
         - Done
         - Blocked
+        - Protocol Blocked
       stage_states:
         ready:
           state: Ready
@@ -199,9 +203,19 @@ defmodule SymphonyElixir.CoreTest do
         blocked:
           state: Blocked
           terminal: true
+        protocol_blocked:
+          state: Protocol Blocked
+          terminal: true
     """)
 
-    assert Config.settings!().tracker.provider_states == ["Ready", "In Progress", "Human Review", "Done", "Blocked"]
+    assert Config.settings!().tracker.provider_states == [
+             "Ready",
+             "In Progress",
+             "Human Review",
+             "Done",
+             "Blocked",
+             "Protocol Blocked"
+           ]
   end
 
   test "workflow-stage WORKFLOW.md defaults to sibling TRACKER.yaml when tracker path is not explicit" do
@@ -1344,9 +1358,9 @@ defmodule SymphonyElixir.CoreTest do
 
   defp workflow_stage_file(overrides \\ %{}) do
     start_stage = Map.get(overrides, :start_stage, "ready")
-    terminal_stages = Map.get(overrides, :terminal_stages, ["done", "blocked"])
+    terminal_stages = Map.get(overrides, :terminal_stages, ["done", "blocked", "protocol_blocked"])
     ready_transitions = Map.get(overrides, :ready_transitions, %{accepted: "working"})
-    missing_outcome_on_exhausted = Map.get(overrides, :missing_outcome_on_exhausted, "blocked")
+    missing_outcome_on_exhausted = Map.get(overrides, :missing_outcome_on_exhausted, "protocol_blocked")
 
     """
     ---
@@ -1378,6 +1392,9 @@ defmodule SymphonyElixir.CoreTest do
         blocked:
           prompt: Terminal blocked stage.
           transitions: {}
+        protocol_blocked:
+          prompt: Terminal protocol blocked stage.
+          transitions: {}
     ---
     """
   end
@@ -1387,11 +1404,11 @@ defmodule SymphonyElixir.CoreTest do
     ---
     workflow:
       start_stage: ready
-      terminal_stages: [done, blocked]
+      terminal_stages: [done, blocked, protocol_blocked]
       outcomes: [accepted, completed, blocked]
       missing_outcome:
         max_retries: 2
-        on_exhausted: blocked
+        on_exhausted: protocol_blocked
       stages:
         ready:
           prompt: Pick up new work.
@@ -1413,6 +1430,9 @@ defmodule SymphonyElixir.CoreTest do
           transitions: {}
         blocked:
           prompt: Terminal blocked stage.
+          transitions: {}
+        protocol_blocked:
+          prompt: Terminal protocol blocked stage.
           transitions: {}
     workspace:
       root: #{yaml_value(workspace_root)}
@@ -1446,6 +1466,9 @@ defmodule SymphonyElixir.CoreTest do
         blocked:
           state: Blocked
           terminal: true
+        protocol_blocked:
+          state: Protocol Blocked
+          terminal: true
     """
   end
 
@@ -1465,6 +1488,10 @@ defmodule SymphonyElixir.CoreTest do
       Enum.map_join(values, ", ", fn {key, value} ->
         "#{yaml_value(to_string(key))}: #{yaml_value(value)}"
       end) <> "}"
+  end
+
+  defp shell_escape(value) when is_binary(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   test "fetch issues by states with empty state set is a no-op" do
@@ -2171,7 +2198,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file=#{shell_escape(trace_file)}
       run_id="$(date +%s%N)-$$"
       printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
       count=0
@@ -2201,9 +2228,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -2274,7 +2298,6 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
       assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2302,7 +2325,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
       count=0
 
@@ -2325,14 +2348,19 @@ defmodule SymphonyElixir.CoreTest do
           5)
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
+          6)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-2"}}}'
+            printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route-2","threadId":"thread-route","turnId":"turn-route-2","arguments":{"outcome":"completed","summary":"Working stage completed."}}}'
+            ;;
+          7)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
         esac
       done
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       workflow_path = Workflow.workflow_file_path()
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
@@ -2341,19 +2369,6 @@ defmodule SymphonyElixir.CoreTest do
       File.write!(tracker_config_path, memory_tracker_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
-
-      state_fetcher = fn [_issue_id] ->
-        {:ok,
-         [
-           %Issue{
-             id: "issue-route",
-             identifier: "MT-249",
-             title: "Run state routed workflow",
-             description: "Complete from Todo",
-             state: "Done"
-           }
-         ]}
-      end
 
       issue = %Issue{
         id: "issue-route",
@@ -2364,6 +2379,14 @@ defmodule SymphonyElixir.CoreTest do
         url: "https://example.org/issues/MT-249",
         labels: []
       }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      state_fetcher = fn [_issue_id] ->
+        send(self(), :unexpected_issue_state_fetch)
+        {:ok, []}
+      end
 
       assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
 
@@ -2380,7 +2403,7 @@ defmodule SymphonyElixir.CoreTest do
           |> Enum.map_join("\n", &Map.get(&1, "text", ""))
         end)
 
-      assert length(turn_texts) == 1
+      assert length(turn_texts) == 2
       assert Enum.at(turn_texts, 0) =~ "# Symphony Stage Turn"
       assert Enum.at(turn_texts, 0) =~ "## Stage"
       assert Enum.at(turn_texts, 0) =~ "- id: ready"
@@ -2392,13 +2415,20 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 0) =~ "structured stage outcome"
       refute Enum.at(turn_texts, 0) =~ "State route: Todo -> In Progress"
       refute Enum.at(turn_texts, 0) =~ "Human Review"
+
+      assert Enum.at(turn_texts, 1) =~ "- id: working"
+      assert Enum.at(turn_texts, 1) =~ "Implement the accepted scope."
+      assert Enum.at(turn_texts, 1) =~ "- completed -> done"
+
+      assert_receive {:memory_tracker_stage_update, "issue-route", "working", "In Progress"}
+      assert_receive {:memory_tracker_stage_update, "issue-route", "done", "Done"}
+      refute_receive :unexpected_issue_state_fetch, 100
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
 
-  test "agent runner rejects direct provider status update as stage outcome" do
+  test "agent runner does not treat direct provider status update as stage outcome" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2449,7 +2479,12 @@ defmodule SymphonyElixir.CoreTest do
       workflow_path = Workflow.workflow_file_path()
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
-      File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
+      File.write!(
+        workflow_path,
+        runner_stage_workflow_file(workspace_root, codex_binary, template_repo)
+        |> String.replace("max_retries: 2", "max_retries: 0")
+      )
+
       File.write!(tracker_config_path, memory_tracker_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
@@ -2464,17 +2499,188 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert_raise RuntimeError, ~r/stage_outcome_protocol_error.*missing_outcome/, fn ->
-        AgentRunner.run(issue, nil,
-          tool_executor: fn
-            "tracker_issue", %{"operation" => "set_status"} ->
-              %{"success" => true, "output" => ~s({"updated":true})}
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
-            tool, arguments ->
-              DynamicTool.execute(tool, arguments)
-          end
-        )
+      assert :ok =
+               AgentRunner.run(issue, nil,
+                 tool_executor: fn
+                   "tracker_issue", %{"operation" => "set_status"} ->
+                     %{"success" => true, "output" => ~s({"updated":true})}
+
+                   tool, arguments ->
+                     DynamicTool.execute(tool, arguments)
+                 end
+               )
+
+      assert_receive {:memory_tracker_stage_update, "issue-provider-status", "protocol_blocked", "Protocol Blocked"}
+      refute_receive {:memory_tracker_stage_update, "issue-provider-status", "working", "In Progress"}, 100
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner retries missing stage outcome then writes protocol blocked stage" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-missing-outcome-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file=#{shell_escape(trace_file)}
+      printf 'RUN\\n' >> "$trace_file"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-missing"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-1"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-2"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+          6)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-3"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
+      File.write!(tracker_config_path, memory_tracker_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+      issue = %Issue{
+        id: "issue-missing-outcome",
+        identifier: "MT-251",
+        title: "Retry missing outcome",
+        description: "Missing outcome should exhaust to protocol blocked.",
+        state: "Ready",
+        url: "https://example.org/issues/MT-251",
+        labels: []
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      assert :ok = AgentRunner.run(issue)
+
+      trace = File.read!(trace_file)
+      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 3
+      assert_receive {:memory_tracker_stage_update, "issue-missing-outcome", "protocol_blocked", "Protocol Blocked"}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner propagates turn failure without writing workflow stage" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-turn-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+
+      while IFS= read -r _line; do
+        count=$((count + 1))
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-failure"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-failure-1"}}}'
+            printf '%s\\n' '{"method":"turn/failed","params":{"reason":"boom"}}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
+      File.write!(tracker_config_path, memory_tracker_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+      issue = %Issue{
+        id: "issue-turn-failure",
+        identifier: "MT-252",
+        title: "Turn failure",
+        description: "Turn failure should not transition stages.",
+        state: "Ready",
+        url: "https://example.org/issues/MT-252",
+        labels: []
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      assert_raise RuntimeError, ~r/turn_failed/, fn ->
+        AgentRunner.run(issue)
       end
+
+      refute_receive {:memory_tracker_stage_update, "issue-turn-failure", _stage, _state}, 100
     after
       File.rm_rf(test_root)
     end
@@ -2503,7 +2709,7 @@ defmodule SymphonyElixir.CoreTest do
 
       File.write!(codex_binary, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex.trace}"
+      trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
       count=0
 
@@ -2532,9 +2738,6 @@ defmodule SymphonyElixir.CoreTest do
       """)
 
       File.chmod!(codex_binary, 0o755)
-      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
-
-      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -2572,7 +2775,6 @@ defmodule SymphonyElixir.CoreTest do
       assert length(String.split(trace, "RUN", trim: true)) == 1
       assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
     after
-      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
