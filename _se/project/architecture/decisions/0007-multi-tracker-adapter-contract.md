@@ -2,11 +2,11 @@
 
 ## 状态
 
-目标状态；当前项目已有实现代码（主要在 `elixir/`），但本次架构基线尚未逐项完成代码一致性审计可验证。该决策是对原始 Linear-only SPEC 的架构扩展。
+目标状态；当前项目已有实现代码（主要在 `elixir/`）。代码一致性审计按模块逐项记录时，可继续补充该决策的确认状态。该决策记录 multi-tracker adapter contract 的长期边界。
 
 ## 背景
 
-原始 SPEC 以 Linear-compatible issue 读取为目标，但 Symphony 的长期边界是 scheduler/runner/tracker reader，而不是 Linear 专用自动化。GitHub 和 GitLab 都能作为 issue 来源，但它们的原生状态、唯一标识、分页、阻塞关系和写入语义都与 Linear 不同。
+早期规范叙述以 Linear issue 读取为主；当前 Symphony 的长期边界是 scheduler/runner/tracker reader，Linear、GitHub 和 GitLab 都能作为 issue 来源。它们的原生状态、唯一标识、分页、阻塞关系和写入语义各不相同，需要由 tracker adapter 负责 provider 翻译。
 
 如果 orchestrator 直接理解每个 provider 的 payload 或状态差异，调度核心会持续膨胀，并且每接入一个 tracker 都要修改调度不变量。更稳妥的边界是让 tracker 集成层承担 provider 翻译，orchestrator 只消费规范化后的工作项。
 
