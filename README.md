@@ -40,9 +40,12 @@ prompts, while `TRACKER.yaml` defines provider access plus workflow-stage to pro
 Symphony owns the stable stage prompt wrapper and structured stage outcome channel; project files
 provide variables and workflow policy, not tool implementation details. In workflow-stage mode the
 runner advances stages inside one workspace and app-server session from structured outcomes, writing
-provider-visible stages for observability instead of rereading provider state between stages. The
-legacy single-file tracker state model remains only as a temporary compatibility path and will be
-removed by follow-up #45 cleanup work.
+provider-visible stages for observability instead of rereading provider state between stages.
+Scheduler dispatch is also stage-aware: new work is discovered only from `workflow.start_stage`, and
+dispatch is revalidated against the provider-visible stage before a worker is spawned. The stage
+contract is implemented for the Memory tracker in this step; real Linear/GitHub/GitLab provider
+stage mappings remain follow-up provider work. The legacy single-file tracker state model remains
+only as a temporary compatibility path and will be removed by follow-up #45 cleanup work.
 
 ---
 

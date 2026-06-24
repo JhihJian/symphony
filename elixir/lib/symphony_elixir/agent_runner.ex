@@ -102,6 +102,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
+  defp send_worker_stage_update(recipient, %Issue{id: issue_id}, stage_id)
+       when is_pid(recipient) and is_binary(issue_id) and is_binary(stage_id) do
+    send(recipient, {:worker_stage_update, issue_id, stage_id})
+    :ok
+  end
+
+  defp send_worker_stage_update(_recipient, _issue, _stage_id), do: :ok
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
@@ -300,6 +308,8 @@ defmodule SymphonyElixir.AgentRunner do
        )
        when is_binary(next_stage) do
     with :ok <- write_issue_stage(issue, next_stage) do
+      send_worker_stage_update(codex_update_recipient, issue, next_stage)
+
       if terminal_stage?(stage_loop.workflow, next_stage) do
         Logger.info("Workflow stage loop reached terminal stage #{next_stage} for #{issue_context(issue)}")
         :ok
@@ -364,6 +374,8 @@ defmodule SymphonyElixir.AgentRunner do
       )
 
       with :ok <- write_issue_stage(issue, exhausted_stage) do
+        send_worker_stage_update(codex_update_recipient, issue, exhausted_stage)
+
         if terminal_stage?(stage_loop.workflow, exhausted_stage) do
           :ok
         else

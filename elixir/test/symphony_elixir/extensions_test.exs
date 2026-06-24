@@ -19,12 +19,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
-      {:ok, states}
+      {:ok, Enum.map(states, &issue_for_state/1)}
     end
 
     def fetch_issue_states_by_ids(issue_ids) do
       send(self(), {:fetch_issue_states_by_ids_called, issue_ids})
-      {:ok, issue_ids}
+      {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "Ready"})}
     end
 
     def graphql(query, variables) do
@@ -39,6 +39,10 @@ defmodule SymphonyElixir.ExtensionsTest do
           Process.get({__MODULE__, :graphql_result})
       end
     end
+
+    defp issue_for_state(state) do
+      %Issue{id: "issue-#{state}", identifier: "issue-#{state}", title: "Issue #{state}", state: state}
+    end
   end
 
   defmodule FakeGitHubClient do
@@ -49,12 +53,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def fetch_issues_by_states(states) do
       send(self(), {:github_fetch_issues_by_states_called, states})
-      {:ok, states}
+      {:ok, Enum.map(states, &issue_for_state/1)}
     end
 
     def fetch_issue_states_by_ids(issue_ids) do
       send(self(), {:github_fetch_issue_states_by_ids_called, issue_ids})
-      {:ok, issue_ids}
+      {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "Ready"})}
     end
 
     def create_comment(issue_id, body) do
@@ -66,6 +70,10 @@ defmodule SymphonyElixir.ExtensionsTest do
       send(self(), {:github_update_issue_state_called, issue_id, state_name})
       Process.get({__MODULE__, :update_issue_state_result}, :ok)
     end
+
+    defp issue_for_state(state) do
+      %Issue{id: "github-#{state}", identifier: "github-#{state}", title: "GitHub #{state}", state: state}
+    end
   end
 
   defmodule FakeGitLabClient do
@@ -76,12 +84,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     def fetch_issues_by_states(states) do
       send(self(), {:gitlab_fetch_issues_by_states_called, states})
-      {:ok, states}
+      {:ok, Enum.map(states, &issue_for_state/1)}
     end
 
     def fetch_issue_states_by_ids(issue_ids) do
       send(self(), {:gitlab_fetch_issue_states_by_ids_called, issue_ids})
-      {:ok, issue_ids}
+      {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "Ready"})}
     end
 
     def create_comment(issue_id, body) do
@@ -92,6 +100,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     def update_issue_state(issue_id, state_name) do
       send(self(), {:gitlab_update_issue_state_called, issue_id, state_name})
       Process.get({__MODULE__, :update_issue_state_result}, :ok)
+    end
+
+    defp issue_for_state(state) do
+      %Issue{id: "gitlab-#{state}", identifier: "gitlab-#{state}", title: "GitLab #{state}", state: state}
     end
   end
 
@@ -420,10 +432,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
 
-    assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
+    assert {:ok, [%Issue{state: "Todo"}]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
 
-    assert {:ok, ["issue-1"]} = Adapter.fetch_issue_states_by_ids(["issue-1"])
+    assert {:ok, [%Issue{id: "issue-1"}]} = Adapter.fetch_issue_states_by_ids(["issue-1"])
     assert_receive {:fetch_issue_states_by_ids_called, ["issue-1"]}
 
     Process.put(
@@ -540,10 +552,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [:github_candidate]} = GitHubAdapter.fetch_candidate_issues()
     assert_receive :github_fetch_candidate_issues_called
 
-    assert {:ok, ["Todo"]} = GitHubAdapter.fetch_issues_by_states(["Todo"])
+    assert {:ok, [%Issue{state: "Todo"}]} = GitHubAdapter.fetch_issues_by_states(["Todo"])
     assert_receive {:github_fetch_issues_by_states_called, ["Todo"]}
 
-    assert {:ok, ["12"]} = GitHubAdapter.fetch_issue_states_by_ids(["12"])
+    assert {:ok, [%Issue{id: "12"}]} = GitHubAdapter.fetch_issue_states_by_ids(["12"])
     assert_receive {:github_fetch_issue_states_by_ids_called, ["12"]}
 
     assert :ok = GitHubAdapter.create_comment("12", "hello")
@@ -566,10 +578,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [:gitlab_candidate]} = GitLabAdapter.fetch_candidate_issues()
     assert_receive :gitlab_fetch_candidate_issues_called
 
-    assert {:ok, ["Todo"]} = GitLabAdapter.fetch_issues_by_states(["Todo"])
+    assert {:ok, [%Issue{state: "Todo"}]} = GitLabAdapter.fetch_issues_by_states(["Todo"])
     assert_receive {:gitlab_fetch_issues_by_states_called, ["Todo"]}
 
-    assert {:ok, ["platform/symphony#12"]} =
+    assert {:ok, [%Issue{id: "platform/symphony#12"}]} =
              GitLabAdapter.fetch_issue_states_by_ids(["platform/symphony#12"])
 
     assert_receive {:gitlab_fetch_issue_states_by_ids_called, ["platform/symphony#12"]}
@@ -614,6 +626,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
+                 "current_stage" => "working",
+                 "stage_conflict" => nil,
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
@@ -630,6 +644,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
+                 "current_stage" => "ready",
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
@@ -641,6 +656,14 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-blocked",
                  "issue_identifier" => "MT-BLOCKED",
                  "state" => "In Progress",
+                 "current_stage" => "working",
+                 "stage_conflict" => %{
+                   "kind" => "blocked",
+                   "local_stage" => "working",
+                   "observed_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("stage_conflict") |> Map.fetch!("observed_at"),
+                   "provider_stage" => "review",
+                   "provider_state" => "Human Review"
+                 },
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
@@ -678,6 +701,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
+               "current_stage" => "working",
+               "stage_conflict" => nil,
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
@@ -694,7 +719,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "current_stage" => "ready", "error" => "boom"}} =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-BLOCKED")
@@ -705,6 +730,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              "blocked" => %{
                "session_id" => "thread-blocked",
                "state" => "In Progress",
+               "current_stage" => "working",
+               "stage_conflict" => %{
+                 "kind" => "blocked",
+                 "local_stage" => "working",
+                 "observed_at" => _observed_at,
+                 "provider_stage" => "review",
+                 "provider_state" => "Human Review"
+               },
                "error" => "codex turn requires operator input"
              }
            } = json_response(conn, 200)
@@ -862,6 +895,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-http",
           identifier: "MT-HTTP",
           state: "In Progress",
+          current_stage: "working",
+          stage_conflict: nil,
           session_id: "thread-http",
           turn_count: 8,
           last_codex_event: :notification,
@@ -991,6 +1026,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-http",
           identifier: "MT-HTTP",
           state: "In Progress",
+          current_stage: "working",
+          stage_conflict: nil,
           session_id: "thread-http",
           turn_count: 7,
           codex_app_server_pid: nil,
@@ -1008,6 +1045,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
           attempt: 2,
+          current_stage: "ready",
           due_in_ms: 2_000,
           error: "boom"
         }
@@ -1017,6 +1055,14 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_id: "issue-blocked",
           identifier: "MT-BLOCKED",
           state: "In Progress",
+          current_stage: "working",
+          stage_conflict: %{
+            kind: :blocked,
+            local_stage: "working",
+            provider_stage: "review",
+            provider_state: "Human Review",
+            observed_at: DateTime.utc_now()
+          },
           error: "codex turn requires operator input",
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",

@@ -115,6 +115,25 @@ that stage through `write_issue_stage(issue_id, next_stage)`, and immediately st
 turn on the same thread. Provider-visible state is updated for observability, not reread to decide
 the next in-process stage.
 
+Scheduler dispatch is stage-aware in workflow-stage mode. The orchestrator fetches runnable issues
+only for `workflow.start_stage`, re-reads the issue stage immediately before dispatch, and skips
+issues that have already moved to implementation, validation, blocked, done, or any other non-start
+stage. Normal worker completion still schedules a short retry window, but that retry refreshes the
+specific issue and can only re-dispatch it if it is back at the start stage; middle-stage progression
+stays inside the runner stage loop. In workflow-stage mode, a normal runner exit releases the claim
+without scheduling the legacy continuation retry; abnormal/stalled retries still refresh only the
+specific issue. This core scheduler path currently relies on a stage-aware tracker contract
+implemented by the Memory tracker; concrete Linear/GitHub/GitLab stage mappings are provider-specific
+follow-up work.
+
+Low-frequency reconciliation still refreshes running and blocked issues by id. If an operator moves
+a running issue to a terminal workflow stage, the orchestrator stops the worker and removes the
+workspace. If the provider-visible stage disagrees with the runner's local current stage, Symphony
+keeps the worker running, logs a `Workflow stage conflict`, and exposes `current_stage` plus
+`stage_conflict` in the JSON API and Live dashboard. Service restart recovery is currently provider
+state plus workspace metadata only: running in-memory stage position is not durable, so after a
+restart a fresh dispatch is only possible for issues visible in `workflow.start_stage`.
+
 Minimal example:
 
 ```md
@@ -194,6 +213,12 @@ Notes:
 - `tracker.stage_states` maps provider-neutral workflow stage ids to provider-visible states. These
   provider states are an external observable and recoverable record; they are not the normal trigger
   for progressing one issue through workflow stages.
+- The scheduler uses `tracker.stage_states[workflow.start_stage].state` for new candidate discovery.
+  Legacy `tracker.active_states` and `tracker.terminal_states` are derived for compatibility but are
+  not the workflow-stage dispatch model.
+- At this stage the Memory tracker implements the workflow-stage dispatch contract. Linear,
+  GitHub, and GitLab adapters still expose an explicit unsupported stage-contract boundary until
+  provider-specific mappings are implemented.
 - The runner-internal stage outcome channel drives workflow transitions. Direct provider status
   writes through ordinary tracker tools may still be useful for comments or external metadata, but
   they are not accepted as the stage result.

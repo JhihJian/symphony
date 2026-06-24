@@ -6,6 +6,7 @@ defmodule SymphonyElixir.TrackerContractTest do
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
   alias SymphonyElixir.Tracker.Memory
+  alias SymphonyElixir.Tracker.StageState
   alias SymphonyElixir.Workflow.Definition
 
   test "memory tracker implements stage-aware runnable discovery and stage read/write" do
@@ -31,7 +32,7 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert {:ok, [%Issue{id: "issue-ready"}, ^working_issue]} = Tracker.fetch_runnable_issues("working")
   end
 
-  test "memory native terminal check is explicit and separate from workflow terminal stages" do
+  test "memory native terminal check follows workflow terminal stages" do
     done_issue = issue("issue-done", "MEM-4", "Done")
     blocked_issue = issue("issue-blocked", "MEM-5", "Blocked")
 
@@ -45,7 +46,7 @@ defmodule SymphonyElixir.TrackerContractTest do
 
     assert "blocked" in Config.settings!().workflow["terminal_stages"]
     assert Memory.is_native_terminal?(done_issue)
-    refute Memory.is_native_terminal?(blocked_issue)
+    assert Memory.is_native_terminal?(blocked_issue)
     assert {:ok, "blocked"} = Memory.read_issue_stage(blocked_issue)
   end
 
@@ -64,6 +65,89 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert {:error, {:invalid_stage_write, 123, "ready"}} = Memory.write_issue_stage(123, "ready")
     assert {:error, {:invalid_issue, 123}} = Memory.is_native_terminal?(123)
     assert {:error, {:unmapped_provider_state, "External"}} = Memory.read_issue_stage(unmapped_issue)
+  end
+
+  test "stage-state helper covers adapter mapping edge cases" do
+    ready_issue = issue("issue-ready", "MEM-7", "Ready")
+
+    write_stage_workflow_and_tracker!(tracker: memory_tracker_config())
+
+    assert %{
+             tracker: :custom,
+             stage_contract: :supported,
+             fetch_runnable_issues: true,
+             read_issue_stage: true,
+             write_issue_stage: true,
+             native_terminal: :workflow_terminal_stage
+           } = StageState.capabilities(:custom)
+
+    assert {:ok, [^ready_issue]} =
+             StageState.fetch_runnable_issues("ready", fn ["Ready"] -> {:ok, [ready_issue]} end)
+
+    assert {:error, :fetch_failed} =
+             StageState.fetch_runnable_issues("ready", fn ["Ready"] -> {:error, :fetch_failed} end)
+
+    assert {:error, {:invalid_stage_id, 123}} =
+             StageState.fetch_runnable_issues(123, fn _states -> {:ok, []} end)
+
+    assert {:ok, "ready"} =
+             StageState.read_issue_stage("issue-ready", fn ["issue-ready"] -> {:ok, [ready_issue]} end)
+
+    assert {:error, :issue_not_found} =
+             StageState.read_issue_stage("missing", fn ["missing"] -> {:ok, []} end)
+
+    assert {:error, :read_failed} =
+             StageState.read_issue_stage("issue-ready", fn ["issue-ready"] -> {:error, :read_failed} end)
+
+    assert {:error, {:invalid_issue, 123}} =
+             StageState.read_issue_stage(123, fn _issue_ids -> {:ok, []} end)
+
+    assert :ok =
+             StageState.write_issue_stage("issue-ready", "done", fn "issue-ready", "Done" -> :ok end)
+
+    assert {:error, :write_failed} =
+             StageState.write_issue_stage("issue-ready", "done", fn "issue-ready", "Done" -> {:error, :write_failed} end)
+
+    assert {:error, {:invalid_stage_write, 123, "done"}} =
+             StageState.write_issue_stage(123, "done", fn _issue_id, _stage -> :ok end)
+
+    assert {:error, {:invalid_stage_id, 123}} = StageState.provider_state_for_stage(123)
+    assert {:ok, "ready"} = StageState.stage_for_provider_state(" ready ")
+    assert {:error, {:unmapped_provider_state, 123}} = StageState.stage_for_provider_state(123)
+    assert StageState.terminal_stage?("done")
+    refute StageState.terminal_stage?(123)
+    assert StageState.terminal_provider_state?("Done")
+    refute StageState.terminal_provider_state?("External")
+    refute StageState.terminal_provider_state?(123)
+    assert StageState.native_terminal?(%Issue{state: "Done"})
+    assert {:error, {:unmapped_provider_state, "External"}} = StageState.native_terminal?(%Issue{state: "External"})
+
+    write_stage_workflow_and_tracker!(
+      tracker:
+        memory_tracker_config(%{
+          "ready" => %{"state" => "Ready", "terminal" => true}
+        })
+    )
+
+    assert StageState.terminal_stage?("ready")
+
+    legacy_workflow_path = Workflow.workflow_file_path()
+
+    File.write!(legacy_workflow_path, """
+    ---
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: 123
+    ---
+    """)
+
+    Workflow.set_workflow_file_path(legacy_workflow_path)
+    TrackerConfig.clear_tracker_file_path()
+
+    refute StageState.terminal_stage?("ready")
+    assert {:error, {:unmapped_provider_state, "Ready"}} = StageState.stage_for_provider_state("Ready")
   end
 
   test "mapping validation reports missing stage mappings" do

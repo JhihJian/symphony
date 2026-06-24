@@ -1217,7 +1217,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Enum.map(sorted, & &1.identifier) == ["MT-200", "MT-201", "MT-199"]
   end
 
-  test "todo issue with non-terminal blocker is not dispatch-eligible" do
+  test "start-stage issue with unresolved blocker is not dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
       running: %{},
@@ -1235,6 +1235,80 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "workflow-stage dispatch eligibility only accepts start stage issues" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, """
+    ---
+    workflow:
+      start_stage: ready
+      terminal_stages: [done, blocked]
+      outcomes: [accepted, completed]
+      missing_outcome:
+        max_retries: 1
+        on_exhausted: blocked
+      stages:
+        ready:
+          prompt: Ready.
+          transitions:
+            accepted: working
+        working:
+          prompt: Working.
+          transitions:
+            completed: done
+        done:
+          prompt: Done.
+          transitions: {}
+        blocked:
+          prompt: Blocked.
+          transitions: {}
+    ---
+    """)
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 3,
+      running: %{},
+      claimed: MapSet.new(),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    start_issue = %Issue{
+      id: "stage-ready",
+      identifier: "MT-STAGE-1001",
+      title: "Ready work",
+      state: "Ready",
+      blocked_by: []
+    }
+
+    implementation_issue = %{start_issue | id: "stage-working", identifier: "MT-STAGE-1002", state: "In Progress"}
+    done_issue = %{start_issue | id: "stage-done", identifier: "MT-STAGE-1003", state: "Done"}
+
+    assert Orchestrator.should_dispatch_issue_for_test(start_issue, state)
+    refute Orchestrator.should_dispatch_issue_for_test(implementation_issue, state)
+    refute Orchestrator.should_dispatch_issue_for_test(done_issue, state)
   end
 
   test "issue assigned to another worker is not dispatch-eligible" do
@@ -1284,7 +1358,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Orchestrator.should_dispatch_issue_for_test(%{issue | labels: ["Symphony", "JavaScript"]}, state)
   end
 
-  test "todo issue with terminal blockers remains dispatch-eligible" do
+  test "start-stage issue with terminal blockers remains dispatch-eligible" do
     state = %Orchestrator.State{
       max_concurrent_agents: 3,
       running: %{},
@@ -1328,6 +1402,65 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert skipped_issue.identifier == "MT-1005"
     assert skipped_issue.blocked_by == [%{id: "blocker-3", identifier: "MT-1006", state: "In Progress"}]
+  end
+
+  test "workflow-stage dispatch revalidation skips an issue that left the start stage" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, """
+    ---
+    workflow:
+      start_stage: ready
+      terminal_stages: [done]
+      outcomes: [accepted, completed]
+      missing_outcome:
+        max_retries: 1
+        on_exhausted: done
+      stages:
+        ready:
+          prompt: Ready.
+          transitions:
+            accepted: working
+        working:
+          prompt: Working.
+          transitions:
+            completed: done
+        done:
+          prompt: Done.
+          transitions: {}
+    ---
+    """)
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        done:
+          state: Done
+          terminal: true
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    stale_issue = %Issue{
+      id: "stage-stale",
+      identifier: "MT-STAGE-1004",
+      title: "Initially ready",
+      state: "Ready",
+      blocked_by: []
+    }
+
+    refreshed_issue = %{stale_issue | state: "In Progress"}
+    fetcher = fn ["stage-stale"] -> {:ok, [refreshed_issue]} end
+
+    assert {:skip, ^refreshed_issue} =
+             Orchestrator.revalidate_issue_for_dispatch_for_test(stale_issue, fetcher)
   end
 
   test "dispatch revalidation skips an issue after a required label is removed" do
