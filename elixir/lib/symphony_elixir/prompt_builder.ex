@@ -12,17 +12,23 @@ defmodule SymphonyElixir.PromptBuilder do
     template =
       Workflow.current()
       |> prompt_template!()
-      |> parse_template!()
 
+    render_template(template, issue, opts)
+  end
+
+  @spec render_template(String.t(), map(), keyword()) :: String.t()
+  def render_template(template, issue, opts \\ []) when is_binary(template) and is_map(issue) do
     template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
+    |> parse_template!()
+    |> Solid.render!(template_assigns(issue, opts), @render_opts)
     |> IO.iodata_to_binary()
+  end
+
+  @spec template_issue(map()) :: map()
+  def template_issue(issue) when is_map(issue) do
+    issue
+    |> map_from_struct()
+    |> to_solid_map()
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
@@ -39,6 +45,13 @@ defmodule SymphonyElixir.PromptBuilder do
                 message: "template_parse_error: #{Exception.message(error)} template=#{inspect(prompt)}"
               },
               __STACKTRACE__
+  end
+
+  defp template_assigns(issue, opts) do
+    %{
+      "attempt" => Keyword.get(opts, :attempt),
+      "issue" => template_issue(issue)
+    }
   end
 
   defp to_solid_map(map) when is_map(map) do
@@ -76,6 +89,9 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   defp with_tracker_context(map), do: map
+
+  defp map_from_struct(%_{} = value), do: Map.from_struct(value)
+  defp map_from_struct(value) when is_map(value), do: value
 
   defp closing_reference(%{identifier: identifier}, %{kind: "github"} = tracker) when is_binary(identifier) do
     provider_closing_reference(identifier, github_scope(tracker))
