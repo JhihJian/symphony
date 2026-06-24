@@ -1459,7 +1459,8 @@ Minimum endpoints:
       "generated_at": "2026-02-24T20:15:30Z",
       "counts": {
         "running": 2,
-        "retrying": 1
+        "retrying": 1,
+        "blocked": 1
       },
       "running": [
         {
@@ -1486,6 +1487,19 @@ Minimum endpoints:
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
+        }
+      ],
+      "blocked": [
+        {
+          "issue_id": "ghi789",
+          "issue_identifier": "MT-651",
+          "state": "In Progress",
+          "error": "codex MCP elicitation requires operator input",
+          "session_id": "thread-2-turn-3",
+          "blocked_at": "2026-02-24T20:12:00Z",
+          "last_event": "turn_input_required",
+          "last_message": "Operator input required",
+          "last_event_at": "2026-02-24T20:12:00Z"
         }
       ],
       "codex_totals": {
