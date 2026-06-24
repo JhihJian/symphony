@@ -332,6 +332,55 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
 
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, """
+    ---
+    workflow:
+      start_stage: working
+      terminal_stages: [done]
+      outcomes: [completed]
+      missing_outcome:
+        max_retries: 1
+        on_exhausted: done
+      stages:
+        working:
+          prompt: Working.
+          transitions:
+            completed: done
+        done:
+          prompt: Done.
+          transitions: {}
+    ---
+    """)
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: memory
+      provider_states: [In Progress, Done]
+      stage_states:
+        working:
+          state: In Progress
+        done:
+          state: Done
+          terminal: true
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    assert %{stage_contract: :supported} = SymphonyElixir.Tracker.capabilities()
+    assert :ok = SymphonyElixir.Tracker.validate_workflow_state_mapping(Config.settings!().workflow, Config.settings!().tracker_config)
+    assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_runnable_issues("working")
+    assert {:ok, "working"} = SymphonyElixir.Tracker.read_issue_stage("issue-1")
+    refute SymphonyElixir.Tracker.is_native_terminal?(issue)
+    assert :ok = SymphonyElixir.Tracker.write_issue_stage("issue-1", "done")
+    assert_receive {:memory_tracker_stage_update, "issue-1", "done", "Done"}
+    assert {:ok, "done"} = SymphonyElixir.Tracker.read_issue_stage("issue-1")
+
+    TrackerConfig.clear_tracker_file_path()
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
 
@@ -355,6 +404,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    assert %{stage_contract: :unsupported} = Adapter.capabilities()
+    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.fetch_runnable_issues("ready")
+    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.read_issue_stage("issue-1")
+    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.write_issue_stage("issue-1", "done")
+    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.is_native_terminal?(%Issue{})
 
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
@@ -470,6 +525,12 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "github adapter delegates reads and writes" do
     Application.put_env(:symphony_elixir, :github_client_module, FakeGitHubClient)
 
+    assert %{stage_contract: :unsupported} = GitHubAdapter.capabilities()
+    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.fetch_runnable_issues("ready")
+    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.read_issue_stage("12")
+    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.write_issue_stage("12", "done")
+    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.is_native_terminal?(%Issue{})
+
     assert {:ok, [:github_candidate]} = GitHubAdapter.fetch_candidate_issues()
     assert_receive :github_fetch_candidate_issues_called
 
@@ -489,6 +550,12 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   test "gitlab adapter delegates reads and writes" do
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
+
+    assert %{stage_contract: :unsupported} = GitLabAdapter.capabilities()
+    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.fetch_runnable_issues("ready")
+    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.read_issue_stage("platform/symphony#12")
+    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.write_issue_stage("platform/symphony#12", "done")
+    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.is_native_terminal?(%Issue{})
 
     assert {:ok, [:gitlab_candidate]} = GitLabAdapter.fetch_candidate_issues()
     assert_receive :gitlab_fetch_candidate_issues_called

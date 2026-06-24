@@ -146,6 +146,7 @@ Matching `TRACKER.yaml`:
 tracker:
   kind: linear
   project_slug: "..."
+  provider_states: [Todo, In Progress, Done, Cancelled]
   stage_states:
     ready:
       state: Todo
@@ -173,6 +174,11 @@ Notes:
 
 - If a value is missing, defaults are used.
 - `tracker.kind` supports `linear`, `github`, `gitlab`, and `memory`.
+- `tracker.stage_states` maps provider-neutral workflow stage ids to provider-visible states. These
+  provider states are an external observable and recoverable record; they are not the normal trigger
+  for progressing one issue through workflow stages.
+- `tracker.provider_states` is optional. When present, Symphony validates every
+  `tracker.stage_states.*.state` value against this declared provider-visible state set.
 - Linear uses `tracker.project_slug` and defaults to `https://api.linear.app/graphql`.
 - GitHub uses `tracker.owner` and `tracker.repo`; `tracker.project_number` is optional. When it is
   present, GitHub Project v2 status is used for issue state. When it is omitted, GitHub `OPEN` maps

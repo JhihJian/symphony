@@ -85,10 +85,13 @@ Important boundary:
    - Performs validation used by the orchestrator before dispatch.
 
 3. `Issue Tracker Client`
-   - Fetches candidate issues in active states.
+   - Exposes a stage-aware tracker contract using provider-neutral workflow stage ids.
+   - Fetches candidate issues in active states for the legacy compatibility path.
    - Fetches current states for specific issue IDs (reconciliation).
    - Fetches terminal-state issues during startup cleanup.
    - Normalizes tracker payloads into a stable issue model.
+   - Treats provider-visible state/status/label values as external observation and recovery records,
+     not as the normal trigger for progressing one issue through workflow stages.
 
 4. `Orchestrator`
    - Owns the poll tick.
@@ -462,6 +465,10 @@ Fields:
   - For `tracker.kind == "gitlab"`, when set, Symphony derives fine-grained workflow state from
     GitLab labels named `<prefix><normalized-state>`, for example `status::human-review`.
   - State label matching ignores case and surrounding whitespace.
+- `provider_states` (list of strings)
+  - OPTIONAL.
+  - Declares provider-visible state/status/label names that are valid mapping targets.
+  - When present, `tracker.stage_states.*.state` MUST map to one of these values.
 - `stage_states` (object)
   - REQUIRED in workflow-stage mode.
   - Keys are workflow stage names.
@@ -716,6 +723,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.project_number`: integer in `TRACKER.yaml`, OPTIONAL when `tracker.kind=github`
 - `tracker.required_labels`: list of strings in `TRACKER.yaml`, default `[]`
 - `tracker.state_label_prefix`: string in `TRACKER.yaml`, OPTIONAL for GitLab scoped label workflow states
+- `tracker.provider_states`: optional list of provider-visible states accepted by stage-state mapping
 - `tracker.stage_states`: map in `TRACKER.yaml` from workflow stage to provider-visible state
 - `tracker.active_states` / `tracker.terminal_states`: legacy compatibility fields derived from
   `tracker.stage_states` in workflow-stage mode until the old scheduler is removed

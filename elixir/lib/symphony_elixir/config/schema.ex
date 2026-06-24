@@ -56,6 +56,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
       field(:state_label_prefix, :string)
+      field(:provider_states, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
       field(:stage_states, :map, default: %{})
@@ -78,6 +79,7 @@ defmodule SymphonyElixir.Config.Schema do
           :assignee,
           :required_labels,
           :state_label_prefix,
+          :provider_states,
           :active_states,
           :terminal_states,
           :stage_states
@@ -95,10 +97,31 @@ defmodule SymphonyElixir.Config.Schema do
         |> String.trim()
         |> blank_to_nil()
       end)
+      |> update_change(:provider_states, &normalize_state_names/1)
     end
 
     defp blank_to_nil(""), do: nil
     defp blank_to_nil(value), do: value
+
+    defp normalize_state_names(states) when is_list(states) do
+      states
+      |> Enum.map(&normalize_optional_state_name/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+    end
+
+    defp normalize_state_names(_states), do: []
+
+    defp normalize_optional_state_name(state) when is_binary(state) do
+      state
+      |> String.trim()
+      |> case do
+        "" -> nil
+        trimmed -> trimmed
+      end
+    end
+
+    defp normalize_optional_state_name(_state), do: nil
   end
 
   defmodule Polling do

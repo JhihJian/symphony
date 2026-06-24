@@ -16,6 +16,7 @@ defmodule SymphonyElixir.TrackerConfig do
                          "assignee",
                          "required_labels",
                          "state_label_prefix",
+                         "provider_states",
                          "active_states",
                          "terminal_states",
                          "stage_states"
@@ -138,9 +139,18 @@ defmodule SymphonyElixir.TrackerConfig do
         not match?(%{"state" => state} when is_binary(state), Map.get(stage_states, stage_name))
       end)
 
+    blank_state_names =
+      stage_states
+      |> Enum.filter(fn {_stage_name, config} -> not match?(%{"state" => state} when is_binary(state), config) end)
+      |> Enum.map(fn {stage_name, _config} -> stage_name end)
+      |> Enum.sort()
+
     cond do
       unknown_stage_names != [] ->
         {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states contains unknown workflow stage keys: #{Enum.join(unknown_stage_names, ", ")}"}}
+
+      blank_state_names != [] ->
+        {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states must map every workflow stage to a provider-visible state; blank state for #{Enum.join(blank_state_names, ", ")}"}}
 
       missing_stage_names == [] ->
         :ok
