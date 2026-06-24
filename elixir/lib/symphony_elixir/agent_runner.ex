@@ -176,11 +176,9 @@ defmodule SymphonyElixir.AgentRunner do
       "human review" -> human_review_route_prompt()
       "merging" -> merging_route_prompt()
       "done" -> done_route_prompt()
-      _ -> generic_active_route_prompt(state_name)
+      _ -> generic_active_route_prompt(display_state_name(state_name))
     end
   end
-
-  defp state_route_prompt(_issue), do: generic_active_route_prompt(nil)
 
   defp todo_route_prompt do
     """
@@ -254,9 +252,12 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
+  defp display_state_name(state_name) when is_binary(state_name) and state_name != "", do: state_name
+  defp display_state_name(_state_name), do: "unknown"
+
   defp generic_active_route_prompt(state_name) do
     """
-    State route: #{state_name || "unknown"}.
+    State route: #{state_name}.
 
     Re-read the issue state and route using the workflow's status map. If the state is active but not one of
     the named workflow states, avoid code changes until the safe next state is clear from tracker context.

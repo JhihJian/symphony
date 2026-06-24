@@ -55,6 +55,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_status_field_name, :string, default: "Status")
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
+      field(:state_label_prefix, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -75,6 +76,7 @@ defmodule SymphonyElixir.Config.Schema do
           :project_status_field_name,
           :assignee,
           :required_labels,
+          :state_label_prefix,
           :active_states,
           :terminal_states
         ],
@@ -86,7 +88,15 @@ defmodule SymphonyElixir.Config.Schema do
         |> Enum.map(&(String.trim(&1) |> String.downcase()))
         |> Enum.uniq()
       end)
+      |> update_change(:state_label_prefix, fn prefix ->
+        prefix
+        |> String.trim()
+        |> blank_to_nil()
+      end)
     end
+
+    defp blank_to_nil(""), do: nil
+    defp blank_to_nil(value), do: value
   end
 
   defmodule Polling do

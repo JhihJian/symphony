@@ -377,6 +377,11 @@ Fields:
   - An issue MUST contain every configured label to dispatch or continue.
   - Matching ignores case and surrounding whitespace.
   - A blank configured label matches no issue.
+- `state_label_prefix` (string)
+  - OPTIONAL.
+  - For `tracker.kind == "gitlab"`, when set, Symphony derives fine-grained workflow state from
+    GitLab labels named `<prefix><normalized-state>`, for example `status::human-review`.
+  - State label matching ignores case and surrounding whitespace.
 - `active_states` (list of strings)
   - Default: `Todo`, `In Progress`
 - `terminal_states` (list of strings)
@@ -596,6 +601,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.repo`: string, REQUIRED when `tracker.kind=github`
 - `tracker.project_number`: integer, OPTIONAL when `tracker.kind=github`
 - `tracker.required_labels`: list of strings, default `[]`
+- `tracker.state_label_prefix`: string, OPTIONAL for GitLab scoped label workflow states
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
 - `polling.interval_ms`: integer, default `30000`
@@ -1205,6 +1211,15 @@ GitLab-specific requirements for `tracker.kind == "gitlab"`:
 - The default endpoint is `https://gitlab.com/api/v4`.
 - GitLab native `opened` maps to the first configured active state and `closed` maps to the first
   configured terminal state.
+- When `tracker.state_label_prefix` is set, GitLab issue labels refine the normalized workflow
+  state. Symphony maps a configured state such as `Human Review` to a label such as
+  `status::human-review`, where `status::` is the configured prefix. For opened issues, a matching
+  state label overrides the native opened fallback. For closed issues, only matching terminal state
+  labels override the native closed fallback, so an already closed issue cannot be treated as active
+  because of a stale active label.
+- GitLab state writes update the native issue state and the configured state label in one issue
+  update request. Symphony adds the target state label and removes other labels in the same
+  configured state-label group; unrelated labels are not removed.
 - Issue `iid` values are only project-local; normalized IDs and identifiers must include project
   scope.
 

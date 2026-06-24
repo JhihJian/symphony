@@ -560,7 +560,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_kind: "gitlab",
       tracker_endpoint: "https://gitlab.example.com/api/v4",
       tracker_project_slug: "platform/symphony",
-      tracker_assignee: "worker-1"
+      tracker_assignee: "worker-1",
+      tracker_state_label_prefix: "status::",
+      tracker_active_states: ["Todo", "In Progress", "Human Review"],
+      tracker_terminal_states: ["Closed", "Done"]
     )
 
     raw_issue = %{
@@ -570,7 +573,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "description" => "Wait for dependency",
       "state" => "opened",
       "web_url" => "https://gitlab.example.com/platform/symphony/-/issues/42",
-      "labels" => ["backend", "symphony"],
+      "labels" => ["backend", "symphony", "status::in-progress"],
       "assignees" => [%{"username" => "worker-1"}],
       "blocking_issues" => [
         %{
@@ -578,6 +581,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
           "iid" => 41,
           "state" => "opened",
           "web_url" => "https://gitlab.example.com/platform/symphony/-/issues/41",
+          "labels" => ["status::human-review"],
           "references" => %{"full" => "platform/symphony#41"}
         }
       ],
@@ -591,14 +595,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.identifier == "platform/symphony#42"
     assert issue.title == "Blocked GitLab task"
     assert issue.description == "Wait for dependency"
-    assert issue.state == "Todo"
+    assert issue.state == "In Progress"
     assert issue.url == "https://gitlab.example.com/platform/symphony/-/issues/42"
     assert issue.assignee_id == "worker-1"
-    assert issue.labels == ["backend", "symphony"]
+    assert issue.labels == ["backend", "symphony", "status::in-progress"]
     assert issue.assigned_to_worker
-    assert issue.blocked_by == [%{id: "gitlab:platform/symphony#41", identifier: "platform/symphony#41", state: "Todo"}]
+
+    assert issue.blocked_by == [
+             %{id: "gitlab:platform/symphony#41", identifier: "platform/symphony#41", state: "Human Review"}
+           ]
+
     assert issue.created_at == ~U[2026-01-01 00:00:00.000Z]
     assert issue.updated_at == ~U[2026-01-02 00:00:00.000Z]
+
+    closed_issue =
+      GitLabClient.normalize_issue_for_test(%{raw_issue | "state" => "closed", "labels" => ["status::done"]})
+
+    assert closed_issue.state == "Done"
 
     closed_issue = GitLabClient.normalize_issue_for_test(%{raw_issue | "state" => "closed"})
     assert closed_issue.state == "Closed"
@@ -607,6 +620,41 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       GitLabClient.normalize_issue_for_test(%{raw_issue | "assignees" => [%{"username" => "other"}]})
 
     refute assigned_elsewhere.assigned_to_worker
+  end
+
+  test "gitlab client falls back to native state when state labels are disabled or unknown" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: nil,
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Done"]
+    )
+
+    disabled_label_issue =
+      GitLabClient.normalize_issue_for_test(gitlab_issue_payload(1, "opened", ["status::in-progress"], []))
+
+    assert disabled_label_issue.state == "Todo"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: "status::",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Done"]
+    )
+
+    unknown_label_issue =
+      GitLabClient.normalize_issue_for_test(gitlab_issue_payload(2, "opened", ["status::waiting"], []))
+
+    assert unknown_label_issue.state == "Todo"
+
+    closed_with_active_label =
+      GitLabClient.normalize_issue_for_test(gitlab_issue_payload(3, "closed", ["status::in-progress"], []))
+
+    assert closed_with_active_label.state == "Closed"
   end
 
   test "gitlab client fetches and filters candidate issues from REST pages" do
@@ -678,6 +726,48 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, []} = GitLabClient.fetch_issues_by_states_for_test([], request_fun)
   end
 
+  test "gitlab client fetches terminal label states across opened and closed native issues" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: "status::",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Closed", "Done"]
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_terminal_label_state_request, opts})
+
+      body =
+        case opts[:params][:state] do
+          "closed" ->
+            [
+              gitlab_issue_payload(1, "closed", ["status::done"], []),
+              gitlab_issue_payload(2, "closed", ["status::in-progress"], [])
+            ]
+
+          "opened" ->
+            [
+              gitlab_issue_payload(3, "opened", ["status::done"], []),
+              gitlab_issue_payload(4, "opened", ["status::in-progress"], [])
+            ]
+        end
+
+      {:ok, %{status: 200, body: body, headers: []}}
+    end
+
+    assert {:ok, issues} = GitLabClient.fetch_issues_by_states_for_test(["Done"], request_fun)
+    assert Enum.map(issues, & &1.identifier) == ["platform/symphony#1", "platform/symphony#3"]
+
+    assert_receive {:gitlab_terminal_label_state_request, closed_request}
+    assert closed_request[:params][:state] == "closed"
+
+    assert_receive {:gitlab_terminal_label_state_request, opened_request}
+    assert opened_request[:params][:state] == "opened"
+  end
+
   test "gitlab client refreshes issue states by provider-scoped ids" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "gitlab",
@@ -738,6 +828,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert_receive {:gitlab_write_request, reopen_request}
     assert reopen_request[:json] == %{state_event: "reopen"}
+  end
+
+  test "gitlab client writes configured state labels while preserving unrelated labels" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: "status::",
+      tracker_active_states: ["Todo", "In Progress", "Human Review", "Rework", "Merging"],
+      tracker_terminal_states: ["Closed", "Done"]
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_label_write_request, opts})
+      {:ok, %{status: 200, body: %{}, headers: []}}
+    end
+
+    assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "Human Review", request_fun)
+
+    assert_receive {:gitlab_label_write_request, human_review_request}
+    assert human_review_request[:method] == :put
+
+    assert human_review_request[:json] == %{
+             state_event: "reopen",
+             add_labels: "status::human-review",
+             remove_labels: "status::todo,status::in-progress,status::rework,status::merging,status::closed,status::done"
+           }
+
+    assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "Done", request_fun)
+
+    assert_receive {:gitlab_label_write_request, done_request}
+
+    assert done_request[:json] == %{
+             state_event: "close",
+             add_labels: "status::done",
+             remove_labels: "status::todo,status::in-progress,status::human-review,status::rework,status::merging,status::closed"
+           }
   end
 
   test "gitlab client covers validation and error paths" do
@@ -1870,6 +1998,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "gitlab state label prefix is normalized as optional tracker config" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: " status:: "
+    )
+
+    assert Config.settings!().tracker.state_label_prefix == "status::"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: ""
+    )
+
+    assert Config.settings!().tracker.state_label_prefix == nil
   end
 
   test "workflow prompt is used when building base prompt" do

@@ -162,9 +162,9 @@ defmodule SymphonyElixir.GitLab.Client do
   defp update_issue_state(issue_id, state_name, request_fun) when is_function(request_fun, 1) do
     with :ok <- validate_tracker_config(),
          {:ok, iid} <- parse_issue_iid(issue_id),
-         {:ok, state_event} <- state_event_for(state_name),
+         {:ok, payload} <- state_update_payload(state_name),
          {:ok, _response} <-
-           rest_request(:put, issue_path(iid), [json: %{state_event: state_event}], request_fun) do
+           rest_request(:put, issue_path(iid), [json: payload], request_fun) do
       :ok
     end
   end
@@ -239,11 +239,14 @@ defmodule SymphonyElixir.GitLab.Client do
 
       cond do
         MapSet.member?(active_states, normalized_state) -> ["opened"]
-        MapSet.member?(terminal_states, normalized_state) -> ["closed"]
+        MapSet.member?(terminal_states, normalized_state) -> terminal_native_states(tracker)
         true -> []
       end
     end)
   end
+
+  defp terminal_native_states(%{state_label_prefix: prefix}) when is_binary(prefix), do: ["closed", "opened"]
+  defp terminal_native_states(_tracker), do: ["closed"]
 
   defp normalize_issue(issue) when is_map(issue) do
     tracker = Config.settings!().tracker
@@ -258,7 +261,7 @@ defmodule SymphonyElixir.GitLab.Client do
           title: issue["title"],
           description: issue["description"],
           priority: nil,
-          state: scheduling_state(issue["state"], tracker),
+          state: scheduling_state(issue["state"], tracker, normalize_labels(issue["labels"])),
           branch_name: nil,
           url: issue["web_url"],
           assignee_id: first_assignee_username(assignees),
@@ -283,7 +286,7 @@ defmodule SymphonyElixir.GitLab.Client do
           %{
             id: internal_issue_id(iid),
             identifier: blocker_identifier(blocker, iid, tracker),
-            state: scheduling_state(blocker["state"], tracker)
+            state: scheduling_state(blocker["state"], tracker, normalize_labels(blocker["labels"]))
           }
         ]
 
@@ -323,32 +326,124 @@ defmodule SymphonyElixir.GitLab.Client do
     end)
   end
 
-  defp scheduling_state("opened", tracker), do: first_configured_state(tracker.active_states, "Todo")
-  defp scheduling_state("closed", tracker), do: first_configured_state(tracker.terminal_states, "Closed")
-  defp scheduling_state("reopened", tracker), do: first_configured_state(tracker.active_states, "Todo")
-  defp scheduling_state(state, _tracker) when is_binary(state), do: state
-  defp scheduling_state(_state, _tracker), do: "Unknown"
+  defp scheduling_state("closed", tracker, labels) do
+    label_state = label_scheduling_state(labels, tracker)
+
+    if configured_state?(label_state, tracker.terminal_states) do
+      label_state
+    else
+      first_configured_state(tracker.terminal_states, "Closed")
+    end
+  end
+
+  defp scheduling_state("opened", tracker, labels) do
+    label_scheduling_state(labels, tracker) || first_configured_state(tracker.active_states, "Todo")
+  end
+
+  defp scheduling_state("reopened", tracker, labels) do
+    label_scheduling_state(labels, tracker) || first_configured_state(tracker.active_states, "Todo")
+  end
+
+  defp scheduling_state(state, _tracker, _labels) when is_binary(state), do: state
+  defp scheduling_state(_state, _tracker, _labels), do: "Unknown"
 
   defp first_configured_state([state | _rest], _fallback) when is_binary(state) and state != "", do: state
   defp first_configured_state(_states, fallback), do: fallback
 
-  defp state_event_for(state_name) do
+  defp state_update_payload(state_name) do
     tracker = Config.settings!().tracker
-    normalized_state = normalize_state(state_name)
-    active_states = MapSet.new(Enum.map(tracker.active_states, &normalize_state/1))
-    terminal_states = MapSet.new(Enum.map(tracker.terminal_states, &normalize_state/1))
 
+    with {:ok, state_event} <- state_event_for(state_name, tracker) do
+      {:ok,
+       %{state_event: state_event}
+       |> maybe_put_state_label_addition(state_name, tracker)
+       |> maybe_put_state_label_removals(state_name, tracker)}
+    end
+  end
+
+  defp state_event_for(state_name, tracker) do
     cond do
-      MapSet.member?(terminal_states, normalized_state) ->
+      configured_state?(state_name, tracker.terminal_states) ->
         {:ok, "close"}
 
-      MapSet.member?(active_states, normalized_state) ->
+      configured_state?(state_name, tracker.active_states) ->
         {:ok, "reopen"}
 
       true ->
         {:error, {:gitlab_unsupported_state, state_name}}
     end
   end
+
+  defp label_scheduling_state(labels, tracker) do
+    case tracker.state_label_prefix do
+      prefix when is_binary(prefix) ->
+        label_set =
+          labels
+          |> Enum.map(&normalize_label/1)
+          |> MapSet.new()
+
+        Enum.find(all_configured_states(tracker), fn state_name ->
+          MapSet.member?(label_set, normalize_label(prefix <> state_label_suffix(state_name)))
+        end)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_put_state_label_addition(payload, state_name, tracker) do
+    case state_label_for(state_name, tracker) do
+      label when is_binary(label) -> Map.put(payload, :add_labels, label)
+      nil -> payload
+    end
+  end
+
+  defp maybe_put_state_label_removals(payload, state_name, tracker) do
+    case state_labels_except(state_name, tracker) do
+      [] -> payload
+      labels -> Map.put(payload, :remove_labels, Enum.join(labels, ","))
+    end
+  end
+
+  defp state_label_for(state_name, tracker) do
+    with prefix when is_binary(prefix) <- tracker.state_label_prefix,
+         true <- configured_state?(state_name, all_configured_states(tracker)) do
+      prefix <> state_label_suffix(state_name)
+    else
+      _ -> nil
+    end
+  end
+
+  defp state_labels_except(state_name, tracker) do
+    case tracker.state_label_prefix do
+      prefix when is_binary(prefix) ->
+        tracker
+        |> all_configured_states()
+        |> Enum.reject(&(normalize_state(&1) == normalize_state(state_name)))
+        |> Enum.map(&(prefix <> state_label_suffix(&1)))
+
+      _ ->
+        []
+    end
+  end
+
+  defp all_configured_states(tracker), do: tracker.active_states ++ tracker.terminal_states
+
+  defp configured_state?(state_name, states) when is_binary(state_name) and is_list(states) do
+    normalized_state = normalize_state(state_name)
+    Enum.any?(states, &(normalize_state(&1) == normalized_state))
+  end
+
+  defp configured_state?(_state_name, _states), do: false
+
+  defp state_label_suffix(state_name) when is_binary(state_name) do
+    state_name
+    |> normalize_state()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
+
+  defp normalize_label(label) when is_binary(label), do: String.downcase(String.trim(label))
 
   defp parse_issue_iid(issue_id) when is_binary(issue_id) do
     issue_id
