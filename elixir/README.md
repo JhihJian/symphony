@@ -51,7 +51,8 @@ issue can become a dispatch candidate again after restart.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - For Linear, `tracker.project_slug` is the Linear project slug from the project URL.
    - For GitLab, `tracker.project_slug` is the GitLab project path such as `group/project`, or a
-     numeric project ID.
+     numeric project ID. To express fine-grained workflow states in GitLab labels, set
+     `tracker.state_label_prefix`, for example `status::`.
    - When creating a workflow based on this repo, note that it depends on non-standard Linear
      issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
      Team Settings → Workflow in Linear.
@@ -130,7 +131,10 @@ Notes:
   to the first configured active state and `CLOSED` maps to the first configured terminal state.
 - GitLab uses `tracker.project_slug` as the project path or ID and defaults to
   `https://gitlab.com/api/v4`. GitLab `opened` maps to the first configured active state and
-  `closed` maps to the first configured terminal state.
+  `closed` maps to the first configured terminal state. When `tracker.state_label_prefix` is set,
+  GitLab labels refine those states. For example, `state_label_prefix: "status::"` maps
+  `Human Review` to `status::human-review`; state writes add the target state label and remove other
+  labels in that configured state-label group.
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
@@ -148,6 +152,9 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- The first Codex turn includes state-route guidance based on the current issue state, including the
+  intended next tracker state for that route. Continuation turns keep the existing continuation
+  guidance.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
