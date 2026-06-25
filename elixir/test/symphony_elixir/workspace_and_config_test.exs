@@ -487,14 +487,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.identifier == "your-org/your-repo#42"
   end
 
-  test "github client maps issues-only native states to configured scheduling states" do
+  test "github client maps issues-only native states to native provider states" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "github",
       tracker_owner: "your-org",
       tracker_repo: "your-repo",
-      tracker_project_number: nil,
-      tracker_active_states: ["Ready", "Doing"],
-      tracker_terminal_states: ["Done", "Closed"]
+      tracker_project_number: nil
     )
 
     raw_issue = %{
@@ -509,7 +507,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     }
 
     issue = GitHubClient.normalize_issue_for_test(raw_issue)
-    assert issue.state == "Ready"
+    assert issue.state == "Open"
     assert issue.identifier == "your-org/your-repo#42"
 
     closed_issue = GitHubClient.normalize_issue_for_test(%{raw_issue | "state" => "CLOSED"})
@@ -522,9 +520,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_api_token: "token",
       tracker_owner: "your-org",
       tracker_repo: "your-repo",
-      tracker_project_number: nil,
-      tracker_active_states: ["Ready"],
-      tracker_terminal_states: ["Done", "Duplicate"]
+      tracker_project_number: nil
     )
 
     graphql_fun = fn _query, _variables -> flunk("issues-only updates should not call GitHub GraphQL") end
@@ -534,14 +530,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {:ok, %{status: 200}}
     end
 
-    assert :ok = GitHubClient.update_issue_state_for_test("42", "Done", graphql_fun, rest_fun)
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Closed", graphql_fun, rest_fun)
     assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "closed", state_reason: "completed"}}
 
-    assert :ok = GitHubClient.update_issue_state_for_test("42", "Ready", graphql_fun, rest_fun)
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Open", graphql_fun, rest_fun)
     assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "open"}}
-
-    assert :ok = GitHubClient.update_issue_state_for_test("42", "Duplicate", graphql_fun, rest_fun)
-    assert_receive {:github_rest_update, :patch, "/repos/your-org/your-repo/issues/42", %{state: "closed", state_reason: "duplicate"}}
 
     assert {:error, :github_project_number_required_for_status_update} =
              GitHubClient.update_issue_state_for_test("42", "Human Review", graphql_fun, rest_fun)
@@ -648,8 +641,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_project_slug: "platform/symphony",
       tracker_assignee: "worker-1",
       tracker_state_label_prefix: "status::",
-      tracker_active_states: ["Todo", "In Progress", "Human Review"],
-      tracker_terminal_states: ["Closed", "Done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Closed", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Human Review", "terminal" => true}
+      }
     )
 
     raw_issue = %{
@@ -700,7 +698,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert closed_issue.state == "Done"
 
     closed_issue = GitLabClient.normalize_issue_for_test(%{raw_issue | "state" => "closed"})
-    assert closed_issue.state == "Closed"
+    assert closed_issue.state == "Done"
 
     assigned_elsewhere =
       GitLabClient.normalize_issue_for_test(%{raw_issue | "assignees" => [%{"username" => "other"}]})
@@ -714,8 +712,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_endpoint: "https://gitlab.example.com/api/v4",
       tracker_project_slug: "platform/symphony",
       tracker_state_label_prefix: nil,
-      tracker_active_states: ["Todo", "In Progress"],
-      tracker_terminal_states: ["Closed", "Done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Closed", "terminal" => true},
+        "blocked" => %{"state" => "Done", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
     )
 
     disabled_label_issue =
@@ -728,8 +731,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_endpoint: "https://gitlab.example.com/api/v4",
       tracker_project_slug: "platform/symphony",
       tracker_state_label_prefix: "status::",
-      tracker_active_states: ["Todo", "In Progress"],
-      tracker_terminal_states: ["Closed", "Done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Closed", "terminal" => true},
+        "blocked" => %{"state" => "Done", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
     )
 
     unknown_label_issue =
@@ -800,8 +808,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {:ok, %{status: 200, body: [gitlab_issue_payload(1, opts[:params][:state], ["symphony"], [])], headers: []}}
     end
 
-    assert {:ok, issues} = GitLabClient.fetch_issues_by_states_for_test(["Todo", "Closed"], request_fun)
-    assert Enum.map(issues, & &1.state) == ["Todo", "Closed"]
+    assert {:ok, issues} = GitLabClient.fetch_issues_by_states_for_test(["Todo", "Done"], request_fun)
+    assert Enum.map(issues, & &1.state) == ["Todo", "Done"]
 
     assert_receive {:gitlab_state_request, opened_request}
     assert opened_request[:params][:state] == "opened"
@@ -819,8 +827,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_api_token: "token",
       tracker_project_slug: "platform/symphony",
       tracker_state_label_prefix: "status::",
-      tracker_active_states: ["Todo", "In Progress"],
-      tracker_terminal_states: ["Closed", "Done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Closed", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
     )
 
     request_fun = fn opts ->
@@ -845,7 +858,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
 
     assert {:ok, issues} = GitLabClient.fetch_issues_by_states_for_test(["Done"], request_fun)
-    assert Enum.map(issues, & &1.identifier) == ["platform/symphony#1", "platform/symphony#3"]
+    assert Enum.map(issues, & &1.identifier) == ["platform/symphony#1", "platform/symphony#2", "platform/symphony#3"]
 
     assert_receive {:gitlab_terminal_label_state_request, closed_request}
     assert closed_request[:params][:state] == "closed"
@@ -923,8 +936,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_api_token: "token",
       tracker_project_slug: "platform/symphony",
       tracker_state_label_prefix: "status::",
-      tracker_active_states: ["Todo", "In Progress", "Human Review", "Rework", "Merging"],
-      tracker_terminal_states: ["Closed", "Done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Human Review", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
     )
 
     request_fun = fn opts ->
@@ -938,9 +956,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert human_review_request[:method] == :put
 
     assert human_review_request[:json] == %{
-             state_event: "reopen",
+             state_event: "close",
              add_labels: "status::human-review",
-             remove_labels: "status::todo,status::in-progress,status::rework,status::merging,status::closed,status::done"
+             remove_labels: "status::todo,status::in-progress,status::done,status::protocol-blocked"
            }
 
     assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "Done", request_fun)
@@ -950,7 +968,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert done_request[:json] == %{
              state_event: "close",
              add_labels: "status::done",
-             remove_labels: "status::todo,status::in-progress,status::human-review,status::rework,status::merging,status::closed"
+             remove_labels: "status::todo,status::in-progress,status::human-review,status::protocol-blocked"
            }
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -959,8 +977,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_api_token: "token",
       tracker_project_slug: "platform/symphony",
       tracker_state_label_prefix: "status::",
-      tracker_active_states: ["status::implementation"],
-      tracker_terminal_states: ["status::done"]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "status::implementation"},
+        "in_progress" => %{"state" => "status::implementation"},
+        "done" => %{"state" => "status::done", "terminal" => true},
+        "blocked" => %{"state" => "status::done", "terminal" => true},
+        "protocol_blocked" => %{"state" => "status::done", "terminal" => true}
+      }
     )
 
     assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "status::implementation", request_fun)
@@ -1187,8 +1210,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       tracker_api_token: "token",
       tracker_project_slug: "platform/symphony",
       tracker_assignee: "worker",
-      tracker_active_states: [""],
-      tracker_terminal_states: [""]
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Todo"},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Closed", "terminal" => true},
+        "blocked" => %{"state" => "Blocked", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
     )
 
     unknown_issue =
@@ -1538,7 +1566,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       identifier: "MT-1003",
       title: "Ready work",
       state: "Todo",
-      blocked_by: [%{id: "blocker-2", identifier: "MT-1004", state: "Closed"}]
+      blocked_by: [%{id: "blocker-2", identifier: "MT-1004", state: "Done"}]
     }
 
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
@@ -1883,9 +1911,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              "writableRoots" => [explicit_workspace, explicit_cache]
            }
 
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: ",")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "tracker.active_states"
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_stage_states: %{
+        "ready" => %{"state" => ""},
+        "in_progress" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Blocked", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
+    )
+
+    assert {:error, {:invalid_tracker_config, message}} = Config.validate!()
+    assert message =~ "blank state for ready"
 
     write_workflow_file!(Workflow.workflow_file_path(), max_concurrent_agents: "bad")
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -2018,18 +2055,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "config supports per-state max concurrent agent overrides" do
-    workflow = """
-    ---
-    agent:
-      max_concurrent_agents: 10
-      max_concurrent_agents_by_state:
-        todo: 1
-        "In Progress": 4
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_concurrent_agents: 10,
+      max_concurrent_agents_by_state: %{
+        todo: 1,
+        "In Progress": 4,
         "In Review": 2
-    ---
-    """
-
-    File.write!(Workflow.workflow_file_path(), workflow)
+      }
+    )
 
     assert Config.settings!().agent.max_concurrent_agents == 10
     assert Config.max_concurrent_agents_for_state("Todo") == 1

@@ -118,13 +118,9 @@ the next in-process stage.
 Scheduler dispatch is stage-aware in workflow-stage mode. The orchestrator fetches runnable issues
 only for `workflow.start_stage`, re-reads the issue stage immediately before dispatch, and skips
 issues that have already moved to implementation, validation, blocked, done, or any other non-start
-stage. Normal worker completion still schedules a short retry window, but that retry refreshes the
-specific issue and can only re-dispatch it if it is back at the start stage; middle-stage progression
-stays inside the runner stage loop. In workflow-stage mode, a normal runner exit releases the claim
-without scheduling the legacy continuation retry; abnormal/stalled retries still refresh only the
-specific issue. This core scheduler path currently relies on a stage-aware tracker contract
-implemented by the Memory tracker; concrete Linear/GitHub/GitLab stage mappings are provider-specific
-follow-up work.
+stage. Middle-stage progression stays inside the runner stage loop. A normal runner exit releases
+the claim without scheduling a continuation retry; abnormal/stalled retries refresh only the specific
+issue and can re-dispatch it only if it is visible again at `workflow.start_stage`.
 
 Low-frequency reconciliation still refreshes running and blocked issues by id. If an operator moves
 a running issue to a terminal workflow stage, the orchestrator stops the worker and removes the
@@ -217,8 +213,6 @@ Notes:
   Project v2 Status uses `workflow_state.state_options`; GitLab scoped labels use
   `workflow_state.strategy: scoped_label` and `workflow_state.label_prefix`.
 - The scheduler uses `tracker.stage_states[workflow.start_stage].state` for new candidate discovery.
-  Legacy `tracker.active_states` and `tracker.terminal_states` are derived for compatibility but are
-  not the workflow-stage dispatch model.
 - Memory, Linear, GitHub Project v2, and GitLab scoped-label trackers implement the workflow-stage
   dispatch contract. GitHub issues-only mode does not support multi-stage provider-visible workflow
   state and fails fast when configured for more than one visible stage state.
@@ -242,9 +236,9 @@ Notes:
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
-- Legacy provider fields in `WORKFLOW.md` front matter remain available only for the old runtime
-  path while #45 migration work continues. New configurations should use `WORKFLOW.md` +
-  `TRACKER.yaml`; the old state-model config will be removed in a later #45 cleanup.
+- Legacy provider fields in `WORKFLOW.md` front matter are rejected at runtime. Use
+  `mix workflow.split_tracker_config` to migrate old single-file configs to `WORKFLOW.md` plus
+  `TRACKER.yaml` before starting the service.
 
 GitHub Project v2 Status `TRACKER.yaml` example:
 
@@ -293,13 +287,10 @@ tracker:
 - Workflows that run package managers or other commands that resolve external hosts should set
   `networkAccess: true` in `codex.turn_sandbox_policy`; otherwise DNS/network access may be denied
   by the Codex turn sandbox.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- The first Codex turn includes state-route guidance based on the current issue state, including the
-  intended next tracker state for that route. Continuation turns keep the existing continuation
-  guidance.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
-  identifier, title, and body.
+- `agent.max_turns` caps how many back-to-back workflow-stage turns Symphony will run in a single
+  agent invocation. Default: `20`.
+- Every Codex turn uses the system-maintained workflow-stage wrapper rendered for the current stage.
+  The Markdown body is not used as a legacy issue prompt in the runner path.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
 - `hooks.timeout_ms` controls workspace hook timeouts. If `after_create` times out or fails,

@@ -126,15 +126,19 @@ defmodule SymphonyElixir.GitHub.Adapter do
       |> Enum.map(&Tracker.normalize_provider_state/1)
       |> Enum.reject(&(&1 == ""))
       |> Enum.uniq()
-      |> case do
-        [_single_state] ->
-          :ok
+      |> validate_issues_only_provider_states()
+    end
+  end
 
-        states ->
-          {:error,
-           {:invalid_tracker_config,
-            "GitHub issues-only tracker cannot represent multiple provider-visible workflow stage states without tracker.project_number; configured states: #{Enum.join(Enum.sort(states), ", ")}"}}
-      end
+  defp validate_issues_only_provider_states([_single_state]), do: :ok
+
+  defp validate_issues_only_provider_states(states) do
+    if states -- ["open", "closed"] == [] do
+      :ok
+    else
+      {:error,
+       {:invalid_tracker_config,
+        "GitHub issues-only tracker cannot represent multiple provider-visible workflow stage states without tracker.project_number; configured states: #{Enum.join(Enum.sort(states), ", ")}"}}
     end
   end
 
@@ -167,12 +171,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   defp effective_issue_state(%Issue{state: "CLOSED"}), do: "Closed"
   defp effective_issue_state(%Issue{state: state}), do: state
 
-  defp stage_for_effective_provider_state("Closed") do
-    case terminal_stage_for_native_closed() do
-      stage_id when is_binary(stage_id) -> {:ok, stage_id}
-      nil -> StageState.stage_for_provider_state("Closed")
-    end
-  end
+  defp stage_for_effective_provider_state("Closed"), do: {:ok, terminal_stage_for_native_closed()}
 
   defp stage_for_effective_provider_state(provider_state) do
     StageState.stage_for_provider_state(provider_state)
@@ -183,15 +182,9 @@ defmodule SymphonyElixir.GitHub.Adapter do
   defp terminal_effective_provider_state?(_state), do: false
 
   defp terminal_stage_for_native_closed do
-    case Config.settings!().workflow do
-      %{} = workflow ->
-        workflow
-        |> Map.get("terminal_stages", [])
-        |> Enum.find(&is_binary/1)
-
-      _other ->
-        nil
-    end
+    Config.settings!().workflow
+    |> Map.fetch!("terminal_stages")
+    |> Enum.find(&is_binary/1)
   end
 
   defp github_issues_only_stage_contract_error do

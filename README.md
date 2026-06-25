@@ -45,8 +45,8 @@ Scheduler dispatch is also stage-aware: new work is discovered only from `workfl
 dispatch is revalidated against the provider-visible stage before a worker is spawned. The stage
 contract is implemented for Memory, Linear workflow states, GitHub Project v2 Status, and GitLab
 scoped labels. GitHub issues-only mode fails fast for multi-stage provider-visible workflow state.
-The legacy single-file tracker state model remains only as a temporary compatibility path and will
-be removed by follow-up #45 cleanup work.
+Legacy `WORKFLOW.md` tracker front matter is rejected at runtime; migrate to the split
+`WORKFLOW.md` plus `TRACKER.yaml` layout before starting the service.
 
 ---
 

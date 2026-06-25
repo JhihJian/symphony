@@ -4,24 +4,11 @@ defmodule SymphonyElixir.TrackerConfig do
   """
 
   @tracker_file_name "TRACKER.yaml"
-  @legacy_tracker_keys MapSet.new([
-                         "kind",
-                         "endpoint",
-                         "api_key",
-                         "project_slug",
-                         "owner",
-                         "repo",
-                         "project_number",
-                         "project_status_field_name",
-                         "assignee",
-                         "required_labels",
-                         "state_label_prefix",
-                         "provider_states",
-                         "workflow_state",
-                         "active_states",
-                         "terminal_states",
-                         "stage_states"
-                       ])
+  @legacy_workflow_tracker_keys MapSet.new([
+                                  "tracker",
+                                  "active_states",
+                                  "terminal_states"
+                                ])
 
   @spec tracker_file_path() :: Path.t() | nil
   def tracker_file_path do
@@ -88,16 +75,10 @@ defmodule SymphonyElixir.TrackerConfig do
     config = normalize_keys(config)
 
     legacy_keys =
-      case Map.get(config, "tracker") do
-        tracker when is_map(tracker) ->
-          tracker
-          |> Map.keys()
-          |> Enum.filter(&MapSet.member?(@legacy_tracker_keys, &1))
-          |> Enum.map(&"tracker.#{&1}")
-
-        _other ->
-          []
-      end
+      config
+      |> Map.keys()
+      |> Enum.filter(&MapSet.member?(@legacy_workflow_tracker_keys, &1))
+      |> Enum.flat_map(&legacy_workflow_key_paths(&1, Map.get(config, &1)))
 
     case legacy_keys do
       [] -> nil
@@ -185,74 +166,9 @@ defmodule SymphonyElixir.TrackerConfig do
 
   defp maybe_apply_stage_state_compatibility(tracker, workflow_definition) do
     stage_states = stage_states_for_tracker(tracker, workflow_definition)
-    terminal_stage_names = terminal_stage_names(workflow_definition)
-    stage_order = ordered_stage_names(workflow_definition, stage_states)
 
     tracker
     |> Map.put("stage_states", stage_states)
-    |> Map.put("active_states", active_provider_states(stage_states, terminal_stage_names, stage_order))
-    |> Map.put("terminal_states", terminal_provider_states(stage_states, terminal_stage_names, stage_order))
-  end
-
-  defp active_provider_states(stage_states, terminal_stage_names, stage_order) do
-    stage_order
-    |> Enum.map(&{&1, Map.get(stage_states, &1)})
-    |> Enum.reject(fn
-      {_stage, nil} -> true
-      {stage, config} -> terminal_stage?(stage, config, terminal_stage_names)
-    end)
-    |> Enum.map(fn {_stage, config} -> Map.get(config, "state") end)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp terminal_provider_states(stage_states, terminal_stage_names, stage_order) do
-    stage_order
-    |> Enum.map(&{&1, Map.get(stage_states, &1)})
-    |> Enum.reject(fn {_stage, config} -> is_nil(config) end)
-    |> Enum.filter(fn {stage, config} -> terminal_stage?(stage, config, terminal_stage_names) end)
-    |> Enum.map(fn {_stage, config} -> Map.get(config, "state") end)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp terminal_stage?(stage, config, terminal_stage_names) do
-    stage in terminal_stage_names or Map.get(config, "terminal", false)
-  end
-
-  defp terminal_stage_names(%{"terminal_stages" => stages}) when is_list(stages) do
-    stages
-    |> Enum.map(&normalize_optional_string/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-  end
-
-  defp terminal_stage_names(_workflow_definition), do: []
-
-  defp ordered_stage_names(%{"start_stage" => start_stage, "outcomes" => outcomes, "stages" => stages}, stage_states)
-       when is_binary(start_stage) and is_list(outcomes) and is_map(stages) do
-    stage_names = Map.keys(stages)
-
-    initial_queue =
-      if start_stage in stage_names do
-        [start_stage]
-      else
-        []
-      end
-
-    {ordered, visited} = walk_stage_graph(initial_queue, [], [], stages, outcomes, stage_names)
-
-    remaining =
-      stage_states
-      |> Map.keys()
-      |> Enum.reject(&(&1 in visited))
-      |> Enum.sort()
-
-    ordered ++ remaining
-  end
-
-  defp ordered_stage_names(_workflow_definition, stage_states) do
-    stage_states |> Map.keys() |> Enum.sort()
   end
 
   defp stage_states_for_tracker(tracker, workflow_definition) do
@@ -340,37 +256,6 @@ defmodule SymphonyElixir.TrackerConfig do
     end
   end
 
-  defp walk_stage_graph([], visited, ordered, _stages, _outcomes, _stage_names) do
-    {Enum.reverse(ordered), visited}
-  end
-
-  defp walk_stage_graph([stage | rest], visited, ordered, stages, outcomes, stage_names) do
-    if stage in visited do
-      walk_stage_graph(rest, visited, ordered, stages, outcomes, stage_names)
-    else
-      visited = [stage | visited]
-      transitions = stages |> Map.get(stage, %{}) |> Map.get("transitions", %{})
-
-      ordered_targets =
-        outcomes
-        |> Enum.map(&Map.get(transitions, &1))
-        |> Enum.reject(&is_nil/1)
-
-      unordered_targets =
-        transitions
-        |> Map.values()
-        |> Enum.reject(&(&1 in ordered_targets))
-        |> Enum.sort()
-
-      targets =
-        (ordered_targets ++ unordered_targets)
-        |> Enum.filter(&(&1 in stage_names))
-        |> Enum.reject(&(&1 in visited))
-
-      walk_stage_graph(rest ++ targets, visited, [stage | ordered], stages, outcomes, stage_names)
-    end
-  end
-
   defp normalize_stage_states(stage_states) when is_map(stage_states) do
     Enum.reduce(stage_states, %{}, fn {stage, raw_config}, acc ->
       stage_name = stage |> to_string() |> String.trim()
@@ -420,6 +305,14 @@ defmodule SymphonyElixir.TrackerConfig do
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
+
+  defp legacy_workflow_key_paths("tracker", tracker) when is_map(tracker) do
+    tracker
+    |> Map.keys()
+    |> Enum.map(&"tracker.#{&1}")
+  end
+
+  defp legacy_workflow_key_paths(key, _value), do: [key]
 
   defp maybe_reload_store do
     if Process.whereis(SymphonyElixir.WorkflowStore) do

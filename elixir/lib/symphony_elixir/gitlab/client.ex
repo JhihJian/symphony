@@ -4,6 +4,7 @@ defmodule SymphonyElixir.GitLab.Client do
   """
 
   alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.Tracker.StageState
 
   @per_page 100
 
@@ -107,15 +108,15 @@ defmodule SymphonyElixir.GitLab.Client do
 
     with :ok <- validate_tracker_config(),
          {:ok, issues} <- fetch_issue_pages("opened", request_fun, candidate_params(tracker)) do
-      active_states =
-        tracker.active_states
+      start_states =
+        StageState.start_provider_states()
         |> Enum.map(&normalize_state/1)
         |> MapSet.new()
 
       {:ok,
        Enum.filter(issues, fn issue ->
          Issue.routable?(issue, tracker.required_labels) and
-           MapSet.member?(active_states, normalize_state(issue.state))
+           MapSet.member?(start_states, normalize_state(issue.state))
        end)}
     end
   end
@@ -259,15 +260,15 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp native_states_for_requested_states(state_names) do
     tracker = Config.settings!().tracker
-    active_states = MapSet.new(Enum.map(tracker.active_states, &normalize_state/1))
-    terminal_states = MapSet.new(Enum.map(tracker.terminal_states, &normalize_state/1))
+    open_states = MapSet.new(Enum.map(StageState.non_terminal_provider_states(), &normalize_state/1))
+    terminal_provider_states = MapSet.new(Enum.map(StageState.terminal_provider_states(), &normalize_state/1))
 
     Enum.flat_map(state_names, fn state_name ->
       normalized_state = normalize_state(state_name)
 
       cond do
-        MapSet.member?(active_states, normalized_state) -> ["opened"]
-        MapSet.member?(terminal_states, normalized_state) -> terminal_native_states(tracker)
+        MapSet.member?(open_states, normalized_state) -> ["opened"]
+        MapSet.member?(terminal_provider_states, normalized_state) -> terminal_native_states(tracker)
         true -> []
       end
     end)
@@ -357,26 +358,23 @@ defmodule SymphonyElixir.GitLab.Client do
   defp scheduling_state("closed", tracker, labels) do
     label_state = label_scheduling_state(labels, tracker)
 
-    if configured_state?(label_state, tracker.terminal_states) do
+    if provider_state?(label_state, StageState.terminal_provider_states()) do
       label_state
     else
-      first_configured_state(tracker.terminal_states, "Closed")
+      StageState.terminal_provider_states() |> List.first()
     end
   end
 
   defp scheduling_state("opened", tracker, labels) do
-    label_scheduling_state(labels, tracker) || first_configured_state(tracker.active_states, "Todo")
+    label_scheduling_state(labels, tracker) || StageState.start_provider_states() |> List.first()
   end
 
   defp scheduling_state("reopened", tracker, labels) do
-    label_scheduling_state(labels, tracker) || first_configured_state(tracker.active_states, "Todo")
+    label_scheduling_state(labels, tracker) || StageState.start_provider_states() |> List.first()
   end
 
   defp scheduling_state(state, _tracker, _labels) when is_binary(state), do: state
   defp scheduling_state(_state, _tracker, _labels), do: "Unknown"
-
-  defp first_configured_state([state | _rest], _fallback) when is_binary(state) and state != "", do: state
-  defp first_configured_state(_states, fallback), do: fallback
 
   defp state_update_payload(state_name) do
     tracker = Config.settings!().tracker
@@ -409,12 +407,12 @@ defmodule SymphonyElixir.GitLab.Client do
   defp maybe_put_remove_labels(payload, []), do: payload
   defp maybe_put_remove_labels(payload, labels), do: Map.put(payload, :remove_labels, Enum.join(labels, ","))
 
-  defp state_event_for(state_name, tracker) do
+  defp state_event_for(state_name, _tracker) do
     cond do
-      configured_state?(state_name, tracker.terminal_states) ->
+      provider_state?(state_name, StageState.terminal_provider_states()) ->
         {:ok, "close"}
 
-      configured_state?(state_name, tracker.active_states) ->
+      provider_state?(state_name, StageState.non_terminal_provider_states()) ->
         {:ok, "reopen"}
 
       true ->
@@ -430,7 +428,7 @@ defmodule SymphonyElixir.GitLab.Client do
           |> Enum.map(&normalize_label/1)
           |> MapSet.new()
 
-        Enum.find(all_configured_states(tracker), fn state_name ->
+        Enum.find(StageState.all_provider_states(), fn state_name ->
           MapSet.member?(label_set, normalize_label(state_label_for_state_match(state_name, prefix)))
         end)
 
@@ -455,7 +453,7 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp state_label_for(state_name, tracker) do
     with prefix when is_binary(prefix) <- tracker.state_label_prefix,
-         true <- configured_state?(state_name, all_configured_states(tracker)) do
+         true <- provider_state?(state_name, StageState.all_provider_states()) do
       if scoped_label?(state_name, prefix) do
         state_name
       else
@@ -469,8 +467,7 @@ defmodule SymphonyElixir.GitLab.Client do
   defp state_labels_except(state_name, tracker) do
     case tracker.state_label_prefix do
       prefix when is_binary(prefix) ->
-        tracker
-        |> all_configured_states()
+        StageState.all_provider_states()
         |> Enum.reject(&(normalize_state(&1) == normalize_state(state_name)))
         |> Enum.map(&state_label_for_state_match(&1, prefix))
 
@@ -479,14 +476,12 @@ defmodule SymphonyElixir.GitLab.Client do
     end
   end
 
-  defp all_configured_states(tracker), do: tracker.active_states ++ tracker.terminal_states
-
-  defp configured_state?(state_name, states) when is_binary(state_name) and is_list(states) do
+  defp provider_state?(state_name, states) when is_binary(state_name) and is_list(states) do
     normalized_state = normalize_state(state_name)
     Enum.any?(states, &(normalize_state(&1) == normalized_state))
   end
 
-  defp configured_state?(_state_name, _states), do: false
+  defp provider_state?(_state_name, _states), do: false
 
   defp state_label_suffix(state_name) when is_binary(state_name) do
     state_name

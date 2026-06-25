@@ -57,8 +57,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:required_labels, {:array, :string}, default: [])
       field(:state_label_prefix, :string)
       field(:provider_states, {:array, :string}, default: [])
-      field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
-      field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
       field(:stage_states, :map, default: %{})
     end
 
@@ -80,8 +78,6 @@ defmodule SymphonyElixir.Config.Schema do
           :required_labels,
           :state_label_prefix,
           :provider_states,
-          :active_states,
-          :terminal_states,
           :stage_states
         ],
         empty_values: []

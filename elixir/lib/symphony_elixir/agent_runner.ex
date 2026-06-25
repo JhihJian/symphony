@@ -9,7 +9,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   alias SymphonyElixir.{
     Config,
-    PromptBuilder,
     StageOutcomeChannel,
     StagePromptRenderer,
     Tracker,
@@ -26,14 +25,6 @@ defmodule SymphonyElixir.AgentRunner do
           required(:current_stage) => String.t(),
           required(:missing_outcome_retries) => %{String.t() => non_neg_integer()}
         }
-
-  @doc false
-  @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
-          {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
-  def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
-      when is_function(issue_state_fetcher, 1) do
-    continue_with_issue?(issue, issue_state_fetcher)
-  end
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
@@ -112,7 +103,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
-    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
     stage_loop = stage_loop_for_issue(issue, opts)
 
     app_server_opts = app_server_opts_for_issue(issue, opts, worker_host)
@@ -125,7 +115,6 @@ defmodule SymphonyElixir.AgentRunner do
           issue,
           codex_update_recipient,
           opts,
-          issue_state_fetcher,
           stage_loop,
           1,
           max_turns
@@ -142,7 +131,6 @@ defmodule SymphonyElixir.AgentRunner do
          issue,
          codex_update_recipient,
          opts,
-         issue_state_fetcher,
          stage_loop,
          turn_number,
          max_turns
@@ -171,7 +159,6 @@ defmodule SymphonyElixir.AgentRunner do
              :ok <-
                continue_after_turn(
                  issue,
-                 issue_state_fetcher,
                  stage_loop,
                  stage_result,
                  turn_number,
@@ -191,31 +178,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_after_turn(
          issue,
-         issue_state_fetcher,
-         nil,
-         _stage_result,
-         turn_number,
-         max_turns,
-         app_session,
-         workspace,
-         codex_update_recipient,
-         opts
-       ) do
-    continue_after_legacy_turn(
-      issue,
-      issue_state_fetcher,
-      turn_number,
-      max_turns,
-      app_session,
-      workspace,
-      codex_update_recipient,
-      opts
-    )
-  end
-
-  defp continue_after_turn(
-         issue,
-         issue_state_fetcher,
          %{} = stage_loop,
          stage_result,
          turn_number,
@@ -227,7 +189,6 @@ defmodule SymphonyElixir.AgentRunner do
        ) do
     continue_after_stage_turn(
       issue,
-      issue_state_fetcher,
       stage_loop,
       stage_result,
       turn_number,
@@ -239,48 +200,8 @@ defmodule SymphonyElixir.AgentRunner do
     )
   end
 
-  defp continue_after_legacy_turn(
-         issue,
-         issue_state_fetcher,
-         turn_number,
-         max_turns,
-         app_session,
-         workspace,
-         codex_update_recipient,
-         opts
-       ) do
-    case continue_with_issue?(issue, issue_state_fetcher) do
-      {:continue, refreshed_issue} when turn_number < max_turns ->
-        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
-
-        do_run_codex_turns(
-          app_session,
-          workspace,
-          refreshed_issue,
-          codex_update_recipient,
-          opts,
-          issue_state_fetcher,
-          nil,
-          turn_number + 1,
-          max_turns
-        )
-
-      {:continue, refreshed_issue} ->
-        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-        :ok
-
-      {:done, _refreshed_issue} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp continue_after_stage_turn(
          issue,
-         _issue_state_fetcher,
          stage_loop,
          %{target_stage: nil},
          _turn_number,
@@ -296,7 +217,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_after_stage_turn(
          issue,
-         _issue_state_fetcher,
          stage_loop,
          %{target_stage: next_stage},
          turn_number,
@@ -330,7 +250,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp continue_after_stage_turn(
          issue,
-         _issue_state_fetcher,
          stage_loop,
          {:error, {:stage_outcome_protocol_error, _reason, _details} = protocol_error},
          turn_number,
@@ -416,7 +335,6 @@ defmodule SymphonyElixir.AgentRunner do
         issue_for_stage(issue, stage_loop.current_stage, stage_loop.tracker_config),
         codex_update_recipient,
         opts,
-        nil,
         stage_loop,
         turn_number + 1,
         max_turns
@@ -439,14 +357,6 @@ defmodule SymphonyElixir.AgentRunner do
        tool_executor: stage_outcome_tool_executor(outcome_capture, opts),
        stage_outcome_capture: outcome_capture
      ]}
-  end
-
-  defp build_turn_prompt(issue, opts, nil, 1, _max_turns) do
-    {PromptBuilder.build_prompt(issue, opts), []}
-  end
-
-  defp build_turn_prompt(_issue, _opts, nil, turn_number, max_turns) do
-    {build_continuation_prompt(turn_number, max_turns), []}
   end
 
   defp app_server_opts_for_issue(_issue, _opts, worker_host) do
@@ -481,7 +391,7 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       {:ok, _workflow} ->
-        nil
+        raise RuntimeError, "stage_turn_prompt_unavailable: workflow stage schema is required"
 
       {:error, reason} ->
         raise RuntimeError, "stage_turn_prompt_unavailable: #{inspect(reason)}"
@@ -569,50 +479,6 @@ defmodule SymphonyElixir.AgentRunner do
     Map.fetch!(missing_outcome, "on_exhausted")
   end
 
-  defp build_continuation_prompt(turn_number, max_turns) do
-    """
-    Continuation guidance:
-
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
-    - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
-    - Resume from the current workspace and workpad state instead of restarting from scratch.
-    - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
-    - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
-    """
-  end
-
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
-    case issue_state_fetcher.([issue_id]) do
-      {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) and issue_routable?(refreshed_issue) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
-        end
-
-      {:ok, []} ->
-        {:done, issue}
-
-      {:error, reason} ->
-        {:error, {:issue_state_refresh_failed, reason}}
-    end
-  end
-
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
-
-  defp active_issue_state?(state_name) when is_binary(state_name) do
-    normalized_state = normalize_issue_state(state_name)
-
-    Config.settings!().tracker.active_states
-    |> Enum.any?(fn active_state -> normalize_issue_state(active_state) == normalized_state end)
-  end
-
-  defp active_issue_state?(_state_name), do: false
-
-  defp issue_routable?(%Issue{} = issue) do
-    Issue.routable?(issue, Config.settings!().tracker.required_labels)
-  end
-
   defp selected_worker_host(nil, []), do: nil
 
   defp selected_worker_host(preferred_host, configured_hosts) when is_list(configured_hosts) do
@@ -631,12 +497,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
-
-  defp normalize_issue_state(state_name) when is_binary(state_name) do
-    state_name
-    |> String.trim()
-    |> String.downcase()
-  end
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

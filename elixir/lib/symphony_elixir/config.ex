@@ -36,19 +36,12 @@ defmodule SymphonyElixir.Config do
         parse_workflow_stage_settings(config, workflow_definition)
 
       {:ok, %{config: config}} when is_map(config) ->
-        case TrackerConfig.tracker_file_path() do
-          path when is_binary(path) ->
-            with nil <- TrackerConfig.legacy_tracker_config_error(config),
-                 {:ok, tracker_config} <- TrackerConfig.load(path),
-                 {:ok, workflow_definition} <- Definition.parse_config(config) do
-              parse_two_file_settings(config, workflow_definition, tracker_config)
-            else
-              {:legacy_workflow_tracker_config, _keys} = reason -> {:error, reason}
-              {:error, reason} -> {:error, reason}
-            end
+        case TrackerConfig.legacy_tracker_config_error(config) do
+          {:legacy_workflow_tracker_config, _keys} = reason ->
+            {:error, reason}
 
           nil ->
-            Schema.parse(config)
+            {:error, {:invalid_workflow_definition, "WORKFLOW.md must define provider-neutral workflow stages; move provider settings and stage-state mapping to TRACKER.yaml"}}
         end
 
       {:error, reason} ->

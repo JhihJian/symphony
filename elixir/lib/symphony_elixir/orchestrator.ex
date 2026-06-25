@@ -10,7 +10,6 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
-  @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -217,30 +216,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    cond do
-      input_required_blocker?(running_entry) ->
-        block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+    if input_required_blocker?(running_entry) do
+      block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+    else
+      Logger.info("Workflow-stage agent task completed for issue_id=#{issue_id} session_id=#{session_id}; releasing claim")
 
-      workflow_stage_mode?() ->
-        Logger.info("Workflow-stage agent task completed for issue_id=#{issue_id} session_id=#{session_id}; releasing claim without continuation retry")
-
-        state
-        |> complete_issue(issue_id)
-        |> cleanup_terminal_workflow_stage_issue(running_entry)
-        |> release_issue_claim(issue_id)
-
-      true ->
-        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling #{continuation_check_label()} continuation check")
-
-        state
-        |> complete_issue(issue_id)
-        |> schedule_issue_retry(issue_id, 1, %{
-          identifier: running_entry.identifier,
-          delay_type: :continuation,
-          current_stage: Map.get(running_entry, :current_stage),
-          worker_host: Map.get(running_entry, :worker_host),
-          workspace_path: Map.get(running_entry, :workspace_path)
-        })
+      state
+      |> complete_issue(issue_id)
+      |> cleanup_terminal_workflow_stage_issue(running_entry)
+      |> release_issue_claim(issue_id)
     end
   end
 
@@ -371,14 +355,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp fetch_dispatch_candidates do
-    if workflow_stage_mode?() do
-      start_stage = workflow_start_stage()
+    start_stage = workflow_start_stage()
 
-      Logger.debug("Fetching stage-aware dispatch candidates start_stage=#{start_stage}")
-      Tracker.fetch_runnable_issues(start_stage)
-    else
-      Tracker.fetch_candidate_issues()
-    end
+    Logger.debug("Fetching workflow dispatch candidates start_stage=#{start_stage}")
+    Tracker.fetch_runnable_issues(start_stage)
   end
 
   defp reconcile_before_dispatch(%State{} = state) do
@@ -506,52 +486,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_running_issue_states(issues, state) when is_list(issues) do
-    if workflow_stage_mode?() do
-      reconcile_stage_running_issue_states(issues, state)
-    else
-      reconcile_running_issue_states(issues, state, active_state_set(), terminal_state_set())
-    end
-  end
-
-  defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
-
-  defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
-    reconcile_running_issue_states(
-      rest,
-      reconcile_issue_state(issue, state, active_states, terminal_states),
-      active_states,
-      terminal_states
-    )
-  end
-
-  defp reconcile_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
-    cond do
-      terminal_issue_state?(issue.state, terminal_states) ->
-        Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-
-        terminate_running_issue(state, issue.id, true)
-
-      !issue_routable?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
-
-        terminate_running_issue(state, issue.id, false)
-
-      active_issue_state?(issue.state, active_states) ->
-        refresh_running_issue_state(state, issue)
-
-      true ->
-        Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
-
-        terminate_running_issue(state, issue.id, false)
-    end
-  end
-
-  defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
-
-  defp reconcile_stage_running_issue_states([], state), do: state
-
-  defp reconcile_stage_running_issue_states([issue | rest], state) do
-    reconcile_stage_running_issue_states(rest, reconcile_stage_issue_state(issue, state))
+    Enum.reduce(issues, state, fn issue, state_acc -> reconcile_stage_issue_state(issue, state_acc) end)
   end
 
   defp reconcile_stage_issue_state(%Issue{} = issue, state) do
@@ -599,50 +534,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_blocked_issue_states(issues, state) when is_list(issues) do
-    if workflow_stage_mode?() do
-      reconcile_stage_blocked_issue_states(issues, state)
-    else
-      reconcile_blocked_issue_states(issues, state, active_state_set(), terminal_state_set())
-    end
-  end
-
-  defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
-
-  defp reconcile_blocked_issue_states([issue | rest], state, active_states, terminal_states) do
-    reconcile_blocked_issue_states(
-      rest,
-      reconcile_blocked_issue_state(issue, state, active_states, terminal_states),
-      active_states,
-      terminal_states
-    )
-  end
-
-  defp reconcile_blocked_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
-    cond do
-      terminal_issue_state?(issue.state, terminal_states) ->
-        Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-        cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
-        release_issue_claim(state, issue.id)
-
-      !issue_routable?(issue) ->
-        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
-        release_issue_claim(state, issue.id)
-
-      active_issue_state?(issue.state, active_states) ->
-        refresh_blocked_issue_state(state, issue)
-
-      true ->
-        Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-        release_issue_claim(state, issue.id)
-    end
-  end
-
-  defp reconcile_blocked_issue_state(_issue, state, _active_states, _terminal_states), do: state
-
-  defp reconcile_stage_blocked_issue_states([], state), do: state
-
-  defp reconcile_stage_blocked_issue_states([issue | rest], state) do
-    reconcile_stage_blocked_issue_states(rest, reconcile_stage_blocked_issue_state(issue, state))
+    Enum.reduce(issues, state, fn issue, state_acc -> reconcile_stage_blocked_issue_state(issue, state_acc) end)
   end
 
   defp reconcile_stage_blocked_issue_state(%Issue{} = issue, state) do
@@ -743,26 +635,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp log_missing_running_issue(_state, _issue_id), do: :ok
-
-  defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
-    case Map.get(state.running, issue.id) do
-      %{issue: _} = running_entry ->
-        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
-
-      _ ->
-        state
-    end
-  end
-
-  defp refresh_blocked_issue_state(%State{} = state, %Issue{} = issue) do
-    case Map.get(state.blocked, issue.id) do
-      %{issue: _} = blocked_entry ->
-        %{state | blocked: Map.put(state.blocked, issue.id, %{blocked_entry | issue: issue})}
-
-      _ ->
-        state
-    end
-  end
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
     case Map.get(state.running, issue_id) do
@@ -1069,13 +941,7 @@ defmodule SymphonyElixir.Orchestrator do
          } = issue
        )
        when is_binary(id) and is_binary(identifier) and is_binary(title) and is_binary(state_name) do
-    if workflow_stage_mode?() do
-      stage_start_candidate_issue?(issue)
-    else
-      issue_routable?(issue) and
-        active_issue_state?(state_name, active_state_set()) and
-        !terminal_issue_state?(state_name, terminal_state_set())
-    end
+    stage_start_candidate_issue?(issue)
   end
 
   defp candidate_issue?(_issue), do: false
@@ -1099,11 +965,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp blocked_by_unresolved_issue?(%Issue{blocked_by: blockers}) when is_list(blockers) do
     Enum.any?(blockers, fn
       %{state: blocker_state} when is_binary(blocker_state) ->
-        if workflow_stage_mode?() do
-          !stage_terminal_provider_state?(blocker_state)
-        else
-          !terminal_issue_state?(blocker_state, terminal_state_set())
-        end
+        !stage_terminal_provider_state?(blocker_state)
 
       _ ->
         true
@@ -1112,32 +974,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp blocked_by_unresolved_issue?(_issue), do: false
 
-  defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
-    MapSet.member?(terminal_states, normalize_issue_state(state_name))
-  end
-
-  defp terminal_issue_state?(_state_name, _terminal_states), do: false
-
-  defp active_issue_state?(state_name, active_states) when is_binary(state_name) do
-    MapSet.member?(active_states, normalize_issue_state(state_name))
-  end
-
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(String.trim(state_name))
-  end
-
-  defp terminal_state_set do
-    Config.settings!().tracker.terminal_states
-    |> Enum.map(&normalize_issue_state/1)
-    |> Enum.filter(&(&1 != ""))
-    |> MapSet.new()
-  end
-
-  defp active_state_set do
-    Config.settings!().tracker.active_states
-    |> Enum.map(&normalize_issue_state/1)
-    |> Enum.filter(&(&1 != ""))
-    |> MapSet.new()
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
@@ -1374,8 +1212,6 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, release_issue_claim(state, issue_id)}
   end
 
-  defp cleanup_issue_workspace(identifier, worker_host \\ nil)
-
   defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
     Workspace.remove_issue_workspaces(identifier, worker_host)
   end
@@ -1389,24 +1225,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_terminal_workspace_cleanup do
-    if workflow_stage_mode?() do
-      Logger.info("Skipping startup terminal workspace cleanup in workflow-stage mode; provider-wide terminal-stage recovery is intentionally not scanned")
-    else
-      case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-        {:ok, issues} ->
-          issues
-          |> Enum.each(fn
-            %Issue{identifier: identifier} when is_binary(identifier) ->
-              cleanup_issue_workspace(identifier)
-
-            _ ->
-              :ok
-          end)
-
-        {:error, reason} ->
-          Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-      end
-    end
+    Logger.info("Skipping startup terminal workspace cleanup; provider-wide terminal-stage recovery is intentionally not scanned")
   end
 
   defp notify_dashboard do
@@ -1444,11 +1263,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
-      @continuation_retry_delay_ms
-    else
-      failure_retry_delay(attempt)
-    end
+    failure_retry_delay(attempt)
   end
 
   defp failure_retry_delay(attempt) do
@@ -1488,16 +1303,6 @@ defmodule SymphonyElixir.Orchestrator do
     Map.put(running_entry, key, value)
   end
 
-  defp workflow_stage_mode? do
-    case Config.settings!().workflow do
-      %{"start_stage" => start_stage, "stages" => stages} when is_binary(start_stage) and is_map(stages) ->
-        true
-
-      _ ->
-        false
-    end
-  end
-
   defp workflow_start_stage do
     Config.settings!().workflow
     |> Map.fetch!("start_stage")
@@ -1513,10 +1318,6 @@ defmodule SymphonyElixir.Orchestrator do
       _ ->
         []
     end
-  end
-
-  defp continuation_check_label do
-    if workflow_stage_mode?(), do: "start-stage", else: "active-state"
   end
 
   defp stage_terminal_issue?(%Issue{} = issue) do
@@ -1545,11 +1346,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminal_retry_issue?(%Issue{} = issue) do
-    if workflow_stage_mode?() do
-      stage_terminal_issue?(issue)
-    else
-      terminal_issue_state?(issue.state, terminal_state_set())
-    end
+    stage_terminal_issue?(issue)
   end
 
   defp retry_candidate_issue?(%Issue{} = issue) do
@@ -1557,14 +1354,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp log_stage_revalidation(%Issue{} = issue) do
-    if workflow_stage_mode?() do
-      case Tracker.read_issue_stage(issue) do
-        {:ok, stage_id} ->
-          Logger.debug("Stage-aware dispatch revalidated: #{issue_context(issue)} stage=#{stage_id}")
+    case Tracker.read_issue_stage(issue) do
+      {:ok, stage_id} ->
+        Logger.debug("Stage-aware dispatch revalidated: #{issue_context(issue)} stage=#{stage_id}")
 
-        {:error, reason} ->
-          Logger.warning("Stage-aware dispatch revalidation could not read stage: #{issue_context(issue)} reason=#{inspect(reason)}")
-      end
+      {:error, reason} ->
+        Logger.warning("Stage-aware dispatch revalidation could not read stage: #{issue_context(issue)} reason=#{inspect(reason)}")
     end
   end
 

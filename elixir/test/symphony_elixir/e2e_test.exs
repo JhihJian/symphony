@@ -269,11 +269,7 @@ defmodule SymphonyElixir.E2ETest do
 
       File.mkdir_p!(test_root)
 
-      write_fake_codex!(codex_binary, trace_file, "tracker_issue", %{
-        "operation" => "set_status",
-        "issueId" => "memory-1",
-        "state" => "Done"
-      })
+      write_stage_sequence_fake_codex!(codex_binary, trace_file, ["started", "completed"])
 
       Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -281,12 +277,12 @@ defmodule SymphonyElixir.E2ETest do
       write_workflow_file!(Workflow.workflow_file_path(),
         tracker_kind: "memory",
         tracker_required_labels: ["symphony-test"],
-        tracker_active_states: ["Todo"],
+        tracker_active_states: ["Todo", "In Progress"],
         tracker_terminal_states: ["Done"],
         poll_interval_ms: 30_000,
         workspace_root: workspace_root,
         max_concurrent_agents: 1,
-        max_turns: 1,
+        max_turns: 2,
         codex_command: "#{codex_binary} app-server",
         codex_approval_policy: "never",
         codex_turn_timeout_ms: 5_000,
@@ -298,18 +294,24 @@ defmodule SymphonyElixir.E2ETest do
       orchestrator = start_supervised!({Orchestrator, name: orchestrator_name})
       send(orchestrator, :run_poll_cycle)
 
-      assert_receive {:memory_tracker_state_update, "memory-1", "Done"}, 1_000
+      assert_eventually(
+        fn ->
+          Application.get_env(:symphony_elixir, :memory_tracker_issues)
+          |> Enum.any?(&match?(%Issue{id: "memory-1", state: "Done"}, &1))
+        end,
+        3_000
+      )
 
       workspace = Path.join(workspace_root, "MEM-1")
       trace = File.read!(trace_file)
       assert trace =~ "CWD:#{workspace}"
-      assert trace =~ "\"name\":\"tracker_issue\""
+      assert trace =~ "symphony_stage_outcome"
     after
       File.rm_rf(test_root)
     end
   end
 
-  test "GitHub issues-only tracker runs through orchestrator, Codex dynamic tools, workspace, and terminal state" do
+  test "GitHub tracker runs through orchestrator, stage outcome, workspace, and terminal state" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -338,11 +340,7 @@ defmodule SymphonyElixir.E2ETest do
 
       File.mkdir_p!(test_root)
 
-      write_fake_codex!(codex_binary, trace_file, "github_issue", %{
-        "operation" => "set_status",
-        "issueId" => "42",
-        "state" => "Done"
-      })
+      write_stage_sequence_fake_codex!(codex_binary, trace_file, ["started", "completed"])
 
       Application.put_env(:symphony_elixir, :github_client_module, GitHubTrackerDouble)
       Application.put_env(:symphony_elixir, :e2e_tracker_double, tracker_name)
@@ -355,14 +353,14 @@ defmodule SymphonyElixir.E2ETest do
         tracker_api_token: "github-token",
         tracker_owner: "openai",
         tracker_repo: "symphony",
-        tracker_project_number: nil,
+        tracker_project_number: 7,
         tracker_required_labels: ["symphony-test"],
         tracker_active_states: ["Todo", "In Progress"],
         tracker_terminal_states: ["Done", "Closed"],
         poll_interval_ms: 30_000,
         workspace_root: workspace_root,
         max_concurrent_agents: 1,
-        max_turns: 1,
+        max_turns: 2,
         codex_command: "#{codex_binary} app-server",
         codex_approval_policy: "never",
         codex_turn_timeout_ms: 5_000,
@@ -427,11 +425,7 @@ defmodule SymphonyElixir.E2ETest do
 
       File.mkdir_p!(test_root)
 
-      write_fake_codex!(codex_binary, trace_file, "tracker_issue", %{
-        "operation" => "set_status",
-        "issueId" => "gitlab:platform/symphony#7",
-        "state" => "Done"
-      })
+      write_stage_sequence_fake_codex!(codex_binary, trace_file, ["started", "completed"])
 
       Application.put_env(:symphony_elixir, :gitlab_client_module, GitLabTrackerDouble)
       Application.put_env(:symphony_elixir, :e2e_tracker_double, tracker_name)
@@ -449,7 +443,7 @@ defmodule SymphonyElixir.E2ETest do
         poll_interval_ms: 30_000,
         workspace_root: workspace_root,
         max_concurrent_agents: 1,
-        max_turns: 1,
+        max_turns: 2,
         codex_command: "#{codex_binary} app-server",
         codex_approval_policy: "never",
         codex_turn_timeout_ms: 5_000,
@@ -483,56 +477,6 @@ defmodule SymphonyElixir.E2ETest do
     after
       File.rm_rf(test_root)
     end
-  end
-
-  defp write_fake_codex!(path, trace_file, tool_name, arguments) do
-    tool_call =
-      Jason.encode!(%{
-        "id" => 101,
-        "method" => "item/tool/call",
-        "params" => %{
-          "name" => tool_name,
-          "callId" => "call-e2e",
-          "threadId" => "thread-e2e",
-          "turnId" => "turn-e2e",
-          "arguments" => arguments
-        }
-      })
-
-    File.write!(path, """
-    #!/bin/sh
-    trace_file=#{shell_escape(trace_file)}
-    printf 'CWD:%s\\n' "$(pwd -P)" >> "$trace_file"
-    count=0
-    while IFS= read -r line; do
-      count=$((count + 1))
-      printf '%s\\n' "$line" >> "$trace_file"
-
-      case "$count" in
-        1)
-          printf '%s\\n' '{"id":1,"result":{}}'
-          ;;
-        2)
-          ;;
-        3)
-          printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-e2e"}}}'
-          ;;
-        4)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-e2e"}}}'
-          printf '%s\\n' '#{tool_call}'
-          ;;
-        5)
-          printf '%s\\n' '{"method":"turn/completed","params":{"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}}}'
-          exit 0
-          ;;
-        *)
-          exit 0
-          ;;
-      esac
-    done
-    """)
-
-    File.chmod!(path, 0o755)
   end
 
   defp write_stage_sequence_fake_codex!(path, trace_file, outcomes) do

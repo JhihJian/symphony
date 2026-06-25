@@ -124,6 +124,54 @@ defmodule SymphonyElixir.Tracker.StageState do
 
   def terminal_provider_state?(_provider_state), do: false
 
+  @spec start_provider_states() :: [String.t()]
+  def start_provider_states do
+    start_stage = Config.settings!().workflow |> Map.fetch!("start_stage")
+
+    stage_states()
+    |> provider_states_for_stage_ids([start_stage])
+  end
+
+  @spec terminal_provider_states() :: [String.t()]
+  def terminal_provider_states do
+    states = stage_states()
+    configured_terminal_stages = workflow_terminal_stages()
+
+    terminal_stage_ids =
+      configured_terminal_stages ++
+        (states
+         |> ordered_stage_ids()
+         |> Enum.filter(fn stage_id ->
+           stage_id not in configured_terminal_stages and
+             states
+             |> Map.get(stage_id, %{})
+             |> Map.get("terminal", false)
+         end))
+
+    terminal_stage_ids
+    |> Enum.uniq()
+    |> provider_states_for_stage_ids(states)
+  end
+
+  @spec non_terminal_provider_states() :: [String.t()]
+  def non_terminal_provider_states do
+    states = stage_states()
+
+    states
+    |> ordered_stage_ids()
+    |> Enum.reject(&terminal_stage?/1)
+    |> provider_states_for_stage_ids(states)
+  end
+
+  @spec all_provider_states() :: [String.t()]
+  def all_provider_states do
+    states = stage_states()
+
+    states
+    |> ordered_stage_ids()
+    |> provider_states_for_stage_ids(states)
+  end
+
   @spec stage_states() :: map()
   defp stage_states do
     Config.settings!().tracker.stage_states
@@ -131,15 +179,80 @@ defmodule SymphonyElixir.Tracker.StageState do
 
   @spec workflow_terminal_stages() :: [String.t()]
   defp workflow_terminal_stages do
-    case Config.settings!().workflow do
-      %{"terminal_stages" => stages} when is_list(stages) ->
-        stages
-        |> Enum.filter(&is_binary/1)
-        |> Enum.uniq()
+    Config.settings!().workflow
+    |> Map.fetch!("terminal_stages")
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
 
-      _ ->
-        []
+  defp ordered_stage_ids(stage_states) when is_map(stage_states) do
+    workflow = Config.settings!().workflow
+    start_stage = Map.fetch!(workflow, "start_stage")
+    stages = Map.fetch!(workflow, "stages")
+    stage_names = Map.keys(stages)
+    outcomes = Map.get(workflow, "outcomes", [])
+
+    {ordered, visited} = walk_stage_graph([start_stage], [], [], stages, outcomes, stage_names)
+
+    remaining =
+      stage_names
+      |> Enum.reject(&(&1 in visited))
+      |> Enum.sort()
+
+    ordered ++ remaining
+  end
+
+  defp walk_stage_graph([], visited, ordered, _stages, _outcomes, _stage_names) do
+    {Enum.reverse(ordered), visited}
+  end
+
+  defp walk_stage_graph([stage_id | rest], visited, ordered, stages, outcomes, stage_names) do
+    if stage_id in visited do
+      walk_stage_graph(rest, visited, ordered, stages, outcomes, stage_names)
+    else
+      visited = [stage_id | visited]
+      transitions = stages |> Map.get(stage_id, %{}) |> Map.get("transitions", %{})
+
+      ordered_targets =
+        outcomes
+        |> Enum.map(&Map.get(transitions, &1))
+        |> Enum.reject(&is_nil/1)
+
+      unordered_targets =
+        transitions
+        |> Map.values()
+        |> Enum.reject(&(&1 in ordered_targets))
+        |> Enum.sort()
+
+      targets =
+        (ordered_targets ++ unordered_targets)
+        |> Enum.filter(&(&1 in stage_names))
+        |> Enum.reject(&(&1 in visited))
+
+      walk_stage_graph(rest ++ targets, visited, [stage_id | ordered], stages, outcomes, stage_names)
     end
+  end
+
+  defp provider_states_for_stage_ids(stage_ids, stage_states) when is_list(stage_ids) and is_map(stage_states) do
+    provider_states_for_stage_ids(stage_states, stage_ids)
+  end
+
+  defp provider_states_for_stage_ids(stage_states, stage_ids) when is_map(stage_states) and is_list(stage_ids) do
+    stage_ids
+    |> Enum.map(fn stage_id ->
+      stage_states
+      |> Map.fetch!(stage_id)
+      |> Map.fetch!("state")
+    end)
+    |> normalize_provider_states()
+  end
+
+  defp normalize_provider_states(states) when is_list(states) do
+    states
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
   end
 
   @spec normalize_state(term()) :: String.t()
@@ -148,6 +261,4 @@ defmodule SymphonyElixir.Tracker.StageState do
     |> String.trim()
     |> String.downcase()
   end
-
-  defp normalize_state(_state), do: ""
 end
