@@ -153,6 +153,7 @@ server:
 
 ```text
 http://<host-ip>:<SYMPHONY_PORT>/
+http://<host-ip>:<SYMPHONY_PORT>/workflow
 ```
 
 ## 新增项目示例
@@ -473,6 +474,9 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 这个页面是 operator 管理面，不是多租户 orchestrator：
 
 - `/` 是当前进程的单实例执行 Dashboard，展示该实例内部 orchestrator 的运行、重试、阻塞和 token 状态。
+- `/workflow` 是当前实例的只读 workflow-stage 配置可视化页面，读取该实例的 `WORKFLOW.md`
+  和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
+  `current_stage` 运行态分布；页面不展示 token、`api_key` 或 env secret 原始值。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
 - 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、`TRACKER.yaml`、环境变量、日志目录、workspace root、端口和内存调度账本。
 - 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。

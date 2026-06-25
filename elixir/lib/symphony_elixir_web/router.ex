@@ -26,6 +26,7 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    live("/workflow", WorkflowLive, :index)
     live("/admin/instances", AdminInstancesLive, :index)
   end
 

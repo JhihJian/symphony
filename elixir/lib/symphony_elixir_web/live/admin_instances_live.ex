@@ -100,6 +100,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           </div>
           <div class="status-stack">
             <a class="status-badge" href="/">打开单实例 Dashboard</a>
+            <a class="status-badge" href="/workflow">Workflow 图</a>
             <a class="status-badge" href="/api/v1/admin/instances">JSON API</a>
           </div>
         </div>

@@ -1632,6 +1632,32 @@ Enablement (extension):
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
+#### 13.7.1.1 Workflow Configuration Visualization (`/workflow`)
+
+An implementation MAY host a read-only workflow configuration visualization at `/workflow`.
+
+If provided:
+
+- The page MUST treat `WORKFLOW.md` and `TRACKER.yaml` as data sources only; it MUST NOT edit or
+  persist workflow configuration.
+- The page SHOULD render workflow stages as nodes and ordinary `transitions` as outcome-labelled
+  directed edges.
+- The page SHOULD visually distinguish `workflow.start_stage`, `workflow.terminal_stages`,
+  blocked/protocol-blocked paths, and `workflow.missing_outcome.on_exhausted`.
+- `workflow.missing_outcome.max_retries` and `on_exhausted` SHOULD be shown separately from ordinary
+  business transitions so operators do not mistake protocol fallback for a normal outcome path.
+- The page SHOULD expose configuration diagnostics such as unknown transition targets, unknown
+  outcomes, missing terminal stages, non-terminal stages without transitions, stages unreachable
+  from `workflow.start_stage`, and terminal stages not reachable from normal or missing-outcome
+  paths.
+- When `TRACKER.yaml` is available, the page SHOULD summarize tracker kind, stage-to-provider-state
+  mapping, and whether every workflow stage has a provider-visible state mapping.
+- The page MUST NOT render raw credential values, including `api_key`, token, env secret, password,
+  or credential fields from tracker/runtime config.
+- When an orchestrator snapshot is available, the page MAY overlay running, retrying, and blocked
+  issue counts by `current_stage`; snapshot timeout or unavailability MUST NOT prevent the static
+  workflow graph and diagnostics from rendering.
+
 #### 13.7.2 JSON REST API (`/api/v1/*`)
 
 Provide a JSON REST API under `/api/v1/*` for current runtime state and operational debugging.

@@ -48,6 +48,11 @@ scoped labels. GitHub issues-only mode fails fast for multi-stage provider-visib
 Legacy `WORKFLOW.md` tracker front matter is rejected at runtime; migrate to the split
 `WORKFLOW.md` plus `TRACKER.yaml` layout before starting the service.
 
+When the Elixir observability server is enabled, `/workflow` provides a read-only workflow-stage
+visualization. It renders the current `WORKFLOW.md` stages and transitions, summarizes
+`TRACKER.yaml` stage-state coverage without exposing credentials, and overlays available runtime
+stage counts from the local orchestrator snapshot.
+
 ---
 
 ## License

@@ -323,7 +323,7 @@ codex:
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+  `/`, `/workflow`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 - The same Phoenix service also exposes an operator-only multi-instance management surface at
   `/admin/instances`, `/api/v1/admin/instances*`, and `/api/v1/admin/auto-update*`. It discovers
   independently deployed `symphony@<project>.service` instances from the systemd-template config
@@ -335,6 +335,7 @@ codex:
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
+- LiveView for workflow-stage configuration visualization at `/workflow`
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
@@ -342,6 +343,18 @@ The observability UI now runs on a minimal Phoenix stack:
 The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
 detail links.
+
+The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
+the current `WORKFLOW.md` directly, renders stage nodes and outcome-labelled transitions, marks
+`workflow.start_stage`, `workflow.terminal_stages`, blocked/protocol-blocked paths, and shows
+`workflow.missing_outcome.max_retries` plus `on_exhausted` separately from ordinary transitions.
+It also previews each stage prompt, lists outcome targets, reports semantic warnings such as
+unreachable stages or non-terminal stages without transitions, and summarizes `TRACKER.yaml`
+stage-state coverage. Tracker provider details are limited to non-secret hints such as kind,
+owner/repo/project number or label prefix; token, `api_key`, env secret, and credential fields are
+not rendered. When an orchestrator snapshot is available, the page overlays running/retrying/blocked
+issue counts by `current_stage`; if the snapshot is unavailable, the static workflow graph and
+configuration diagnostics still render.
 
 The multi-instance dashboard at `/admin/instances` is a thin operator management plane. It reads
 registered instances from `~/.config/symphony/projects` by default, checks each
