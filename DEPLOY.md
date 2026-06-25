@@ -35,6 +35,7 @@ scripts/install-systemd-template.sh \
 - 安装或更新 `~/.config/systemd/user/symphony@.service`
 - 创建 `~/.config/symphony/projects/<project>/env`
 - 创建 `~/.config/symphony/projects/<project>/WORKFLOW.md`
+- 创建 `~/.config/symphony/projects/<project>/TRACKER.yaml`
 - 创建 `~/.codex/symphony/projects/<project>/logs`
 - 创建 `~/.codex/symphony/projects/<project>/workspaces`
 - clone 或更新 `https://github.com/jhihjian/symphony` 的 `main` 分支到 `~/.codex/symphony`
@@ -49,10 +50,6 @@ scripts/install-systemd-template.sh \
 如果不希望脚本自动构建二进制，可以传 `--skip-build`。
 如果不希望自动更新，去掉 `--auto-update`；如果之前启用过，可以传 `--no-auto-update` 关闭。
 如果只想生成文件、不执行 `systemctl --user`，可以传 `--no-systemd`。
-
-注意：当前 systemd installer 仍生成兼容旧运行实例的单文件 `WORKFLOW.md`。应用本身已经支持
-`WORKFLOW.md + TRACKER.yaml` 和 `--tracker-config`，但共享 systemd template、现有实例配置迁移
-和回滚保护由 #57 后续完成。
 
 ## 目录约定
 
@@ -85,8 +82,9 @@ scripts/install-systemd-template.sh ... \
 
 ```text
 ~/.config/symphony/projects/<project>/
-  WORKFLOW.md  # 当前 systemd installer 生成的 legacy 单文件 tracker/workspace/prompt 配置
-  env          # 项目密钥、端口、日志目录
+  WORKFLOW.md   # provider-neutral workflow stages, outcomes, transitions, stage prompts
+  TRACKER.yaml  # provider access, stage-state mapping, runtime/workspace/hooks/codex settings
+  env           # 项目密钥、端口、日志目录
 ```
 
 每个受管项目使用独立运行目录：
@@ -110,6 +108,13 @@ scripts/install-systemd-template.sh ... \
 ```text
 ~/.config/symphony/projects/symphony/env
 ~/.config/symphony/projects/symphony/WORKFLOW.md
+~/.config/symphony/projects/symphony/TRACKER.yaml
+```
+
+服务 `ExecStart` 会显式传入 tracker 配置：
+
+```text
+./bin/symphony ... --tracker-config ~/.config/symphony/projects/%i/TRACKER.yaml ~/.config/symphony/projects/%i/WORKFLOW.md
 ```
 
 服务命令形态：
@@ -137,7 +142,7 @@ SYMPHONY_PORT=20000
 SYMPHONY_LOGS_ROOT=$HOME/.codex/symphony/projects/symphony/logs
 ```
 
-如果需要局域网访问，在对应 `WORKFLOW.md` front matter 中设置：
+如果需要局域网访问，在对应 `TRACKER.yaml` 中设置：
 
 ```yaml
 server:
@@ -330,6 +335,7 @@ scripts/uninstall-systemd-template.sh --project project-a --purge-all --remove-a
 service: symphony@symphony.service
 port: 20000
 workflow: ~/.config/symphony/projects/symphony/WORKFLOW.md
+tracker: ~/.config/symphony/projects/symphony/TRACKER.yaml
 env: ~/.config/symphony/projects/symphony/env
 logs: ~/.codex/symphony/projects/symphony/logs
 workspaces: ~/.codex/symphony/projects/symphony/workspaces
@@ -342,6 +348,54 @@ systemctl --user status symphony@symphony.service --no-pager
 journalctl --user -u symphony@symphony.service -f
 systemctl --user restart symphony@symphony.service
 systemctl --user stop symphony@symphony.service
+```
+
+## 旧配置迁移到两文件布局
+
+如果已有实例仍使用旧单文件 `WORKFLOW.md` front matter 存放 provider、tracker 和 runtime 字段，先使用迁移 task 拆分，再重载 systemd template。以下步骤以当前 `symphony@symphony.service` 为例，命令会备份原文件并保留现有 `env` token：
+
+```bash
+project=symphony
+config_dir="$HOME/.config/symphony/projects/$project"
+backup_dir="$config_dir/backup-$(date +%Y%m%d%H%M%S)"
+
+systemctl --user stop "symphony@$project.service"
+mkdir -p "$backup_dir"
+cp "$config_dir/WORKFLOW.md" "$backup_dir/WORKFLOW.md"
+[ -f "$config_dir/TRACKER.yaml" ] && cp "$config_dir/TRACKER.yaml" "$backup_dir/TRACKER.yaml"
+
+cd ~/.codex/symphony/elixir
+mise exec -- mix workflow.split_tracker_config \
+  --workflow "$config_dir/WORKFLOW.md" \
+  --workflow-out "$config_dir/WORKFLOW.md.next" \
+  --tracker-out "$config_dir/TRACKER.yaml.next" \
+  --force
+
+mv "$config_dir/WORKFLOW.md.next" "$config_dir/WORKFLOW.md"
+mv "$config_dir/TRACKER.yaml.next" "$config_dir/TRACKER.yaml"
+
+systemctl --user daemon-reload
+systemctl --user start "symphony@$project.service"
+journalctl --user -u "symphony@$project.service" --since "5 minutes ago" --no-pager
+curl -sS "http://127.0.0.1:20000/api/v1/state"
+```
+
+迁移后检查点：
+
+- `WORKFLOW.md` 只保留 provider-neutral `workflow` stages，不包含 `tracker:`。
+- `TRACKER.yaml` 包含 `tracker.kind`、owner/repo/project number、`workflow_state.strategy: project_v2_status`、`field_name: Status`、`state_options`、`required_labels`，并保留 `server`、`workspace`、`hooks`、`agent`、`codex`、`polling`、`observability`、`worker` 等 runtime 字段。
+- `systemctl --user status symphony@symphony.service --no-pager` 显示 active/running。
+- `journalctl` 没有 `Invalid WORKFLOW.md`、`Invalid TRACKER.yaml`、`missing_tracker_config_file`。
+- `/api/v1/state` 返回 JSON，且包含 `counts`。
+
+如果启动失败，可以回滚备份：
+
+```bash
+systemctl --user stop "symphony@$project.service"
+cp "$backup_dir/WORKFLOW.md" "$config_dir/WORKFLOW.md"
+[ -f "$backup_dir/TRACKER.yaml" ] && cp "$backup_dir/TRACKER.yaml" "$config_dir/TRACKER.yaml"
+systemctl --user daemon-reload
+systemctl --user start "symphony@$project.service"
 ```
 
 ## 更新 Symphony 程序
@@ -420,7 +474,7 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 
 - `/` 是当前进程的单实例执行 Dashboard，展示该实例内部 orchestrator 的运行、重试、阻塞和 token 状态。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
-- 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、环境变量、日志目录、workspace root、端口和内存调度账本。
+- 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、`TRACKER.yaml`、环境变量、日志目录、workspace root、端口和内存调度账本。
 - 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。
 - 管理面可以请求 `start`、`stop`、`restart`，失败时 API 返回可读错误；issue 派发、重试、reconciliation 和 workspace 隔离仍由对应实例内部 `Orchestrator` 负责。
 
