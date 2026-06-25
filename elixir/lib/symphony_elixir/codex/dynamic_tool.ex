@@ -1263,6 +1263,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           }
         }
 
+      :github_project_status_field_not_found ->
+        %{
+          "error" => %{
+            "message" => "The configured GitHub Project Status field was not found on the issue's project item."
+          }
+        }
+
       :github_project_status_option_not_found ->
         %{
           "error" => %{

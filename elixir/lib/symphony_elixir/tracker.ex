@@ -115,7 +115,7 @@ defmodule SymphonyElixir.Tracker do
     workflow = workflow_to_map(workflow)
 
     with :ok <- TrackerConfig.validate_stage_states(workflow, tracker_config) do
-      validate_known_provider_states(tracker_config, opts)
+      validate_known_provider_states(workflow, tracker_config, opts)
     end
   end
 
@@ -149,8 +149,8 @@ defmodule SymphonyElixir.Tracker do
   defp workflow_to_map(%Definition{} = workflow), do: Definition.to_map(workflow)
   defp workflow_to_map(workflow) when is_map(workflow), do: normalize_keys(workflow)
 
-  @spec validate_known_provider_states(map(), keyword()) :: validation_result()
-  defp validate_known_provider_states(tracker_config, opts) do
+  @spec validate_known_provider_states(map(), map(), keyword()) :: validation_result()
+  defp validate_known_provider_states(workflow, tracker_config, opts) do
     known_states =
       opts
       |> Keyword.get(:provider_states, provider_states(tracker_config))
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Tracker do
       :ok
     else
       tracker_config
-      |> TrackerConfig.stage_states()
+      |> TrackerConfig.stage_states(workflow)
       |> Enum.flat_map(fn {stage_id, %{"state" => state}} ->
         if normalize_provider_state(state) in known_states do
           []

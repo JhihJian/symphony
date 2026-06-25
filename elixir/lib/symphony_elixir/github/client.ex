@@ -242,10 +242,22 @@ defmodule SymphonyElixir.GitHub.Client do
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
+    fetch_issue_states_by_ids(issue_ids, &graphql/2)
+  end
+
+  @doc false
+  @spec fetch_issue_states_by_ids_for_test([String.t()], (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
+      when is_list(issue_ids) and is_function(graphql_fun, 2) do
+    fetch_issue_states_by_ids(issue_ids, graphql_fun)
+  end
+
+  defp fetch_issue_states_by_ids(issue_ids, graphql_fun) do
     issue_ids
     |> Enum.uniq()
     |> Enum.reduce_while({:ok, []}, fn issue_id, {:ok, acc} ->
-      case fetch_issue_by_id(issue_id) do
+      case fetch_issue_by_id(issue_id, graphql_fun) do
         {:ok, nil} -> {:cont, {:ok, acc}}
         {:ok, issue} -> {:cont, {:ok, [issue | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -289,6 +301,31 @@ defmodule SymphonyElixir.GitHub.Client do
   @spec fetch_issue(String.t()) :: {:ok, Issue.t() | nil} | {:error, term()}
   def fetch_issue(issue_id) when is_binary(issue_id) do
     fetch_issue_by_id(issue_id)
+  end
+
+  @spec read_project_issue_state(String.t()) :: {:ok, String.t()} | {:error, term()}
+  def read_project_issue_state(issue_id) when is_binary(issue_id) do
+    read_project_issue_state(issue_id, &graphql/2)
+  end
+
+  @doc false
+  @spec read_project_issue_state_for_test(String.t(), (String.t(), map() -> {:ok, map()} | {:error, term()})) ::
+          {:ok, String.t()} | {:error, term()}
+  def read_project_issue_state_for_test(issue_id, graphql_fun)
+      when is_binary(issue_id) and is_function(graphql_fun, 2) do
+    read_project_issue_state(issue_id, graphql_fun)
+  end
+
+  defp read_project_issue_state(issue_id, graphql_fun) do
+    with {:ok, issue_number} <- parse_issue_number(issue_id),
+         :ok <- validate_tracker_config(),
+         {:ok, details} <- fetch_issue_details(issue_number, graphql_fun),
+         {:ok, project_item} <- find_project_item(details) do
+      case details["state"] do
+        state when state in ["CLOSED", "closed"] -> {:ok, "Closed"}
+        _state -> project_status_option_name(project_item)
+      end
+    end
   end
 
   @spec list_comments(String.t()) :: {:ok, [map()]} | {:error, term()}
@@ -473,15 +510,13 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp fetch_issue_by_id(issue_id) do
+  defp fetch_issue_by_id(issue_id), do: fetch_issue_by_id(issue_id, &graphql/2)
+
+  defp fetch_issue_by_id(issue_id, graphql_fun) do
     with {:ok, issue_number} <- parse_issue_number(issue_id),
-         {:ok, details} <- fetch_issue_details(issue_number) do
+         {:ok, details} <- fetch_issue_details(issue_number, graphql_fun) do
       {:ok, normalize_issue(details)}
     end
-  end
-
-  defp fetch_issue_details(issue_number) do
-    fetch_issue_details(issue_number, &graphql/2)
   end
 
   defp fetch_issue_details(issue_number, graphql_fun) do
@@ -563,6 +598,10 @@ defmodule SymphonyElixir.GitHub.Client do
       _ ->
         nil
     end
+  end
+
+  defp project_state_name(_project_item, github_issue_state, _tracker) when github_issue_state in ["CLOSED", "closed"] do
+    "Closed"
   end
 
   defp project_state_name(nil, github_issue_state, %{project_number: nil} = tracker),
@@ -705,19 +744,38 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp resolve_status_option(project_item, state_name) do
+  defp resolve_status_option(project_item, state_name) when is_map(project_item) do
     normalized_state_name = normalize_state(state_name)
     field_value = project_item["fieldValueByName"] || %{}
     options = get_in(field_value, ["field", "options"]) || []
     field_id = get_in(field_value, ["field", "id"])
 
-    case Enum.find(options, fn option ->
-           normalize_state(option["name"]) == normalized_state_name
-         end) do
-      %{"id" => option_id} when is_binary(option_id) and is_binary(field_id) ->
-        {:ok, field_id, option_id}
+    if is_binary(field_id) do
+      case Enum.find(options, fn option ->
+             normalize_state(option["name"]) == normalized_state_name
+           end) do
+        %{"id" => option_id} when is_binary(option_id) ->
+          {:ok, field_id, option_id}
 
-      _ ->
+        _ ->
+          {:error, :github_project_status_option_not_found}
+      end
+    else
+      {:error, :github_project_status_field_not_found}
+    end
+  end
+
+  defp project_status_option_name(project_item) do
+    field_value = project_item["fieldValueByName"] || %{}
+
+    cond do
+      not is_binary(get_in(field_value, ["field", "id"])) ->
+        {:error, :github_project_status_field_not_found}
+
+      is_binary(field_value["name"]) and field_value["name"] != "" ->
+        {:ok, field_value["name"]}
+
+      true ->
         {:error, :github_project_status_option_not_found}
     end
   end
