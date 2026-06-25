@@ -43,9 +43,10 @@ runner advances stages inside one workspace and app-server session from structur
 provider-visible stages for observability instead of rereading provider state between stages.
 Scheduler dispatch is also stage-aware: new work is discovered only from `workflow.start_stage`, and
 dispatch is revalidated against the provider-visible stage before a worker is spawned. The stage
-contract is implemented for the Memory tracker in this step; real Linear/GitHub/GitLab provider
-stage mappings remain follow-up provider work. The legacy single-file tracker state model remains
-only as a temporary compatibility path and will be removed by follow-up #45 cleanup work.
+contract is implemented for Memory, Linear workflow states, GitHub Project v2 Status, and GitLab
+scoped labels. GitHub issues-only mode fails fast for multi-stage provider-visible workflow state.
+The legacy single-file tracker state model remains only as a temporary compatibility path and will
+be removed by follow-up #45 cleanup work.
 
 ---
 

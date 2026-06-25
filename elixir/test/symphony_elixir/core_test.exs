@@ -392,6 +392,61 @@ defmodule SymphonyElixir.CoreTest do
     refute message =~ "active_states"
   end
 
+  test "workflow-state tracker config derives stage mappings for provider strategies" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: github
+      api_key: token
+      owner: JhihJian
+      repo: symphony
+      project_number: 55
+      workflow_state:
+        strategy: project_v2_status
+        field_name: Status
+        state_options:
+          ready: Context Check
+          working: Implementation
+          review: Validation
+          done: Done
+          blocked: Blocked
+          protocol_blocked: Protocol Blocked
+    """)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    github_settings = Config.settings!()
+    assert github_settings.tracker.project_status_field_name == "Status"
+    assert github_settings.tracker.stage_states["ready"]["state"] == "Context Check"
+    assert github_settings.tracker.stage_states["working"]["state"] == "Implementation"
+    assert github_settings.tracker.active_states == ["Context Check", "Implementation", "Validation"]
+    assert github_settings.tracker.terminal_states == ["Done", "Blocked", "Protocol Blocked"]
+
+    File.write!(tracker_config_path, """
+    tracker:
+      kind: gitlab
+      api_key: token
+      project_slug: platform/symphony
+      workflow_state:
+        strategy: scoped_label
+        label_prefix: "status::"
+        state_name_format: kebab_case
+        close_on_terminal:
+          - done
+    """)
+
+    gitlab_settings = Config.settings!()
+    assert gitlab_settings.tracker.state_label_prefix == "status::"
+    assert gitlab_settings.tracker.stage_states["ready"]["state"] == "status::ready"
+    assert gitlab_settings.tracker.stage_states["protocol_blocked"]["state"] == "status::protocol-blocked"
+    assert gitlab_settings.tracker.terminal_states == ["status::done", "status::blocked", "status::protocol-blocked"]
+  end
+
   test "orchestrator surfaces workflow-stage tracker config errors as configuration diagnostics" do
     workflow_path = Workflow.workflow_file_path()
     tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")

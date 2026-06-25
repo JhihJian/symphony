@@ -61,6 +61,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "Ready"})}
     end
 
+    def read_project_issue_state(issue_id) do
+      send(self(), {:github_read_project_issue_state_called, issue_id})
+      Process.get({__MODULE__, :read_project_issue_state_result}, {:ok, "Ready"})
+    end
+
     def create_comment(issue_id, body) do
       send(self(), {:github_create_comment_called, issue_id, body})
       Process.get({__MODULE__, :create_comment_result}, :ok)
@@ -100,6 +105,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     def update_issue_state(issue_id, state_name) do
       send(self(), {:gitlab_update_issue_state_called, issue_id, state_name})
       Process.get({__MODULE__, :update_issue_state_result}, :ok)
+    end
+
+    def write_scoped_label_stage(issue_id, target_label, opts) do
+      send(self(), {:gitlab_write_scoped_label_stage_called, issue_id, target_label, opts})
+      Process.get({__MODULE__, :write_scoped_label_stage_result}, :ok)
     end
 
     defp issue_for_state(state) do
@@ -423,11 +433,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
-    assert %{stage_contract: :unsupported} = Adapter.capabilities()
-    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.fetch_runnable_issues("ready")
-    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.read_issue_stage("issue-1")
-    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.write_issue_stage("issue-1", "done")
-    assert {:error, {:stage_contract_not_implemented, :linear}} = Adapter.is_native_terminal?(%Issue{})
+    assert %{stage_contract: :supported} = Adapter.capabilities()
 
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
@@ -543,11 +549,11 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "github adapter delegates reads and writes" do
     Application.put_env(:symphony_elixir, :github_client_module, FakeGitHubClient)
 
-    assert %{stage_contract: :unsupported} = GitHubAdapter.capabilities()
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.fetch_runnable_issues("ready")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.read_issue_stage("12")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.write_issue_stage("12", "done")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.is_native_terminal?(%Issue{})
+    assert %{stage_contract: :unsupported, reason: :github_issues_only_no_multistage_state} =
+             GitHubAdapter.capabilities()
+
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} =
+             GitHubAdapter.fetch_runnable_issues("ready")
 
     assert {:ok, [:github_candidate]} = GitHubAdapter.fetch_candidate_issues()
     assert_receive :github_fetch_candidate_issues_called
@@ -569,11 +575,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "gitlab adapter delegates reads and writes" do
     Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabClient)
 
-    assert %{stage_contract: :unsupported} = GitLabAdapter.capabilities()
-    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.fetch_runnable_issues("ready")
-    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.read_issue_stage("platform/symphony#12")
-    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.write_issue_stage("platform/symphony#12", "done")
-    assert {:error, {:stage_contract_not_implemented, :gitlab}} = GitLabAdapter.is_native_terminal?(%Issue{})
+    assert %{stage_contract: :supported} = GitLabAdapter.capabilities()
 
     assert {:ok, [:gitlab_candidate]} = GitLabAdapter.fetch_candidate_issues()
     assert_receive :gitlab_fetch_candidate_issues_called

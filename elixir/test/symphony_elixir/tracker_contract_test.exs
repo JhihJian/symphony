@@ -9,6 +9,96 @@ defmodule SymphonyElixir.TrackerContractTest do
   alias SymphonyElixir.Tracker.StageState
   alias SymphonyElixir.Workflow.Definition
 
+  defmodule FakeLinearStageClient do
+    def fetch_candidate_issues, do: {:ok, []}
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:linear_fetch_issues_by_states, states})
+      {:ok, Enum.map(states, &issue_for_state/1)}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:linear_fetch_issue_states_by_ids, issue_ids})
+      {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "In Progress"})}
+    end
+
+    def graphql(query, variables) do
+      send(self(), {:linear_graphql, query, variables})
+
+      cond do
+        query =~ "states" ->
+          {:ok, %{"data" => %{"issue" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "linear-state-1"}]}}}}}}
+
+        query =~ "issueUpdate" ->
+          {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+      end
+    end
+
+    defp issue_for_state(state) do
+      %Issue{id: "linear-#{state}", identifier: "linear-#{state}", title: "Linear #{state}", state: state}
+    end
+  end
+
+  defmodule FakeGitHubStageClient do
+    def fetch_candidate_issues, do: {:ok, []}
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:github_fetch_issues_by_states, states})
+      {:ok, Enum.map(states, &issue_for_state/1)}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:github_fetch_issue_states_by_ids, issue_ids})
+      {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "In Progress"})}
+    end
+
+    def read_project_issue_state(issue_id) do
+      send(self(), {:github_read_project_issue_state, issue_id})
+      Process.get({__MODULE__, :project_state}, {:ok, "In Progress"})
+    end
+
+    def create_comment(_issue_id, _body), do: :ok
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:github_update_issue_state, issue_id, state_name})
+      Process.get({__MODULE__, :update_issue_state_result}, :ok)
+    end
+
+    defp issue_for_state(state) do
+      %Issue{id: "github-#{state}", identifier: "github-#{state}", title: "GitHub #{state}", state: state}
+    end
+  end
+
+  defmodule FakeGitLabStageClient do
+    def fetch_candidate_issues, do: {:ok, []}
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:gitlab_fetch_issues_by_states, states})
+      Process.get({__MODULE__, :fetch_issues_by_states_result}, {:ok, Enum.map(states, &issue_for_state/1)})
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:gitlab_fetch_issue_states_by_ids, issue_ids})
+
+      Process.get(
+        {__MODULE__, :fetch_issue_states_by_ids_result},
+        {:ok, Enum.map(issue_ids, &%Issue{id: &1, identifier: &1, title: &1, state: "status::implementation"})}
+      )
+    end
+
+    def create_comment(_issue_id, _body), do: :ok
+    def update_issue_state(_issue_id, _state_name), do: :ok
+
+    def write_scoped_label_stage(issue_id, target_label, opts) do
+      send(self(), {:gitlab_write_scoped_label_stage, issue_id, target_label, opts})
+      Process.get({__MODULE__, :write_scoped_label_stage_result}, :ok)
+    end
+
+    defp issue_for_state(state) do
+      %Issue{id: "gitlab-#{state}", identifier: "gitlab-#{state}", title: "GitLab #{state}", state: state}
+    end
+  end
+
   test "memory tracker implements stage-aware runnable discovery and stage read/write" do
     ready_issue = issue("issue-ready", "MEM-1", "Ready")
     working_issue = issue("issue-working", "MEM-2", "In Progress")
@@ -121,6 +211,8 @@ defmodule SymphonyElixir.TrackerContractTest do
     refute StageState.terminal_provider_state?(123)
     assert StageState.native_terminal?(%Issue{state: "Done"})
     assert {:error, {:unmapped_provider_state, "External"}} = StageState.native_terminal?(%Issue{state: "External"})
+    assert %{stage_contract: :unsupported} = Tracker.unsupported_stage_capabilities(:custom)
+    assert {:error, {:stage_contract_not_implemented, :custom}} = Tracker.unsupported_stage_contract(:custom)
 
     write_stage_workflow_and_tracker!(
       tracker:
@@ -299,16 +391,209 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert Tracker.normalize_provider_state(42) == ""
   end
 
-  test "github project-backed mapping keeps explicit unsupported stage operation boundary" do
+  test "linear adapter implements workflow-state stage mapping" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearStageClient)
+    write_stage_workflow_and_tracker!(tracker: linear_tracker_config())
+
+    assert %{stage_contract: :supported} = Tracker.capabilities()
+    assert :ok = Tracker.validate_workflow_state_mapping(Config.settings!().workflow, Config.settings!().tracker_config)
+
+    assert {:ok, [%Issue{id: "linear-Ready"}]} = Tracker.fetch_runnable_issues("ready")
+    assert_receive {:linear_fetch_issues_by_states, ["Ready"]}
+
+    assert {:ok, "working"} = Tracker.read_issue_stage("linear-1")
+    assert_receive {:linear_fetch_issue_states_by_ids, ["linear-1"]}
+
+    assert :ok = Tracker.write_issue_stage("linear-1", "done")
+    assert_receive {:linear_graphql, lookup_query, %{issueId: "linear-1", stateName: "Done"}}
+    assert lookup_query =~ "states"
+    assert_receive {:linear_graphql, update_query, %{issueId: "linear-1", stateId: "linear-state-1"}}
+    assert update_query =~ "issueUpdate"
+
+    assert SymphonyElixir.Linear.Adapter.is_native_terminal?(issue("linear-2", "LIN-2", "Done"))
+  end
+
+  test "github project-backed adapter implements Project v2 Status stage mapping" do
     workflow = workflow_definition()
     tracker_config = github_tracker_config(%{}, project_number: 1)
 
+    Application.put_env(:symphony_elixir, :github_client_module, FakeGitHubStageClient)
+    write_stage_workflow_and_tracker!(tracker: tracker_config)
+
     assert :ok = GitHubAdapter.validate_workflow_state_mapping(workflow, tracker_config)
-    assert %{stage_contract: :unsupported} = GitHubAdapter.capabilities()
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.fetch_runnable_issues("ready")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.read_issue_stage("1")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.write_issue_stage("1", "working")
-    assert {:error, {:stage_contract_not_implemented, :github}} = GitHubAdapter.is_native_terminal?(%Issue{})
+    assert %{stage_contract: :supported} = GitHubAdapter.capabilities()
+
+    assert {:ok, [%Issue{id: "github-Ready"}]} = GitHubAdapter.fetch_runnable_issues("ready")
+    assert_receive {:github_fetch_issues_by_states, ["Ready"]}
+
+    assert {:ok, "working"} = GitHubAdapter.read_issue_stage("42")
+    assert_receive {:github_read_project_issue_state, "42"}
+
+    assert :ok = GitHubAdapter.write_issue_stage("42", "done")
+    assert_receive {:github_update_issue_state, "42", "Done"}
+
+    assert GitHubAdapter.is_native_terminal?(issue("42", "repo#42", "Closed"))
+    assert {:ok, "done"} = GitHubAdapter.read_issue_stage(%Issue{state: "Closed"})
+    assert {:ok, "done"} = GitHubAdapter.read_issue_stage(%Issue{state: "CLOSED"})
+    assert {:ok, "working"} = GitHubAdapter.read_issue_stage(%Issue{state: "In Progress"})
+    assert {:error, {:invalid_issue, 123}} = GitHubAdapter.read_issue_stage(123)
+    assert GitHubAdapter.is_native_terminal?(%Issue{state: "CLOSED"})
+    assert GitHubAdapter.is_native_terminal?(%Issue{state: "Done"})
+    refute GitHubAdapter.is_native_terminal?(%Issue{state: nil})
+    assert {:error, {:invalid_issue, 123}} = GitHubAdapter.is_native_terminal?(123)
+  end
+
+  test "github adapter covers issues-only invalid native terminal branch and workflow structs" do
+    {:ok, workflow_struct} = Definition.parse(workflow_definition())
+    tracker_config = github_tracker_config(%{"ready" => "Open"}, project_number: 1)
+
+    assert :ok = GitHubAdapter.validate_workflow_state_mapping(workflow_struct, tracker_config)
+
+    write_stage_workflow_and_tracker!(
+      tracker:
+        github_tracker_config(%{
+          "ready" => "Open",
+          "working" => "Open",
+          "done" => %{"state" => "Open", "terminal" => true},
+          "blocked" => %{"state" => "Open", "terminal" => true}
+        })
+    )
+
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.read_issue_stage(123)
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.is_native_terminal?(123)
+  end
+
+  test "github issues-only stage contract is unsupported for valid single-state config" do
+    write_stage_workflow_and_tracker!(
+      tracker:
+        github_tracker_config(%{
+          "ready" => "Open",
+          "working" => "Open",
+          "done" => %{"state" => "Open", "terminal" => true},
+          "blocked" => %{"state" => "Open", "terminal" => true}
+        })
+    )
+
+    assert %{stage_contract: :unsupported, reason: :github_issues_only_no_multistage_state} =
+             GitHubAdapter.capabilities()
+
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.fetch_runnable_issues("ready")
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.read_issue_stage(%Issue{})
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.read_issue_stage("42")
+    assert {:error, {:stage_contract_not_supported, :github_issues_only}} = GitHubAdapter.write_issue_stage("42", "working")
+  end
+
+  test "github adapter falls back to mapped Closed provider state without terminal stage metadata" do
+    TrackerConfig.clear_tracker_file_path()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_owner: "openai",
+      tracker_repo: "symphony",
+      tracker_project_number: 1
+    )
+
+    assert {:error, {:unmapped_provider_state, "Closed"}} = GitHubAdapter.read_issue_stage(%Issue{state: "Closed"})
+  end
+
+  test "gitlab scoped label adapter implements stage mapping and removes same-group labels" do
+    Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabStageClient)
+
+    write_stage_workflow_and_tracker!(
+      tracker:
+        gitlab_scoped_label_tracker_config(%{
+          "done" => %{"state" => "status::done", "terminal" => true},
+          "blocked" => %{"state" => "status::blocked", "terminal" => true}
+        })
+    )
+
+    assert %{stage_contract: :supported} = GitLabAdapter.capabilities()
+    assert :ok = Tracker.validate_workflow_state_mapping(Config.settings!().workflow, Config.settings!().tracker_config)
+
+    assert {:ok, [%Issue{id: "gitlab-status::context-check"}]} = GitLabAdapter.fetch_runnable_issues("ready")
+    assert_receive {:gitlab_fetch_issues_by_states, ["status::context-check"]}
+
+    assert {:ok, "working"} = GitLabAdapter.read_issue_stage("gitlab:platform/symphony#7")
+    assert_receive {:gitlab_fetch_issue_states_by_ids, ["gitlab:platform/symphony#7"]}
+
+    assert :ok = GitLabAdapter.write_issue_stage("gitlab:platform/symphony#7", "working")
+
+    assert_receive {:gitlab_write_scoped_label_stage, "gitlab:platform/symphony#7", "status::implementation", opts}
+    refute Map.fetch!(opts, :close?)
+    assert "status::context-check" in Map.fetch!(opts, :remove_labels)
+    assert "status::done" in Map.fetch!(opts, :remove_labels)
+    refute "status::implementation" in Map.fetch!(opts, :remove_labels)
+
+    assert :ok = GitLabAdapter.write_issue_stage("gitlab:platform/symphony#7", "done")
+    assert_receive {:gitlab_write_scoped_label_stage, "gitlab:platform/symphony#7", "status::done", done_opts}
+    assert Map.fetch!(done_opts, :close?)
+
+    conflict_issue = %Issue{
+      id: "gitlab:platform/symphony#8",
+      identifier: "platform/symphony#8",
+      title: "Conflicting labels",
+      state: "status::implementation",
+      labels: ["status::context-check", "status::implementation"]
+    }
+
+    assert {:error, {:gitlab_scoped_label_conflict, ["status::context-check", "status::implementation"]}} =
+             GitLabAdapter.read_issue_stage(conflict_issue)
+
+    Process.put(
+      {FakeGitLabStageClient, :fetch_issues_by_states_result},
+      {:ok, [conflict_issue]}
+    )
+
+    assert {:error, {:gitlab_scoped_label_conflict, "gitlab:platform/symphony#8", ["status::context-check", "status::implementation"]}} =
+             GitLabAdapter.fetch_runnable_issues("working")
+
+    single_label_issue = %Issue{
+      id: "gitlab:platform/symphony#9",
+      identifier: "platform/symphony#9",
+      title: "Single label",
+      state: "status::implementation",
+      labels: ["status::implementation"]
+    }
+
+    assert {:ok, "working"} = GitLabAdapter.read_issue_stage(single_label_issue)
+
+    Process.put({FakeGitLabStageClient, :fetch_issues_by_states_result}, {:ok, [%{id: "not-an-issue"}]})
+    assert {:ok, [%{id: "not-an-issue"}]} = GitLabAdapter.fetch_runnable_issues("working")
+
+    Process.put(
+      {FakeGitLabStageClient, :fetch_issues_by_states_result},
+      {:ok,
+       [
+         %Issue{
+           id: "gitlab:platform/symphony#10",
+           identifier: "platform/symphony#10",
+           title: "No labels",
+           state: "status::implementation"
+         }
+       ]}
+    )
+
+    assert {:ok, [%Issue{id: "gitlab:platform/symphony#10"}]} = GitLabAdapter.fetch_runnable_issues("working")
+  end
+
+  test "gitlab adapter covers non-scoped and error stage branches" do
+    Application.put_env(:symphony_elixir, :gitlab_client_module, FakeGitLabStageClient)
+    write_stage_workflow_and_tracker!(tracker: gitlab_plain_tracker_config())
+
+    assert :ok = GitLabAdapter.write_issue_stage("gitlab:platform/symphony#7", "working")
+    assert {:error, {:invalid_stage_write, 123, "working"}} = GitLabAdapter.write_issue_stage(123, "working")
+    assert {:error, {:invalid_issue, 123}} = GitLabAdapter.read_issue_stage(123)
+    assert GitLabAdapter.is_native_terminal?(%Issue{state: "Done"})
+    assert {:error, {:invalid_issue, 123}} = GitLabAdapter.is_native_terminal?(123)
+
+    Process.put({FakeGitLabStageClient, :fetch_issue_states_by_ids_result}, {:ok, []})
+    assert {:error, :issue_not_found} = GitLabAdapter.read_issue_stage("missing")
+
+    Process.put({FakeGitLabStageClient, :fetch_issue_states_by_ids_result}, {:error, :boom})
+    assert {:error, :boom} = GitLabAdapter.read_issue_stage("boom")
+
+    Process.put({FakeGitLabStageClient, :fetch_issues_by_states_result}, {:error, :fetch_boom})
+    assert {:error, :fetch_boom} = GitLabAdapter.fetch_runnable_issues("working")
   end
 
   defp write_stage_workflow_and_tracker!(opts) do
@@ -389,6 +674,18 @@ defmodule SymphonyElixir.TrackerContractTest do
     }
   end
 
+  defp linear_tracker_config(overrides \\ %{}, opts \\ []) do
+    %{
+      "tracker" => %{
+        "kind" => "linear",
+        "api_key" => "linear-token",
+        "project_slug" => "project",
+        "provider_states" => ["Ready", "In Progress", "Done", "Blocked"],
+        "stage_states" => stage_states(overrides, opts)
+      }
+    }
+  end
+
   defp github_tracker_config(overrides, opts \\ []) do
     project_number = Keyword.get(opts, :project_number)
     provider_states = Keyword.get(opts, :provider_states, ["Open", "Ready", "In Progress", "Done", "Closed", "Blocked"])
@@ -402,6 +699,47 @@ defmodule SymphonyElixir.TrackerContractTest do
       |> maybe_put_project_number(project_number)
 
     %{"tracker" => tracker}
+  end
+
+  defp gitlab_scoped_label_tracker_config(overrides) do
+    %{
+      "tracker" => %{
+        "kind" => "gitlab",
+        "api_key" => "gitlab-token",
+        "project_slug" => "platform/symphony",
+        "workflow_state" => %{
+          "strategy" => "scoped_label",
+          "label_prefix" => "status::",
+          "state_name_format" => "kebab_case",
+          "close_on_terminal" => ["done"]
+        },
+        "stage_states" =>
+          stage_states(
+            Map.merge(
+              %{
+                "ready" => "status::context-check",
+                "working" => "status::implementation",
+                "done" => %{"state" => "status::done", "terminal" => true},
+                "blocked" => %{"state" => "status::blocked", "terminal" => true}
+              },
+              overrides
+            ),
+            merge_default_stage_states?: false
+          )
+      }
+    }
+  end
+
+  defp gitlab_plain_tracker_config(overrides \\ %{}, opts \\ []) do
+    %{
+      "tracker" => %{
+        "kind" => "gitlab",
+        "api_key" => "gitlab-token",
+        "project_slug" => "platform/symphony",
+        "provider_states" => ["Ready", "In Progress", "Done", "Blocked"],
+        "stage_states" => stage_states(overrides, opts)
+      }
+    }
   end
 
   defp default_stage_states do

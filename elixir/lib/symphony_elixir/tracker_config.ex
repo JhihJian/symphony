@@ -17,6 +17,7 @@ defmodule SymphonyElixir.TrackerConfig do
                          "required_labels",
                          "state_label_prefix",
                          "provider_states",
+                         "workflow_state",
                          "active_states",
                          "terminal_states",
                          "stage_states"
@@ -111,23 +112,26 @@ defmodule SymphonyElixir.TrackerConfig do
 
     tracker =
       tracker_config
-      |> maybe_apply_stage_state_compatibility(Map.get(tracker_config, "stage_states"), workflow_definition)
+      |> maybe_apply_workflow_state_defaults()
+      |> maybe_apply_stage_state_compatibility(workflow_definition)
 
     Map.put(config, "tracker", tracker)
   end
 
   @spec stage_states(map()) :: map()
-  def stage_states(config) when is_map(config) do
+  def stage_states(config), do: stage_states(config, nil)
+
+  @spec stage_states(map(), map() | nil) :: map()
+  def stage_states(config, workflow_definition) when is_map(config) do
     config
     |> normalize_keys()
     |> then(&Map.get(&1, "tracker", &1))
-    |> Map.get("stage_states", %{})
-    |> normalize_stage_states()
+    |> stage_states_for_tracker(workflow_definition)
   end
 
   @spec validate_stage_states(map(), map()) :: :ok | {:error, {:invalid_tracker_config, String.t()}}
   def validate_stage_states(workflow_definition, tracker_config) when is_map(workflow_definition) and is_map(tracker_config) do
-    stage_states = stage_states(tracker_config)
+    stage_states = stage_states(tracker_config, workflow_definition)
     stage_names = workflow_definition |> Map.get("stages", %{}) |> Map.keys()
 
     unknown_stage_names =
@@ -149,21 +153,38 @@ defmodule SymphonyElixir.TrackerConfig do
 
     cond do
       unknown_stage_names != [] ->
-        {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states contains unknown workflow stage keys: #{Enum.join(unknown_stage_names, ", ")}"}}
+        {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states/workflow_state contains unknown workflow stage keys: #{Enum.join(unknown_stage_names, ", ")}"}}
 
       blank_state_names != [] ->
-        {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states must map every workflow stage to a provider-visible state; blank state for #{Enum.join(blank_state_names, ", ")}"}}
+        {:error,
+         {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states/workflow_state must map every workflow stage to a provider-visible state; blank state for #{Enum.join(blank_state_names, ", ")}"}}
 
       missing_stage_names == [] ->
         :ok
 
       true ->
-        {:error, {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states must map every workflow stage to a provider-visible state; missing #{Enum.join(missing_stage_names, ", ")}"}}
+        {:error,
+         {:invalid_tracker_config, "TRACKER.yaml tracker.stage_states/workflow_state must map every workflow stage to a provider-visible state; missing #{Enum.join(missing_stage_names, ", ")}"}}
     end
   end
 
-  defp maybe_apply_stage_state_compatibility(tracker, stage_states, workflow_definition) do
-    stage_states = normalize_stage_states(stage_states)
+  defp maybe_apply_workflow_state_defaults(tracker) do
+    workflow_state = workflow_state_config(tracker)
+
+    tracker
+    |> maybe_put_from_workflow_state("project_status_field_name", workflow_state, "field_name")
+    |> maybe_put_from_workflow_state("state_label_prefix", workflow_state, "label_prefix")
+  end
+
+  defp maybe_put_from_workflow_state(tracker, tracker_key, workflow_state, workflow_state_key) do
+    case {Map.get(tracker, tracker_key), Map.get(workflow_state, workflow_state_key)} do
+      {nil, value} when is_binary(value) and value != "" -> Map.put(tracker, tracker_key, value)
+      _ -> tracker
+    end
+  end
+
+  defp maybe_apply_stage_state_compatibility(tracker, workflow_definition) do
+    stage_states = stage_states_for_tracker(tracker, workflow_definition)
     terminal_stage_names = terminal_stage_names(workflow_definition)
     stage_order = ordered_stage_names(workflow_definition, stage_states)
 
@@ -232,6 +253,91 @@ defmodule SymphonyElixir.TrackerConfig do
 
   defp ordered_stage_names(_workflow_definition, stage_states) do
     stage_states |> Map.keys() |> Enum.sort()
+  end
+
+  defp stage_states_for_tracker(tracker, workflow_definition) do
+    case normalize_stage_states(Map.get(tracker, "stage_states")) do
+      stage_states when map_size(stage_states) > 0 ->
+        stage_states
+
+      _empty ->
+        stage_states_from_workflow_state(tracker, workflow_definition)
+    end
+  end
+
+  defp stage_states_from_workflow_state(tracker, workflow_definition) do
+    workflow_state = workflow_state_config(tracker)
+
+    cond do
+      is_map(Map.get(workflow_state, "state_options")) ->
+        workflow_state
+        |> Map.get("state_options")
+        |> normalize_stage_states()
+
+      Map.get(workflow_state, "strategy") == "scoped_label" ->
+        scoped_label_stage_states(workflow_state, workflow_definition)
+
+      true ->
+        %{}
+    end
+  end
+
+  defp scoped_label_stage_states(workflow_state, workflow_definition) do
+    prefix = workflow_state |> Map.get("label_prefix") |> normalize_optional_string()
+    format = Map.get(workflow_state, "state_name_format", "kebab_case")
+
+    workflow_definition
+    |> workflow_stage_names()
+    |> Enum.reduce(%{}, fn stage_name, acc ->
+      case scoped_label_for_stage(stage_name, prefix, format) do
+        nil -> acc
+        label -> Map.put(acc, stage_name, %{"state" => label, "terminal" => false})
+      end
+    end)
+  end
+
+  defp scoped_label_for_stage(_stage_name, nil, _format), do: nil
+
+  defp scoped_label_for_stage(stage_name, prefix, format) when is_binary(stage_name) do
+    prefix <> format_stage_name(stage_name, format)
+  end
+
+  defp workflow_stage_names(%{"stages" => stages}) when is_map(stages) do
+    stages
+    |> Map.keys()
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(String.trim(&1) == ""))
+  end
+
+  defp workflow_stage_names(_workflow_definition), do: []
+
+  defp format_stage_name(stage_name, "snake_case") do
+    stage_name
+    |> normalize_stage_token()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.trim("_")
+  end
+
+  defp format_stage_name(stage_name, "raw"), do: stage_name
+
+  defp format_stage_name(stage_name, _format) do
+    stage_name
+    |> normalize_stage_token()
+    |> String.replace(~r/[^a-z0-9]+/, "-")
+    |> String.trim("-")
+  end
+
+  defp normalize_stage_token(stage_name) do
+    stage_name
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp workflow_state_config(tracker) when is_map(tracker) do
+    case Map.get(tracker, "workflow_state") do
+      workflow_state when is_map(workflow_state) -> normalize_keys(workflow_state)
+      _other -> %{}
+    end
   end
 
   defp walk_stage_graph([], visited, ordered, _stages, _outcomes, _stage_names) do

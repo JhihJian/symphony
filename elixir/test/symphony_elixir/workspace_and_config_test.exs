@@ -513,7 +513,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.identifier == "your-org/your-repo#42"
 
     closed_issue = GitHubClient.normalize_issue_for_test(%{raw_issue | "state" => "CLOSED"})
-    assert closed_issue.state == "Done"
+    assert closed_issue.state == "Closed"
   end
 
   test "github client updates issues-only native states without a project item" do
@@ -545,6 +545,92 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:error, :github_project_number_required_for_status_update} =
              GitHubClient.update_issue_state_for_test("42", "Human Review", graphql_fun, rest_fun)
+  end
+
+  test "github project status read and write report explicit mapping errors" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "github",
+      tracker_api_token: "token",
+      tracker_owner: "your-org",
+      tracker_repo: "your-repo",
+      tracker_project_number: 7,
+      tracker_project_status_field_name: "Status"
+    )
+
+    rest_fun = fn _method, _path, _body -> {:ok, %{status: 200, body: %{}}} end
+
+    assert {:error, :github_project_item_not_found} =
+             GitHubClient.read_project_issue_state_for_test("42", fn _query, _variables ->
+               {:ok, github_issue_details_response(github_project_issue_payload(project_items: []))}
+             end)
+
+    no_status_field =
+      github_project_issue_payload(
+        project_items: [
+          %{"id" => "item-1", "project" => %{"id" => "project-7", "number" => 7}, "fieldValueByName" => nil}
+        ]
+      )
+
+    assert {:error, :github_project_status_field_not_found} =
+             GitHubClient.read_project_issue_state_for_test("42", fn _query, _variables ->
+               {:ok, github_issue_details_response(no_status_field)}
+             end)
+
+    assert {:error, :github_project_status_field_not_found} =
+             GitHubClient.update_issue_state_for_test(
+               "42",
+               "In Progress",
+               fn _query, _variables -> {:ok, github_issue_details_response(no_status_field)} end,
+               rest_fun
+             )
+
+    missing_option =
+      github_project_issue_payload(
+        project_items: [
+          github_project_item(%{
+            "name" => "Todo",
+            "field" => %{
+              "id" => "field-1",
+              "options" => [%{"id" => "opt-todo", "name" => "Todo"}]
+            }
+          })
+        ]
+      )
+
+    assert {:error, :github_project_status_option_not_found} =
+             GitHubClient.update_issue_state_for_test(
+               "42",
+               "In Progress",
+               fn _query, _variables -> {:ok, github_issue_details_response(missing_option)} end,
+               rest_fun
+             )
+
+    closed_with_stale_project_status =
+      github_project_issue_payload(
+        state: "CLOSED",
+        project_items: [
+          github_project_item(%{
+            "name" => "Todo",
+            "field" => %{
+              "id" => "field-1",
+              "options" => [%{"id" => "opt-todo", "name" => "Todo"}]
+            }
+          })
+        ]
+      )
+
+    issue = GitHubClient.normalize_issue_for_test(closed_with_stale_project_status)
+    assert issue.state == "Closed"
+
+    assert {:ok, "Closed"} =
+             GitHubClient.read_project_issue_state_for_test("42", fn _query, _variables ->
+               {:ok, github_issue_details_response(closed_with_stale_project_status)}
+             end)
+
+    assert {:ok, "Closed"} =
+             GitHubClient.read_project_issue_state_for_test("42", fn _query, _variables ->
+               {:ok, github_issue_details_response(github_project_issue_payload(state: "CLOSED", project_items: []))}
+             end)
   end
 
   test "github client derives REST base URLs for dotcom and enterprise GraphQL endpoints" do
@@ -866,6 +952,86 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
              add_labels: "status::done",
              remove_labels: "status::todo,status::in-progress,status::human-review,status::rework,status::merging,status::closed"
            }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony",
+      tracker_state_label_prefix: "status::",
+      tracker_active_states: ["status::implementation"],
+      tracker_terminal_states: ["status::done"]
+    )
+
+    assert :ok = GitLabClient.update_issue_state_for_test("platform/symphony#7", "status::implementation", request_fun)
+    assert_receive {:gitlab_label_write_request, scoped_provider_state_request}
+
+    assert scoped_provider_state_request[:json] == %{
+             state_event: "reopen",
+             add_labels: "status::implementation",
+             remove_labels: "status::done"
+           }
+
+    scoped_label_issue =
+      GitLabClient.normalize_issue_for_test(gitlab_issue_payload(8, "opened", ["status::implementation"], []))
+
+    assert scoped_label_issue.state == "status::implementation"
+  end
+
+  test "gitlab client writes scoped-label stage updates with explicit same-group removals" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_endpoint: "https://gitlab.example.com/api/v4",
+      tracker_api_token: "token",
+      tracker_project_slug: "platform/symphony"
+    )
+
+    request_fun = fn opts ->
+      send(self(), {:gitlab_scoped_stage_write_request, opts})
+      {:ok, %{status: 200, body: %{}, headers: []}}
+    end
+
+    assert :ok =
+             GitLabClient.write_scoped_label_stage_for_test(
+               "platform/symphony#7",
+               "status::implementation",
+               %{close?: false, remove_labels: ["status::context-check", "status::implementation", "status::done"]},
+               request_fun
+             )
+
+    assert_receive {:gitlab_scoped_stage_write_request, update_request}
+    assert update_request[:method] == :put
+    assert update_request[:url] == "https://gitlab.example.com/api/v4/projects/platform%2Fsymphony/issues/7"
+
+    assert update_request[:json] == %{
+             state_event: "reopen",
+             add_labels: "status::implementation",
+             remove_labels: "status::context-check,status::done"
+           }
+
+    assert :ok =
+             GitLabClient.write_scoped_label_stage_for_test(
+               "platform/symphony#7",
+               "status::done",
+               %{"close?" => true, "remove_labels" => []},
+               request_fun
+             )
+
+    assert_receive {:gitlab_scoped_stage_write_request, close_request}
+
+    assert close_request[:json] == %{
+             state_event: "close",
+             add_labels: "status::done"
+           }
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "gitlab",
+      tracker_api_token: nil,
+      tracker_project_slug: "platform/symphony"
+    )
+
+    assert {:error, :missing_gitlab_api_token} =
+             GitLabClient.write_scoped_label_stage("platform/symphony#7", "status::done", %{})
   end
 
   test "gitlab client covers validation and error paths" do
@@ -2229,5 +2395,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp github_issue_details_response(issue) when is_map(issue) do
+    %{"data" => %{"repository" => %{"issue" => issue}}}
+  end
+
+  defp github_project_issue_payload(opts) when is_list(opts) do
+    %{
+      "id" => "issue-node-42",
+      "number" => 42,
+      "title" => "GitHub project issue",
+      "body" => "Project status fixture",
+      "state" => Keyword.get(opts, :state, "OPEN"),
+      "url" => "https://github.com/your-org/your-repo/issues/42",
+      "labels" => %{"nodes" => []},
+      "assignees" => %{"nodes" => []},
+      "blockedBy" => %{"nodes" => []},
+      "projectItems" => %{"nodes" => Keyword.get(opts, :project_items, [])},
+      "createdAt" => "2026-01-01T00:00:00Z",
+      "updatedAt" => "2026-01-02T00:00:00Z"
+    }
+  end
+
+  defp github_project_item(field_value) when is_map(field_value) do
+    %{
+      "id" => "item-1",
+      "project" => %{"id" => "project-7", "number" => 7},
+      "fieldValueByName" => field_value
+    }
   end
 end

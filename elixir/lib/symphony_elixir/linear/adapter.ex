@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Tracker
+  alias SymphonyElixir.Tracker.StageState
   alias SymphonyElixir.Workflow.Definition
 
   @create_comment_mutation """
@@ -40,7 +41,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   """
 
   @spec capabilities() :: map()
-  def capabilities, do: Tracker.unsupported_stage_capabilities(:linear)
+  def capabilities, do: StageState.capabilities(:linear)
 
   @spec validate_workflow_state_mapping(map() | Definition.t(), map()) :: Tracker.validation_result()
   def validate_workflow_state_mapping(workflow, tracker_config) do
@@ -48,17 +49,17 @@ defmodule SymphonyElixir.Linear.Adapter do
   end
 
   @spec fetch_runnable_issues(Tracker.stage_id()) :: {:ok, [term()]} | {:error, term()}
-  def fetch_runnable_issues(_start_stage), do: Tracker.unsupported_stage_contract(:linear)
+  def fetch_runnable_issues(start_stage), do: StageState.fetch_runnable_issues(start_stage, &fetch_issues_by_states/1)
 
   @spec read_issue_stage(term()) :: {:ok, Tracker.stage_id()} | {:error, term()}
-  def read_issue_stage(_issue_or_id), do: Tracker.unsupported_stage_contract(:linear)
+  def read_issue_stage(issue_or_id), do: StageState.read_issue_stage(issue_or_id, &fetch_issue_states_by_ids/1)
 
   @spec write_issue_stage(String.t(), Tracker.stage_id()) :: :ok | {:error, term()}
-  def write_issue_stage(_issue_id, _stage_id), do: Tracker.unsupported_stage_contract(:linear)
+  def write_issue_stage(issue_id, stage_id), do: StageState.write_issue_stage(issue_id, stage_id, &update_issue_state/2)
 
   @spec is_native_terminal?(term()) :: boolean() | {:error, term()}
   # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
-  def is_native_terminal?(_issue), do: Tracker.unsupported_stage_contract(:linear)
+  def is_native_terminal?(issue), do: StageState.native_terminal?(issue)
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
