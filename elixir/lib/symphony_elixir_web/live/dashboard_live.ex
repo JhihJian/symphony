@@ -56,6 +56,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
+            <a class="status-badge" href="/workflow">Workflow 图</a>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               实时

@@ -945,6 +945,163 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  test "workflow dashboard renders graph, tracker mapping and runtime stage distribution" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_stages: %{
+        "ready" => %{"prompt" => "Pick up new work.", "transitions" => %{"started" => "working", "blocked" => "blocked"}},
+        "working" => %{"prompt" => "Implement the issue.", "transitions" => %{"completed" => "done", "blocked" => "blocked"}},
+        "done" => %{"prompt" => "Finished.", "transitions" => %{}},
+        "blocked" => %{"prompt" => "Human blocked.", "transitions" => %{}},
+        "protocol_blocked" => %{"prompt" => "Protocol blocked.", "transitions" => %{}}
+      },
+      workflow_outcomes: ["started", "completed", "blocked"],
+      tracker_kind: "github",
+      tracker_api_token: "ghp_secret_token",
+      tracker_owner: "acme",
+      tracker_repo: "widget",
+      tracker_project_number: 42,
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Ready"},
+        "working" => %{"state" => "In Progress"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Blocked", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: %{queued: true, coalesced: false, requested_at: DateTime.utc_now(), operations: ["poll"]}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "阶段流向图"
+    assert html =~ "Stage Graph"
+    assert html =~ "ready"
+    assert html =~ "working"
+    assert html =~ "started"
+    assert html =~ "Missing Outcome"
+    assert html =~ "protocol_blocked"
+    assert html =~ "Tracker 映射"
+    assert html =~ "github"
+    assert html =~ "In Progress"
+    assert html =~ "run <strong class=\"numeric\">1</strong>"
+    assert html =~ "retry <strong class=\"numeric\">1</strong>"
+    assert html =~ "blocked <strong class=\"numeric\">1</strong>"
+    assert html =~ "单实例 Dashboard"
+    refute html =~ "ghp_secret_token"
+    refute html =~ "api_key"
+  end
+
+  test "workflow dashboard shows configuration errors without crashing" do
+    workflow_path = Workflow.workflow_file_path()
+
+    File.write!(workflow_path, """
+    ---
+    workflow:
+      terminal_stages: ["done"]
+      outcomes: ["completed"]
+      missing_outcome:
+        max_retries: 1
+        on_exhausted: "done"
+      stages:
+        done:
+          prompt: "Done"
+          transitions: {}
+    ---
+    Broken workflow.
+    """)
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :InvalidWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "Workflow 配置不可用"
+    assert html =~ "invalid_workflow_definition"
+    assert html =~ "workflow.start_stage is required"
+  end
+
+  test "workflow dashboard keeps static graph when tracker mapping and snapshot are unavailable" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path, skip_tracker_config_file: true)
+    File.rm(Path.join(Path.dirname(workflow_path), "TRACKER.yaml"))
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :UnavailableWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "阶段流向图"
+    assert html =~ "Snapshot"
+    assert html =~ "Snapshot unavailable"
+    assert html =~ "TRACKER.yaml 不可用"
+    assert html =~ "tracker_config_unavailable"
+    assert html =~ "ready"
+  end
+
+  test "workflow dashboard handles workflow files without stage definitions" do
+    workflow_path = Workflow.workflow_file_path()
+    File.write!(workflow_path, "---\npolling:\n  interval_ms: 30000\n---\nPrompt only.\n")
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :PromptOnlyWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "Workflow 配置不可用"
+    assert html =~ "must define provider-neutral workflow stages"
+  end
+
+  test "workflow dashboard uses explicit tracker config path and shows incomplete coverage" do
+    workflow_path = Workflow.workflow_file_path()
+    explicit_tracker_path = Path.join(Path.dirname(workflow_path), "EXPLICIT_TRACKER.yaml")
+
+    write_workflow_file!(workflow_path,
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Ready"},
+        "in_progress" => %{"state" => "Doing"},
+        "ghost" => %{"state" => "Ghost"}
+      }
+    )
+
+    File.rename!(Path.join(Path.dirname(workflow_path), "TRACKER.yaml"), explicit_tracker_path)
+    TrackerConfig.set_tracker_file_path(explicit_tracker_path)
+
+    orchestrator_name = Module.concat(__MODULE__, :ExplicitTrackerWorkflowDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: %{queued: true, coalesced: false, requested_at: DateTime.utc_now(), operations: ["poll"]}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "Tracker 映射"
+    assert html =~ "2/5"
+    assert html =~ "tracker_mapping_missing_stages"
+    assert html =~ "tracker_mapping_unknown_stages"
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
