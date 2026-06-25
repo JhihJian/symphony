@@ -23,7 +23,14 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          write_legacy_workflow_file!: 1,
+          write_legacy_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0
+        ]
 
       setup do
         client_modules =
@@ -65,6 +72,26 @@ defmodule SymphonyElixir.TestSupport do
 
   def write_workflow_file!(path, overrides \\ []) do
     workflow = workflow_content(overrides)
+    File.write!(path, workflow)
+
+    unless Keyword.get(overrides, :skip_tracker_config_file, false) do
+      tracker_config_path = Path.join(Path.dirname(path), "TRACKER.yaml")
+      File.write!(tracker_config_path, tracker_content(overrides))
+    end
+
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      try do
+        SymphonyElixir.WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  def write_legacy_workflow_file!(path, overrides \\ []) do
+    workflow = legacy_workflow_content(overrides)
     File.write!(path, workflow)
 
     if Process.whereis(SymphonyElixir.WorkflowStore) do
@@ -151,19 +178,6 @@ defmodule SymphonyElixir.TestSupport do
     config =
       Keyword.merge(
         [
-          tracker_kind: "linear",
-          tracker_endpoint: "https://api.linear.app/graphql",
-          tracker_api_token: "token",
-          tracker_project_slug: "project",
-          tracker_owner: nil,
-          tracker_repo: nil,
-          tracker_project_number: nil,
-          tracker_project_status_field_name: "Status",
-          tracker_assignee: nil,
-          tracker_required_labels: [],
-          tracker_state_label_prefix: nil,
-          tracker_active_states: ["Todo", "In Progress"],
-          tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
@@ -189,24 +203,17 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          workflow_start_stage: "ready",
+          workflow_terminal_stages: ["done", "blocked", "protocol_blocked"],
+          workflow_outcomes: ["started", "completed", "blocked"],
+          workflow_missing_outcome_max_retries: 1,
+          workflow_missing_outcome_on_exhausted: "protocol_blocked",
+          workflow_stages: nil,
           prompt: @workflow_prompt
         ],
         overrides
       )
 
-    tracker_kind = Keyword.get(config, :tracker_kind)
-    tracker_endpoint = Keyword.get(config, :tracker_endpoint)
-    tracker_api_token = Keyword.get(config, :tracker_api_token)
-    tracker_project_slug = Keyword.get(config, :tracker_project_slug)
-    tracker_owner = Keyword.get(config, :tracker_owner)
-    tracker_repo = Keyword.get(config, :tracker_repo)
-    tracker_project_number = Keyword.get(config, :tracker_project_number)
-    tracker_project_status_field_name = Keyword.get(config, :tracker_project_status_field_name)
-    tracker_assignee = Keyword.get(config, :tracker_assignee)
-    tracker_required_labels = Keyword.get(config, :tracker_required_labels)
-    tracker_state_label_prefix = Keyword.get(config, :tracker_state_label_prefix)
-    tracker_active_states = Keyword.get(config, :tracker_active_states)
-    tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
     workspace_root = Keyword.get(config, :workspace_root)
     worker_ssh_hosts = Keyword.get(config, :worker_ssh_hosts)
@@ -232,25 +239,26 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    workflow_start_stage = Keyword.get(config, :workflow_start_stage)
+    workflow_terminal_stages = Keyword.get(config, :workflow_terminal_stages)
+    workflow_outcomes = Keyword.get(config, :workflow_outcomes)
+    workflow_missing_outcome_max_retries = Keyword.get(config, :workflow_missing_outcome_max_retries)
+    workflow_missing_outcome_on_exhausted = Keyword.get(config, :workflow_missing_outcome_on_exhausted)
+    workflow_stages = Keyword.get(config, :workflow_stages) || default_workflow_stages()
     prompt = Keyword.get(config, :prompt)
 
     sections =
       [
         "---",
-        "tracker:",
-        "  kind: #{yaml_value(tracker_kind)}",
-        "  endpoint: #{yaml_value(tracker_endpoint)}",
-        "  api_key: #{yaml_value(tracker_api_token)}",
-        "  project_slug: #{yaml_value(tracker_project_slug)}",
-        "  owner: #{yaml_value(tracker_owner)}",
-        "  repo: #{yaml_value(tracker_repo)}",
-        "  project_number: #{yaml_value(tracker_project_number)}",
-        "  project_status_field_name: #{yaml_value(tracker_project_status_field_name)}",
-        "  assignee: #{yaml_value(tracker_assignee)}",
-        "  required_labels: #{yaml_value(tracker_required_labels)}",
-        "  state_label_prefix: #{yaml_value(tracker_state_label_prefix)}",
-        "  active_states: #{yaml_value(tracker_active_states)}",
-        "  terminal_states: #{yaml_value(tracker_terminal_states)}",
+        "workflow:",
+        "  start_stage: #{yaml_value(workflow_start_stage)}",
+        "  terminal_stages: #{yaml_value(workflow_terminal_stages)}",
+        "  outcomes: #{yaml_value(workflow_outcomes)}",
+        "  missing_outcome:",
+        "    max_retries: #{yaml_value(workflow_missing_outcome_max_retries)}",
+        "    on_exhausted: #{yaml_value(workflow_missing_outcome_on_exhausted)}",
+        "  stages:",
+        workflow_stages_yaml(workflow_stages),
         "polling:",
         "  interval_ms: #{yaml_value(poll_interval_ms)}",
         "workspace:",
@@ -280,6 +288,103 @@ defmodule SymphonyElixir.TestSupport do
     Enum.join(sections, "\n") <> "\n"
   end
 
+  defp legacy_workflow_content(overrides) do
+    config =
+      Keyword.merge(
+        [
+          tracker_kind: "linear",
+          tracker_endpoint: "https://api.linear.app/graphql",
+          tracker_api_token: "token",
+          tracker_project_slug: "project",
+          tracker_owner: nil,
+          tracker_repo: nil,
+          tracker_project_number: nil,
+          tracker_project_status_field_name: "Status",
+          tracker_assignee: nil,
+          tracker_required_labels: [],
+          tracker_state_label_prefix: nil,
+          tracker_active_states: ["Todo", "In Progress"],
+          tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
+          prompt: @workflow_prompt
+        ],
+        overrides
+      )
+
+    sections =
+      [
+        "---",
+        "tracker:",
+        "  kind: #{yaml_value(Keyword.get(config, :tracker_kind))}",
+        "  endpoint: #{yaml_value(Keyword.get(config, :tracker_endpoint))}",
+        "  api_key: #{yaml_value(Keyword.get(config, :tracker_api_token))}",
+        "  project_slug: #{yaml_value(Keyword.get(config, :tracker_project_slug))}",
+        "  owner: #{yaml_value(Keyword.get(config, :tracker_owner))}",
+        "  repo: #{yaml_value(Keyword.get(config, :tracker_repo))}",
+        "  project_number: #{yaml_value(Keyword.get(config, :tracker_project_number))}",
+        "  project_status_field_name: #{yaml_value(Keyword.get(config, :tracker_project_status_field_name))}",
+        "  assignee: #{yaml_value(Keyword.get(config, :tracker_assignee))}",
+        "  required_labels: #{yaml_value(Keyword.get(config, :tracker_required_labels))}",
+        "  state_label_prefix: #{yaml_value(Keyword.get(config, :tracker_state_label_prefix))}",
+        "  active_states: #{yaml_value(Keyword.get(config, :tracker_active_states))}",
+        "  terminal_states: #{yaml_value(Keyword.get(config, :tracker_terminal_states))}",
+        "---",
+        Keyword.get(config, :prompt)
+      ]
+
+    Enum.join(sections, "\n") <> "\n"
+  end
+
+  defp tracker_content(overrides) do
+    config =
+      Keyword.merge(
+        [
+          tracker_kind: "linear",
+          tracker_endpoint: "https://api.linear.app/graphql",
+          tracker_api_token: "token",
+          tracker_project_slug: "project",
+          tracker_owner: nil,
+          tracker_repo: nil,
+          tracker_project_number: nil,
+          tracker_project_status_field_name: "Status",
+          tracker_assignee: nil,
+          tracker_required_labels: [],
+          tracker_state_label_prefix: nil,
+          tracker_provider_states: [],
+          tracker_workflow_state: nil,
+          tracker_stage_states: nil,
+          tracker_active_states: ["Todo", "In Progress"],
+          tracker_terminal_states: ["Done", "Blocked", "Protocol Blocked"]
+        ],
+        overrides
+      )
+
+    stage_states =
+      Keyword.get(config, :tracker_stage_states) ||
+        default_stage_states(config)
+
+    [
+      "tracker:",
+      "  kind: #{yaml_value(Keyword.get(config, :tracker_kind))}",
+      "  endpoint: #{yaml_value(Keyword.get(config, :tracker_endpoint))}",
+      "  api_key: #{yaml_value(Keyword.get(config, :tracker_api_token))}",
+      "  project_slug: #{yaml_value(Keyword.get(config, :tracker_project_slug))}",
+      "  owner: #{yaml_value(Keyword.get(config, :tracker_owner))}",
+      "  repo: #{yaml_value(Keyword.get(config, :tracker_repo))}",
+      "  project_number: #{yaml_value(Keyword.get(config, :tracker_project_number))}",
+      "  project_status_field_name: #{yaml_value(Keyword.get(config, :tracker_project_status_field_name))}",
+      "  assignee: #{yaml_value(Keyword.get(config, :tracker_assignee))}",
+      "  required_labels: #{yaml_value(Keyword.get(config, :tracker_required_labels))}",
+      "  state_label_prefix: #{yaml_value(Keyword.get(config, :tracker_state_label_prefix))}",
+      tracker_provider_states_yaml(Keyword.get(config, :tracker_provider_states)),
+      tracker_workflow_state_yaml(Keyword.get(config, :tracker_workflow_state)),
+      "  stage_states:",
+      tracker_stage_states_yaml(stage_states)
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
+  end
+
   defp yaml_value(value) when is_binary(value) do
     "\"" <> String.replace(value, "\"", "\\\"") <> "\""
   end
@@ -301,6 +406,141 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value), do: yaml_value(to_string(value))
+
+  defp default_workflow_stages do
+    %{
+      "ready" => %{"prompt" => "Pick up new work.", "transitions" => %{"started" => "in_progress", "blocked" => "blocked"}},
+      "in_progress" => %{"prompt" => "Implement the accepted scope.", "transitions" => %{"completed" => "done", "blocked" => "blocked"}},
+      "done" => %{"prompt" => "Terminal done stage.", "transitions" => %{}},
+      "blocked" => %{"prompt" => "Terminal blocked stage.", "transitions" => %{}},
+      "protocol_blocked" => %{"prompt" => "Terminal protocol blocked stage.", "transitions" => %{}}
+    }
+  end
+
+  defp default_stage_states(config) do
+    if Keyword.get(config, :tracker_kind) == "github" and is_nil(Keyword.get(config, :tracker_project_number)) do
+      github_issues_only_stage_states(config)
+    else
+      mapped_stage_states(
+        Keyword.get(config, :tracker_active_states),
+        Keyword.get(config, :tracker_terminal_states)
+      )
+    end
+  end
+
+  defp github_issues_only_stage_states(config) do
+    running_states = state_list(Keyword.get(config, :tracker_active_states), ["Open"], "Open")
+    terminal_states = state_list(Keyword.get(config, :tracker_terminal_states), ["Closed"], "Closed")
+    open_state = Enum.at(running_states, 0) || "Open"
+    closed_state = Enum.at(terminal_states, -1) || Enum.at(terminal_states, 0) || "Closed"
+
+    %{
+      "ready" => %{"state" => open_state},
+      "in_progress" => %{"state" => open_state},
+      "done" => %{"state" => closed_state, "terminal" => true},
+      "blocked" => %{"state" => closed_state, "terminal" => true},
+      "protocol_blocked" => %{"state" => closed_state, "terminal" => true}
+    }
+  end
+
+  defp mapped_stage_states(running_states, terminal_states) do
+    running_states = state_list(running_states, ["Todo", "In Progress"])
+    terminal_states = state_list(terminal_states, ["Done", "Blocked", "Protocol Blocked"])
+
+    %{
+      "ready" => %{"state" => Enum.at(running_states, 0) || "Todo"},
+      "in_progress" => %{"state" => Enum.at(running_states, 1) || Enum.at(running_states, 0) || "In Progress"},
+      "done" => %{"state" => Enum.at(terminal_states, 0) || "Done", "terminal" => true},
+      "blocked" => %{"state" => Enum.at(terminal_states, 1) || "Blocked", "terminal" => true},
+      "protocol_blocked" => %{"state" => Enum.at(terminal_states, 2) || "Protocol Blocked", "terminal" => true}
+    }
+  end
+
+  defp state_list(states, fallback) when is_list(states) do
+    states
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> fallback
+      values -> values
+    end
+  end
+
+  defp state_list(_states, fallback), do: fallback
+
+  defp state_list(states, fallback, allowed_state) when is_list(states) do
+    states
+    |> state_list(fallback)
+    |> Enum.filter(&(String.downcase(&1) == String.downcase(allowed_state)))
+    |> case do
+      [] -> fallback
+      values -> values
+    end
+  end
+
+  defp state_list(_states, fallback, _allowed_state), do: fallback
+
+  defp workflow_stages_yaml(stages) when is_map(stages) do
+    stages
+    |> Enum.map_join("\n", fn {stage, config} ->
+      config = stringify_keys(config)
+
+      [
+        "    #{stage}:",
+        "      prompt: #{yaml_value(Map.get(config, "prompt", ""))}",
+        "      transitions: #{yaml_value(Map.get(config, "transitions", %{}))}"
+      ]
+      |> Enum.join("\n")
+    end)
+  end
+
+  defp tracker_provider_states_yaml([]), do: nil
+  defp tracker_provider_states_yaml(nil), do: nil
+  defp tracker_provider_states_yaml(states), do: "  provider_states: #{yaml_value(states)}"
+
+  defp tracker_workflow_state_yaml(nil), do: nil
+
+  defp tracker_workflow_state_yaml(workflow_state) when is_map(workflow_state) do
+    workflow_state
+    |> map_to_indented_yaml(2)
+    |> then(&"  workflow_state:\n#{&1}")
+  end
+
+  defp tracker_stage_states_yaml(stage_states) when is_map(stage_states) do
+    stage_states
+    |> Enum.map_join("\n", fn {stage, config} ->
+      config = stringify_keys(config)
+
+      [
+        "    #{stage}:",
+        "      state: #{yaml_value(Map.get(config, "state"))}",
+        Map.has_key?(config, "terminal") && "      terminal: #{yaml_value(Map.get(config, "terminal"))}"
+      ]
+      |> Enum.reject(&(&1 in [nil, false]))
+      |> Enum.join("\n")
+    end)
+  end
+
+  defp map_to_indented_yaml(map, indent) when is_map(map) do
+    spaces = String.duplicate(" ", indent)
+
+    map
+    |> stringify_keys()
+    |> Enum.map_join("\n", fn {key, value} ->
+      if is_map(value) do
+        "#{spaces}#{key}:\n#{map_to_indented_yaml(value, indent + 2)}"
+      else
+        "#{spaces}#{key}: #{yaml_value(value)}"
+      end
+    end)
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Enum.reduce(map, %{}, fn {key, value}, acc ->
+      Map.put(acc, to_string(key), value)
+    end)
+  end
 
   defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 

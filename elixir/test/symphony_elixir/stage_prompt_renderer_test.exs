@@ -178,11 +178,33 @@ defmodule SymphonyElixir.StagePromptRendererTest do
              StagePromptRenderer.current_for_issue(%Issue{state: "Ready"})
   end
 
-  test "current_for_issue reports legacy workflow without stage definition" do
-    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Legacy prompt")
+  test "current_for_issue rejects legacy prompt-only workflow configs" do
+    workflow_store_pid = Process.whereis(SymphonyElixir.WorkflowStore)
+
+    on_exit(fn ->
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
+        Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+      end
+    end)
+
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+
+    write_legacy_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: [],
+      tracker_terminal_states: []
+    )
 
     assert {:error, :workflow_stage_config_unavailable} =
              StagePromptRenderer.current_for_issue(%Issue{state: "Ready"})
+  end
+
+  test "current_for_issue renders configured workflow stage prompt" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ignored legacy prompt body")
+
+    assert {:ok, prompt} = StagePromptRenderer.current_for_issue(%Issue{state: "Todo"})
+    assert prompt =~ "# Symphony Stage Turn"
+    assert prompt =~ "- id: ready"
+    assert prompt =~ "Pick up new work."
   end
 
   test "raises for invalid stage ids" do

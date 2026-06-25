@@ -12,9 +12,7 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
       tracker_owner: "openai",
       tracker_repo: "symphony",
       tracker_project_number: nil,
-      tracker_required_labels: ["symphony-test"],
-      tracker_active_states: ["Todo"],
-      tracker_terminal_states: ["Done", "Closed"]
+      tracker_required_labels: ["symphony-test"]
     )
 
     graphql_fun = fn query, variables ->
@@ -37,7 +35,7 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
 
     assert {:ok, [issue]} = GitHubClient.fetch_candidate_issues_for_test(graphql_fun)
     assert issue.id == "42"
-    assert issue.state == "Todo"
+    assert issue.state == "Open"
     assert issue.labels == ["symphony-test"]
 
     assert_receive {:github_graphql, list_query, list_variables}
@@ -56,7 +54,7 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
     assert :ok = GitHubClient.create_comment_for_test("42", "hello", rest_fun)
     assert_receive {:github_rest, :post, "/repos/openai/symphony/issues/42/comments", %{body: "hello"}}
 
-    assert :ok = GitHubClient.update_issue_state_for_test("42", "Done", graphql_fun, rest_fun)
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Closed", graphql_fun, rest_fun)
     assert_receive {:github_rest, :patch, "/repos/openai/symphony/issues/42", %{state: "closed", state_reason: "completed"}}
   end
 

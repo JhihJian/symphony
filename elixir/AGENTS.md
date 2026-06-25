@@ -15,8 +15,8 @@ app-server mode.
 
 - Runtime config is loaded from provider-neutral `WORKFLOW.md` workflow stages plus provider-specific
   `TRACKER.yaml` via `SymphonyElixir.Workflow`, `SymphonyElixir.TrackerConfig`, and
-  `SymphonyElixir.Config`. Legacy tracker fields in `WORKFLOW.md` are still supported only for the
-  pre-#45 runtime path and will be removed in a later #45 cleanup.
+  `SymphonyElixir.Config`. Legacy tracker fields in `WORKFLOW.md` are rejected at runtime; use the
+  split migration task before starting the service with old single-file configs.
 - Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
   - The implementation may be a superset of the spec.
   - The implementation must not conflict with the spec.

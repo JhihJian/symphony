@@ -213,6 +213,10 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert {:error, {:unmapped_provider_state, "External"}} = StageState.native_terminal?(%Issue{state: "External"})
     assert %{stage_contract: :unsupported} = Tracker.unsupported_stage_capabilities(:custom)
     assert {:error, {:stage_contract_not_implemented, :custom}} = Tracker.unsupported_stage_contract(:custom)
+    assert StageState.start_provider_states() == ["Ready"]
+    assert StageState.non_terminal_provider_states() == ["Ready", "In Progress"]
+    assert StageState.terminal_provider_states() == ["Done", "Blocked"]
+    assert StageState.all_provider_states() == ["Ready", "In Progress", "Blocked", "Done"]
 
     write_stage_workflow_and_tracker!(
       tracker:
@@ -238,8 +242,9 @@ defmodule SymphonyElixir.TrackerContractTest do
     Workflow.set_workflow_file_path(legacy_workflow_path)
     TrackerConfig.clear_tracker_file_path()
 
-    refute StageState.terminal_stage?("ready")
-    assert {:error, {:unmapped_provider_state, "Ready"}} = StageState.stage_for_provider_state("Ready")
+    assert {:error, {:legacy_workflow_tracker_config, keys}} = Config.settings()
+    assert "tracker.kind" in keys
+    assert "tracker.stage_states" in keys
   end
 
   test "mapping validation reports missing stage mappings" do
@@ -493,7 +498,7 @@ defmodule SymphonyElixir.TrackerContractTest do
       tracker_project_number: 1
     )
 
-    assert {:error, {:unmapped_provider_state, "Closed"}} = GitHubAdapter.read_issue_stage(%Issue{state: "Closed"})
+    assert {:ok, "done"} = GitHubAdapter.read_issue_stage(%Issue{state: "Closed"})
   end
 
   test "gitlab scoped label adapter implements stage mapping and removes same-group labels" do

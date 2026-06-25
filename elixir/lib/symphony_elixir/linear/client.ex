@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Linear.Client do
 
   require Logger
   alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.Tracker.StageState
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
@@ -117,7 +118,7 @@ defmodule SymphonyElixir.Linear.Client do
 
       true ->
         with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, tracker.active_states, assignee_filter)
+          do_fetch_by_states(project_slug, StageState.start_provider_states(), assignee_filter)
         end
     end
   end

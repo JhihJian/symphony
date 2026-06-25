@@ -8,15 +8,14 @@ defmodule SymphonyElixir.CoreTest do
       tracker_api_token: nil,
       tracker_project_slug: nil,
       poll_interval_ms: nil,
-      tracker_active_states: nil,
-      tracker_terminal_states: nil,
       codex_command: nil
     )
 
     config = Config.settings!()
     assert config.polling.interval_ms == 30_000
-    assert config.tracker.active_states == ["Todo", "In Progress"]
-    assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    assert config.tracker.stage_states["ready"]["state"] == "Todo"
+    assert config.tracker.stage_states["in_progress"]["state"] == "In Progress"
+    assert config.tracker.stage_states["done"]["state"] == "Done"
     assert config.tracker.assignee == nil
     assert config.agent.max_turns == 20
 
@@ -38,10 +37,6 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 5)
     assert Config.settings!().agent.max_turns == 5
-
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_active_states: "Todo,  Review,")
-    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "tracker.active_states"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
@@ -173,8 +168,6 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.tracker.project_number == 50
     assert settings.tracker.required_labels == ["symphony"]
     assert settings.tracker.stage_states["working"]["state"] == "In Progress"
-    assert settings.tracker.active_states == ["Ready", "In Progress", "Human Review"]
-    assert settings.tracker.terminal_states == ["Done", "Blocked", "Protocol Blocked"]
     assert settings.tracker_config["tracker"]["stage_states"]["ready"]["state"] == "Ready"
     assert Config.workflow_prompt() == "Pick up new work."
     assert :ok = Config.validate!()
@@ -424,8 +417,7 @@ defmodule SymphonyElixir.CoreTest do
     assert github_settings.tracker.project_status_field_name == "Status"
     assert github_settings.tracker.stage_states["ready"]["state"] == "Context Check"
     assert github_settings.tracker.stage_states["working"]["state"] == "Implementation"
-    assert github_settings.tracker.active_states == ["Context Check", "Implementation", "Validation"]
-    assert github_settings.tracker.terminal_states == ["Done", "Blocked", "Protocol Blocked"]
+    assert github_settings.tracker.stage_states["done"]["state"] == "Done"
 
     File.write!(tracker_config_path, """
     tracker:
@@ -444,7 +436,6 @@ defmodule SymphonyElixir.CoreTest do
     assert gitlab_settings.tracker.state_label_prefix == "status::"
     assert gitlab_settings.tracker.stage_states["ready"]["state"] == "status::ready"
     assert gitlab_settings.tracker.stage_states["protocol_blocked"]["state"] == "status::protocol-blocked"
-    assert gitlab_settings.tracker.terminal_states == ["status::done", "status::blocked", "status::protocol-blocked"]
   end
 
   test "orchestrator surfaces workflow-stage tracker config errors as configuration diagnostics" do
@@ -747,7 +738,7 @@ defmodule SymphonyElixir.CoreTest do
     assert {:ok, []} = Client.fetch_issue_states_by_ids([])
   end
 
-  test "non-active issue state stops running agent without cleaning workspace" do
+  test "unmapped provider state marks running agent stage conflict without cleanup" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -801,9 +792,12 @@ defmodule SymphonyElixir.CoreTest do
 
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-      refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
-      refute Process.alive?(agent_pid)
+      assert %{stage_conflict: conflict} = updated_state.running[issue_id]
+      assert conflict.kind == :running
+      assert conflict.provider_state == "Backlog"
+      assert conflict.provider_stage == {:error, {:unmapped_provider_state, "Backlog"}}
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert Process.alive?(agent_pid)
       assert File.exists?(workspace)
     after
       File.rm_rf(test_root)
@@ -1327,25 +1321,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
   end
 
-  test "agent runner does not continue after a required label is removed" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
-
-    issue = %Issue{
-      id: "issue-label-continuation",
-      identifier: "MT-563",
-      title: "Stop after opt-out",
-      state: "In Progress",
-      labels: ["symphony"]
-    }
-
-    refreshed_issue = %{issue | labels: []}
-    fetcher = fn ["issue-label-continuation"] -> {:ok, [refreshed_issue]} end
-
-    assert {:done, ^refreshed_issue} =
-             AgentRunner.continue_with_issue_for_test(issue, fetcher)
-  end
-
-  test "normal worker exit schedules active-state continuation retry" do
+  test "normal worker exit releases claim without active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
@@ -1384,17 +1360,14 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:max_concurrent_agents, 0)
     end)
 
-    retry_window_start_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
     Process.sleep(50)
     state = :sys.get_state(pid)
-    retry_window_end_ms = System.monotonic_time(:millisecond)
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms, current_stage: "working"} = state.retry_attempts[issue_id]
-    assert is_integer(due_at_ms)
-    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 1_000)
+    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
   end
 
   test "workflow-stage normal exit completes without continuation retry" do
@@ -1876,7 +1849,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    prompt = PromptBuilder.build_prompt(issue)
+    prompt = PromptBuilder.render_template(Config.workflow_prompt(), issue)
 
     assert prompt =~ "kind=github"
     assert prompt =~ "ref=Closes #3"
@@ -1904,7 +1877,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue) == "ref=Closes other-org/other-repo#9"
+    assert PromptBuilder.render_template(workflow_prompt, issue) == "ref=Closes other-org/other-repo#9"
   end
 
   test "prompt builder keeps qualified GitHub issue reference when configured scope is incomplete" do
@@ -1928,7 +1901,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue) == "ref=Closes openai/symphony#10"
+    assert PromptBuilder.render_template(workflow_prompt, issue) == "ref=Closes openai/symphony#10"
   end
 
   test "prompt builder preserves unparseable GitHub identifiers in closing reference" do
@@ -1952,7 +1925,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    assert PromptBuilder.build_prompt(issue) == "ref=Closes openai/symphony"
+    assert PromptBuilder.render_template(workflow_prompt, issue) == "ref=Closes openai/symphony"
   end
 
   test "prompt builder exposes same-project GitLab issue closing reference" do
@@ -1976,7 +1949,7 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    prompt = PromptBuilder.build_prompt(issue)
+    prompt = PromptBuilder.render_template(Config.workflow_prompt(), issue)
 
     assert prompt =~ "kind=gitlab"
     assert prompt =~ "ref=Closes #7"
@@ -2131,7 +2104,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "prompt builder uses a sensible default template when workflow prompt is blank" do
+  test "prompt builder uses workflow stage prompt instead of legacy default issue prompt" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "   \n")
 
     issue = %Issue{
@@ -2145,17 +2118,32 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on an issue."
-    assert prompt =~ "Identifier: MT-777"
-    assert prompt =~ "Title: Make fallback prompt useful"
-    assert prompt =~ "Body:"
-    assert prompt =~ "Include enough issue context to start working."
-    assert Config.workflow_prompt() =~ "{{ issue.identifier }}"
-    assert Config.workflow_prompt() =~ "{{ issue.title }}"
-    assert Config.workflow_prompt() =~ "{{ issue.description }}"
+    assert prompt == "Pick up new work."
+    refute prompt =~ "You are working on an issue."
+    refute prompt =~ "Identifier: MT-777"
   end
 
-  test "prompt builder default template handles missing issue body" do
+  test "prompt builder falls back to default issue prompt for blank legacy templates" do
+    write_legacy_workflow_file!(Workflow.workflow_file_path(),
+      tracker_active_states: [],
+      tracker_terminal_states: [],
+      prompt: "   \n"
+    )
+
+    prompt =
+      PromptBuilder.build_prompt(%{
+        "identifier" => "MT-781",
+        "title" => "Render legacy fallback",
+        "description" => "Default prompt body"
+      })
+
+    assert prompt =~ "You are working on an issue."
+    assert prompt =~ "Identifier: MT-781"
+    assert prompt =~ "Title: Render legacy fallback"
+    assert prompt =~ "Default prompt body"
+  end
+
+  test "stage prompt renderer handles missing issue body" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "")
 
     issue = %Issue{
@@ -2167,10 +2155,10 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    prompt = PromptBuilder.build_prompt(issue)
+    prompt = SymphonyElixir.StagePromptRenderer.render(Config.settings!().workflow, "ready", issue)
 
-    assert prompt =~ "Identifier: MT-778"
-    assert prompt =~ "Title: Handle empty body"
+    assert prompt =~ "- identifier: MT-778"
+    assert prompt =~ "- title: Handle empty body"
     assert prompt =~ "No description provided."
   end
 
@@ -2304,6 +2292,8 @@ defmodule SymphonyElixir.CoreTest do
             ;;
           4)
             printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}'
+            printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"symphony_stage_outcome\",\"callId\":\"call-1\",\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"arguments\":{\"outcome\":\"completed\",\"summary\":\"Done.\"}}}'
+            IFS= read -r _tool_response || exit 1
             printf '%s\\n' '{\"method\":\"turn/completed\"}'
             exit 0
             ;;
@@ -2318,10 +2308,13 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        tracker_kind: "memory",
+        tracker_api_token: nil
       )
 
       issue = %Issue{
+        id: "issue-retain-workspace",
         identifier: "S-99",
         title: "Smoke test",
         description: "Run and keep workspace",
@@ -2329,6 +2322,8 @@ defmodule SymphonyElixir.CoreTest do
         url: "https://example.org/issues/S-99",
         labels: ["backend"]
       }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
       before = MapSet.new(File.ls!(workspace_root))
       assert :ok = AgentRunner.run(issue)
@@ -2387,6 +2382,8 @@ defmodule SymphonyElixir.CoreTest do
               ;;
             3)
               printf '%s\\n' '{\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-live\"}}}'
+              printf '%s\\n' '{\"id\":101,\"method\":\"item/tool/call\",\"params\":{\"tool\":\"symphony_stage_outcome\",\"callId\":\"call-live\",\"threadId\":\"thread-live\",\"turnId\":\"turn-live\",\"arguments\":{\"outcome\":\"completed\",\"summary\":\"Done.\"}}}'
+              IFS= read -r _tool_response || exit 1
               ;;
             4)
               printf '%s\\n' '{\"method\":\"turn/completed\"}'
@@ -2403,7 +2400,9 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        tracker_kind: "memory",
+        tracker_api_token: nil
       )
 
       issue = %Issue{
@@ -2417,12 +2416,12 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       test_pid = self()
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
 
       assert :ok =
                AgentRunner.run(
                  issue,
-                 test_pid,
-                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+                 test_pid
                )
 
       assert_receive {:codex_worker_update, "issue-live-updates",
@@ -2504,133 +2503,6 @@ defmodule SymphonyElixir.CoreTest do
       trace = File.read!(trace_file)
       assert trace =~ "worker-a bash -lc"
       refute trace =~ "worker-b bash -lc"
-    after
-      File.rm_rf(test_root)
-    end
-  end
-
-  test "agent runner continues with a follow-up turn while the issue remains active" do
-    test_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-elixir-agent-runner-continuation-#{System.unique_integer([:positive])}"
-      )
-
-    try do
-      template_repo = Path.join(test_root, "source")
-      workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
-      trace_file = Path.join(test_root, "codex.trace")
-
-      File.mkdir_p!(template_repo)
-      File.write!(Path.join(template_repo, "README.md"), "# test")
-      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
-      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
-      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
-      System.cmd("git", ["-C", template_repo, "add", "README.md"])
-      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
-
-      File.write!(codex_binary, """
-      #!/bin/sh
-      trace_file=#{shell_escape(trace_file)}
-      run_id="$(date +%s%N)-$$"
-      printf 'RUN:%s\\n' "$run_id" >> "$trace_file"
-      count=0
-
-      while IFS= read -r line; do
-        count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
-            printf '%s\\n' '{"id":1,"result":{}}'
-            ;;
-          2)
-            ;;
-          3)
-            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-cont"}}}'
-            ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-1"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-cont-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-        esac
-      done
-      """)
-
-      File.chmod!(codex_binary, 0o755)
-
-      write_workflow_file!(Workflow.workflow_file_path(),
-        workspace_root: workspace_root,
-        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server",
-        max_turns: 3
-      )
-
-      parent = self()
-
-      state_fetcher = fn [_issue_id] ->
-        attempt = Process.get(:agent_turn_fetch_count, 0) + 1
-        Process.put(:agent_turn_fetch_count, attempt)
-        send(parent, {:issue_state_fetch, attempt})
-
-        state =
-          if attempt == 1 do
-            "In Progress"
-          else
-            "Done"
-          end
-
-        {:ok,
-         [
-           %Issue{
-             id: "issue-continue",
-             identifier: "MT-247",
-             title: "Continue until done",
-             description: "Still active after first turn",
-             state: state
-           }
-         ]}
-      end
-
-      issue = %Issue{
-        id: "issue-continue",
-        identifier: "MT-247",
-        title: "Continue until done",
-        description: "Still active after first turn",
-        state: "In Progress",
-        url: "https://example.org/issues/MT-247",
-        labels: []
-      }
-
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
-      assert_receive {:issue_state_fetch, 1}
-      assert_receive {:issue_state_fetch, 2}
-
-      lines = File.read!(trace_file) |> String.split("\n", trim: true)
-
-      assert length(Enum.filter(lines, &String.starts_with?(&1, "RUN:"))) == 1
-      assert length(Enum.filter(lines, &String.contains?(&1, "\"method\":\"thread/start\""))) == 1
-
-      turn_texts =
-        lines
-        |> Enum.filter(&String.starts_with?(&1, "JSON:"))
-        |> Enum.map(&String.trim_leading(&1, "JSON:"))
-        |> Enum.map(&Jason.decode!/1)
-        |> Enum.filter(&(&1["method"] == "turn/start"))
-        |> Enum.map(fn payload ->
-          get_in(payload, ["params", "input"])
-          |> Enum.map_join("\n", &Map.get(&1, "text", ""))
-        end)
-
-      assert length(turn_texts) == 2
-      assert Enum.at(turn_texts, 0) =~ "You are an agent for this repository."
-      refute Enum.at(turn_texts, 1) =~ "You are an agent for this repository."
-      assert Enum.at(turn_texts, 1) =~ "Continuation guidance:"
-      assert Enum.at(turn_texts, 1) =~ "continuation turn #2 of 3"
     after
       File.rm_rf(test_root)
     end
@@ -3020,7 +2892,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "agent runner stops continuing once agent.max_turns is reached" do
+  test "agent runner stops after terminal stage outcome without active-state continuation" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -3061,10 +2933,14 @@ defmodule SymphonyElixir.CoreTest do
             ;;
           4)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-1"}}}'
+            printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-max-1","threadId":"thread-max","turnId":"turn-max-1","arguments":{"outcome":"completed","summary":"Done."}}}'
+            IFS= read -r _tool_response || exit 1
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
           5)
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-max-2"}}}'
+            printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-max-2","threadId":"thread-max","turnId":"turn-max-2","arguments":{"outcome":"completed","summary":"Done."}}}'
+            IFS= read -r _tool_response || exit 1
             printf '%s\\n' '{"method":"turn/completed"}'
             ;;
         esac
@@ -3077,21 +2953,10 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
-        max_turns: 2
+        max_turns: 2,
+        tracker_kind: "memory",
+        tracker_api_token: nil
       )
-
-      state_fetcher = fn [_issue_id] ->
-        {:ok,
-         [
-           %Issue{
-             id: "issue-max-turns",
-             identifier: "MT-248",
-             title: "Stop at max turns",
-             description: "Still active",
-             state: "In Progress"
-           }
-         ]}
-      end
 
       issue = %Issue{
         id: "issue-max-turns",
@@ -3103,11 +2968,13 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+      assert :ok = AgentRunner.run(issue)
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1
-      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 2
+      assert length(Regex.scan(~r/"method":"turn\/start"/, trace)) == 1
     after
       File.rm_rf(test_root)
     end

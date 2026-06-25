@@ -88,9 +88,8 @@ Important boundary:
    - Exposes a stage-aware tracker contract using provider-neutral workflow stage ids.
    - Adapters that have not implemented provider-specific stage mapping MUST report an explicit
      unsupported stage-contract boundary rather than falling back to legacy active-state dispatch.
-   - Fetches candidate issues in active states for the legacy compatibility path.
+   - Fetches runnable issues from the provider state mapped to `workflow.start_stage`.
    - Fetches current states for specific issue IDs (reconciliation).
-   - Fetches terminal-state issues during startup cleanup.
    - Normalizes tracker payloads into a stable issue model.
    - Treats provider-visible state/status/label values as external observation and recovery records,
      not as the normal trigger for progressing one issue through workflow stages.
@@ -323,9 +322,8 @@ Design note:
 
 - New configurations SHOULD keep provider access and provider-visible state names out of
   `WORKFLOW.md`. Use `WORKFLOW.md` + `TRACKER.yaml` for workflow-stage configurations.
-- The legacy single-file model with provider `tracker.active_states` and
-  `tracker.terminal_states` in `WORKFLOW.md` remains a temporary compatibility path during the #45
-  migration and will be removed by follow-up cleanup work.
+- Legacy single-file `WORKFLOW.md` tracker front matter is rejected at runtime. Use the migration
+  task to split old configs into `WORKFLOW.md` plus `TRACKER.yaml` before starting the service.
 
 Parsing rules:
 
@@ -489,13 +487,11 @@ Fields:
   - Keys are workflow stage names.
   - Each value has:
     - `state` (string): provider-visible state/status/label name.
-    - `terminal` (boolean, OPTIONAL): marks the mapped provider state as terminal for the old
-      runner/scheduler compatibility path. Terminal workflow stages are also terminal even if this
+    - `terminal` (boolean, OPTIONAL): marks the mapped provider state as terminal for provider
+      recovery and reconciliation. Terminal workflow stages are also terminal even if this
       flag is omitted.
-- `active_states` and `terminal_states` are legacy compatibility fields for the old issue-state
-  scheduler. In workflow-stage mode, implementations MAY derive these values from
-  `tracker.stage_states` for legacy APIs and provider-native state writes, but scheduler dispatch
-  MUST use `workflow.start_stage`.
+- `active_states` and `terminal_states` MUST NOT be used in runtime configuration. When present in
+  old `WORKFLOW.md` front matter, startup fails with a migration diagnostic.
 
 #### 5.4.2 `polling` (object)
 
@@ -608,14 +604,12 @@ Template input variables:
   - `null`/absent on first attempt.
   - Integer on retry or continuation run.
 
-Fallback prompt behavior:
+Prompt behavior:
 
-- If no workflow-stage definition is present, the runtime MAY use the legacy Markdown prompt body as
-  the full prompt template.
-- If no workflow-stage prompt is available, the runtime MAY use a minimal default prompt
-  (`You are working on an issue.`).
-- Workflow file read/parse failures are configuration/validation errors and SHOULD NOT silently fall
-  back to a prompt.
+- Runtime worker turns require a workflow-stage definition and use the system-maintained stage prompt
+  wrapper.
+- Workflow file read/parse failures or missing workflow-stage definitions are configuration errors
+  and SHOULD NOT silently fall back to a prompt.
 
 ### 5.6 Workflow Validation and Error Surface
 
@@ -743,8 +737,6 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.state_label_prefix`: string in `TRACKER.yaml`, OPTIONAL for GitLab scoped label workflow states
 - `tracker.provider_states`: optional list of provider-visible states accepted by stage-state mapping
 - `tracker.stage_states`: map in `TRACKER.yaml` from workflow stage to provider-visible state
-- `tracker.active_states` / `tracker.terminal_states`: legacy compatibility fields derived from
-  `tracker.stage_states` in workflow-stage mode for compatibility, not new-work dispatch
 - `polling.interval_ms`: integer in `TRACKER.yaml`, default `30000`
 - `workspace.root`: path in `TRACKER.yaml` resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null in `TRACKER.yaml`
@@ -803,12 +795,8 @@ Important nuance:
 - Workflow-stage progression MUST NOT use provider issue state refresh as the normal decision point
   between in-process stages. Provider-visible stage writes are external observability/recovery
   records.
-- In legacy prompt mode, a worker MAY still re-check tracker issue state after normal turn
-  completion and send continuation guidance to the existing thread, up to `agent.max_turns`.
-- In workflow-stage mode, once the worker exits normally, the orchestrator MUST NOT schedule the
-  legacy continuation retry; the runner has already completed the in-process stage loop.
-- In legacy prompt mode, once the worker exits normally, the orchestrator still schedules a short
-  continuation retry (about 1 second) to re-check active-state eligibility.
+- Once the worker exits normally, the orchestrator MUST NOT schedule a continuation retry; the runner
+  has already completed the in-process stage loop.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -839,10 +827,7 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `Worker Exit (normal)`
   - Remove running entry.
   - Update aggregate runtime totals.
-  - In workflow-stage mode, mark the issue completed locally and release the claim without
-    scheduling continuation retry.
-  - In legacy prompt mode, schedule continuation retry (attempt `1`) after the worker exhausts or
-    finishes its turn loop.
+  - Mark the issue completed locally and release the claim without scheduling continuation retry.
 
 - `Worker Exit (abnormal)`
   - Remove running entry.
@@ -884,8 +869,7 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. In workflow-stage mode, fetch candidate issues from tracker using `workflow.start_stage`.
-   In legacy prompt mode, fetch candidate issues using `tracker.active_states`.
+3. Fetch candidate issues from tracker using `workflow.start_stage`.
 4. Sort issues by dispatch priority.
 5. Dispatch eligible issues while slots remain.
 6. Notify observability/status consumers of state changes.
@@ -898,8 +882,7 @@ first.
 An issue is dispatch-eligible only if all are true:
 
 - It has `id`, `identifier`, `title`, and `state`.
-- In workflow-stage mode, its provider-visible stage maps to `workflow.start_stage`.
-- In legacy prompt mode, its state is in `active_states` and not in `terminal_states`.
+- Its provider-visible stage maps to `workflow.start_stage`.
 - It is routed to this worker by the configured assignee and contains every
   label in `tracker.required_labels`.
 - It is not already in `running`.
@@ -908,9 +891,7 @@ An issue is dispatch-eligible only if all are true:
 - Per-state concurrency slots are available.
 - Blocker rule passes:
   - Do not dispatch when any blocker cannot be confirmed terminal.
-  - In workflow-stage mode, blocker terminality is evaluated through provider-state to workflow-stage
-    mapping.
-  - In legacy prompt mode, blocker terminality is evaluated through `tracker.terminal_states`.
+  - Blocker terminality is evaluated through provider-state to workflow-stage mapping.
 
 Dispatch MUST revalidate a candidate immediately before spawning a worker. In workflow-stage mode,
 that revalidation reads the issue's current workflow stage and skips the issue unless it is still
@@ -962,9 +943,8 @@ Note:
 
 - Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation
   (including terminal transitions for currently running issues).
-- In workflow-stage mode, continuation retries can only re-dispatch issues that are back at
-  `workflow.start_stage`; they MUST NOT advance middle stages through a provider-wide scan.
-- In legacy prompt mode, retry handling keeps the old active-candidate compatibility behavior.
+- Retries can only re-dispatch issues that are back at `workflow.start_stage`; they MUST NOT advance
+  middle stages through a provider-wide scan.
 
 ### 8.5 Active Run Reconciliation
 
@@ -982,24 +962,16 @@ Part B: Tracker state refresh
 
 - Fetch current issue states for all running issue IDs.
 - For each running issue:
-  - In workflow-stage mode, if provider state maps to a terminal workflow stage: terminate worker and
-    clean workspace.
-  - In workflow-stage mode, if provider state disagrees with the runner's local current stage: keep
-    the worker running, update the in-memory issue snapshot, log a stage conflict, and expose
+  - If provider state maps to a terminal workflow stage: terminate worker and clean workspace.
+  - If provider state disagrees with the runner's local current stage: keep the worker running,
+    update the in-memory issue snapshot, log a stage conflict, and expose
     `stage_conflict` through observability.
-  - In legacy prompt mode, if tracker state is terminal: terminate worker and clean workspace.
-  - In legacy prompt mode, if tracker state is still active: update the in-memory issue snapshot.
-  - In legacy prompt mode, if tracker state is neither active nor terminal: terminate worker without
-    workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
-When the service starts:
-
-1. In legacy prompt mode, query tracker for issues in terminal states.
-2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+Startup no longer performs a provider-wide terminal-state cleanup scan. Terminal workspace cleanup is
+handled by active-run reconciliation and normal terminal stage completion.
 4. In workflow-stage mode, provider-wide terminal cleanup is not scanned at startup. Restart
    recovery is bounded by provider-visible stage plus workspace metadata; a fresh dispatch is only
    possible for issues visible in `workflow.start_stage`, while running in-memory stage position is
@@ -1150,11 +1122,8 @@ client to:
 - Create or resume a coding-agent thread according to the targeted protocol.
 - Supply the absolute per-issue workspace path as the thread/turn working directory wherever the
   targeted protocol accepts cwd.
-- In workflow-stage mode, start every non-terminal stage turn with the system-maintained stage turn
-  prompt rendered for the current workflow stage.
-- In legacy prompt mode, start the first turn with the rendered issue prompt and start later
-  in-worker continuation turns on the same live thread with continuation guidance rather than
-  resending the original issue prompt.
+- Start every non-terminal stage turn with the system-maintained stage turn prompt rendered for the
+  current workflow stage.
 - Supply the implementation's documented approval and sandbox policy using fields supported by the
   targeted protocol.
 - Include issue-identifying metadata, such as `<issue.identifier>: <issue.title>`, when the targeted
@@ -2087,14 +2056,8 @@ function reconcile_running_issues(state):
         provider_stage: tracker.read_issue_stage(issue)
       }
       log_warning("workflow stage conflict")
-    else if workflow_stage_mode:
-      state.running[issue.id].issue = issue
-    else if issue.state in terminal_states:
-      state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
-    else if issue.state in active_states:
-      state.running[issue.id].issue = issue
     else:
-      state = terminate_running_issue(state, issue.id, cleanup_workspace=false)
+      state.running[issue.id].issue = issue
 
   return state
 ```

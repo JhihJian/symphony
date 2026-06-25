@@ -4,6 +4,7 @@ defmodule SymphonyElixir.GitHub.Client do
   """
 
   alias SymphonyElixir.{Config, GitHub.PullRequest, Linear.Issue}
+  alias SymphonyElixir.Tracker.StageState
 
   @issue_page_size 50
   @api_version "2022-11-28"
@@ -213,14 +214,14 @@ defmodule SymphonyElixir.GitHub.Client do
   defp fetch_candidate_issues(graphql_fun) do
     with :ok <- validate_tracker_config(),
          {:ok, issues} <- fetch_all_issues(["OPEN"], graphql_fun) do
-      active_states =
-        Config.settings!().tracker.active_states
+      start_states =
+        StageState.start_provider_states()
         |> Enum.map(&normalize_state/1)
         |> MapSet.new()
 
       {:ok,
        Enum.filter(issues, fn %Issue{state: state, assigned_to_worker: assigned_to_worker} ->
-         assigned_to_worker and MapSet.member?(active_states, normalize_state(state))
+         assigned_to_worker and MapSet.member?(start_states, normalize_state(state))
        end)}
     end
   end
@@ -620,15 +621,15 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp scheduling_state("OPEN", tracker), do: first_configured_state(tracker.active_states, "Open")
-  defp scheduling_state("CLOSED", tracker), do: first_configured_state(tracker.terminal_states, "Closed")
-  defp scheduling_state("open", tracker), do: first_configured_state(tracker.active_states, "Open")
-  defp scheduling_state("closed", tracker), do: first_configured_state(tracker.terminal_states, "Closed")
+  defp scheduling_state("OPEN", _tracker), do: first_provider_state(StageState.start_provider_states(), "Open")
+  defp scheduling_state("CLOSED", _tracker), do: first_provider_state(StageState.terminal_provider_states(), "Closed")
+  defp scheduling_state("open", _tracker), do: first_provider_state(StageState.start_provider_states(), "Open")
+  defp scheduling_state("closed", _tracker), do: first_provider_state(StageState.terminal_provider_states(), "Closed")
   defp scheduling_state(state, _tracker) when is_binary(state), do: state
   defp scheduling_state(_state, _tracker), do: "Unknown"
 
-  defp first_configured_state([state | _rest], _fallback) when is_binary(state) and state != "", do: state
-  defp first_configured_state(_states, fallback), do: fallback
+  defp first_provider_state([state | _rest], _fallback) when is_binary(state) and state != "", do: state
+  defp first_provider_state(_states, fallback), do: fallback
 
   defp normalize_github_issue_state("OPEN"), do: "Open"
   defp normalize_github_issue_state("CLOSED"), do: "Closed"
@@ -790,16 +791,15 @@ defmodule SymphonyElixir.GitHub.Client do
   defp validate_project_status_update(_response), do: {:error, :issue_update_failed}
 
   defp sync_issue_open_closed(issue_number, state_name, rest_fun, opts \\ []) do
-    tracker = Config.settings!().tracker
     normalized_state_name = normalize_state(state_name)
-    terminal_states = MapSet.new(Enum.map(tracker.terminal_states, &normalize_state/1))
-    active_states = MapSet.new(Enum.map(tracker.active_states, &normalize_state/1))
+    terminal_provider_states = MapSet.new(Enum.map(StageState.terminal_provider_states(), &normalize_state/1))
+    open_states = MapSet.new(Enum.map(StageState.non_terminal_provider_states(), &normalize_state/1))
 
     cond do
-      MapSet.member?(terminal_states, normalized_state_name) ->
+      MapSet.member?(terminal_provider_states, normalized_state_name) ->
         patch_issue_state(issue_number, "closed", close_state_reason(state_name), rest_fun)
 
-      MapSet.member?(active_states, normalized_state_name) ->
+      MapSet.member?(open_states, normalized_state_name) ->
         patch_issue_state(issue_number, "open", "reopened", rest_fun)
 
       Keyword.get(opts, :require_known_state, false) ->
