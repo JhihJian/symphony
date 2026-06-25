@@ -472,12 +472,20 @@ Fields:
   - For `tracker.kind == "gitlab"`, when set, Symphony derives fine-grained workflow state from
     GitLab labels named `<prefix><normalized-state>`, for example `status::human-review`.
   - State label matching ignores case and surrounding whitespace.
+- `workflow_state` (object)
+  - OPTIONAL alternative strategy config for deriving `tracker.stage_states`.
+  - `strategy: project_v2_status` for GitHub Project v2 Status. `field_name` defaults the Project
+    single-select field name and `state_options` maps workflow stage ids to Project option names.
+  - `strategy: scoped_label` for GitLab scoped labels. `label_prefix` defines the scoped-label group,
+    `state_name_format` defaults to `kebab_case`, and `close_on_terminal` lists terminal stage ids
+    that should close the GitLab issue.
 - `provider_states` (list of strings)
   - OPTIONAL.
   - Declares provider-visible state/status/label names that are valid mapping targets.
   - When present, `tracker.stage_states.*.state` MUST map to one of these values.
 - `stage_states` (object)
-  - REQUIRED in workflow-stage mode.
+  - REQUIRED in workflow-stage mode unless `tracker.workflow_state` can derive a mapping for every
+    workflow stage.
   - Keys are workflow stage names.
   - Each value has:
     - `state` (string): provider-visible state/status/label name.
@@ -1367,9 +1375,16 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 GitHub-specific requirements for `tracker.kind == "github"`:
 
 - `tracker.owner` and `tracker.repo` define the repository scope.
-- `tracker.project_number` is optional. When present, GitHub Project v2 status is used as the
-  normalized scheduling state. When omitted, GitHub native `OPEN` maps to the first configured
-  active state and `CLOSED` maps to the first configured terminal state.
+- `tracker.project_number` is optional. When present, GitHub Project v2 Status is used as the
+  provider-visible workflow stage state. `tracker.workflow_state.state_options` maps workflow stage
+  ids to Status option names.
+- GitHub Project v2 writes MUST fail clearly when the configured issue is not in the project, the
+  configured Status field is missing, or the requested Status option is missing.
+- GitHub native `CLOSED` is authoritative terminal state even if the Project Status field is stale.
+- When `tracker.project_number` is omitted, GitHub issues-only mode MUST NOT claim support for
+  multi-stage provider-visible workflow state. Multi-stage workflow-stage config that needs
+  provider-visible state MUST fail fast and point users to Project v2 Status or another tracker with
+  multi-stage state support.
 - Issue numbers are only repository-local; normalized IDs and identifiers must include repository
   scope.
 
@@ -1380,15 +1395,13 @@ GitLab-specific requirements for `tracker.kind == "gitlab"`:
 - The default endpoint is `https://gitlab.com/api/v4`.
 - GitLab native `opened` maps to the first configured active state and `closed` maps to the first
   configured terminal state.
-- When `tracker.state_label_prefix` is set, GitLab issue labels refine the normalized workflow
-  state. Symphony maps a configured state such as `Human Review` to a label such as
-  `status::human-review`, where `status::` is the configured prefix. For opened issues, a matching
-  state label overrides the native opened fallback. For closed issues, only matching terminal state
-  labels override the native closed fallback, so an already closed issue cannot be treated as active
-  because of a stale active label.
-- GitLab state writes update the native issue state and the configured state label in one issue
-  update request. Symphony adds the target state label and removes other labels in the same
-  configured state-label group; unrelated labels are not removed.
+- GitLab scoped-label workflow state maps stage ids to labels such as
+  `status::context-check`. Reads reject unmapped/conflicting provider states through the adapter
+  stage contract; writes add the target scoped label and remove other labels in the configured
+  workflow-state group. Unrelated labels are not removed.
+- GitLab scoped-label writes close an issue only for terminal stages listed in
+  `tracker.workflow_state.close_on_terminal`; other terminal stages may remain opened but
+  provider-visible as terminal workflow stages.
 - Issue `iid` values are only project-local; normalized IDs and identifiers must include project
   scope.
 

@@ -64,6 +64,24 @@ defmodule SymphonyElixir.GitLab.Client do
     update_issue_state(issue_id, state_name, &Req.request/1)
   end
 
+  @spec write_scoped_label_stage(String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def write_scoped_label_stage(issue_id, target_label, opts)
+      when is_binary(issue_id) and is_binary(target_label) and is_map(opts) do
+    write_scoped_label_stage(issue_id, target_label, opts, &Req.request/1)
+  end
+
+  @doc false
+  @spec write_scoped_label_stage_for_test(
+          String.t(),
+          String.t(),
+          map(),
+          (keyword() -> {:ok, map()} | {:error, term()})
+        ) :: :ok | {:error, term()}
+  def write_scoped_label_stage_for_test(issue_id, target_label, opts, request_fun)
+      when is_binary(issue_id) and is_binary(target_label) and is_map(opts) and is_function(request_fun, 1) do
+    write_scoped_label_stage(issue_id, target_label, opts, request_fun)
+  end
+
   @doc false
   @spec update_issue_state_for_test(String.t(), String.t(), (keyword() -> {:ok, map()} | {:error, term()})) ::
           :ok | {:error, term()}
@@ -163,6 +181,16 @@ defmodule SymphonyElixir.GitLab.Client do
     with :ok <- validate_tracker_config(),
          {:ok, iid} <- parse_issue_iid(issue_id),
          {:ok, payload} <- state_update_payload(state_name),
+         {:ok, _response} <-
+           rest_request(:put, issue_path(iid), [json: payload], request_fun) do
+      :ok
+    end
+  end
+
+  defp write_scoped_label_stage(issue_id, target_label, opts, request_fun) when is_function(request_fun, 1) do
+    with :ok <- validate_tracker_config(),
+         {:ok, iid} <- parse_issue_iid(issue_id),
+         {:ok, payload} <- scoped_label_stage_update_payload(target_label, opts),
          {:ok, _response} <-
            rest_request(:put, issue_path(iid), [json: payload], request_fun) do
       :ok
@@ -361,6 +389,26 @@ defmodule SymphonyElixir.GitLab.Client do
     end
   end
 
+  defp scoped_label_stage_update_payload(target_label, opts) when is_map(opts) do
+    remove_labels =
+      opts
+      |> Map.get(:remove_labels, Map.get(opts, "remove_labels", []))
+      |> Enum.filter(&is_binary/1)
+      |> Enum.reject(&(normalize_label(&1) == normalize_label(target_label)))
+      |> Enum.uniq()
+
+    payload =
+      %{
+        state_event: if(Map.get(opts, :close?, Map.get(opts, "close?", false)), do: "close", else: "reopen"),
+        add_labels: target_label
+      }
+
+    {:ok, maybe_put_remove_labels(payload, remove_labels)}
+  end
+
+  defp maybe_put_remove_labels(payload, []), do: payload
+  defp maybe_put_remove_labels(payload, labels), do: Map.put(payload, :remove_labels, Enum.join(labels, ","))
+
   defp state_event_for(state_name, tracker) do
     cond do
       configured_state?(state_name, tracker.terminal_states) ->
@@ -383,7 +431,7 @@ defmodule SymphonyElixir.GitLab.Client do
           |> MapSet.new()
 
         Enum.find(all_configured_states(tracker), fn state_name ->
-          MapSet.member?(label_set, normalize_label(prefix <> state_label_suffix(state_name)))
+          MapSet.member?(label_set, normalize_label(state_label_for_state_match(state_name, prefix)))
         end)
 
       _ ->
@@ -408,7 +456,11 @@ defmodule SymphonyElixir.GitLab.Client do
   defp state_label_for(state_name, tracker) do
     with prefix when is_binary(prefix) <- tracker.state_label_prefix,
          true <- configured_state?(state_name, all_configured_states(tracker)) do
-      prefix <> state_label_suffix(state_name)
+      if scoped_label?(state_name, prefix) do
+        state_name
+      else
+        prefix <> state_label_suffix(state_name)
+      end
     else
       _ -> nil
     end
@@ -420,7 +472,7 @@ defmodule SymphonyElixir.GitLab.Client do
         tracker
         |> all_configured_states()
         |> Enum.reject(&(normalize_state(&1) == normalize_state(state_name)))
-        |> Enum.map(&(prefix <> state_label_suffix(&1)))
+        |> Enum.map(&state_label_for_state_match(&1, prefix))
 
       _ ->
         []
@@ -443,7 +495,21 @@ defmodule SymphonyElixir.GitLab.Client do
     |> String.trim("-")
   end
 
+  defp state_label_for_state_match(state_name, prefix) do
+    if scoped_label?(state_name, prefix) do
+      state_name
+    else
+      prefix <> state_label_suffix(state_name)
+    end
+  end
+
   defp normalize_label(label) when is_binary(label), do: String.downcase(String.trim(label))
+
+  defp scoped_label?(state_name, prefix) when is_binary(state_name) and is_binary(prefix) do
+    state_name
+    |> normalize_label()
+    |> String.starts_with?(normalize_label(prefix))
+  end
 
   defp parse_issue_iid(issue_id) when is_binary(issue_id) do
     issue_id

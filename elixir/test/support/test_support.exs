@@ -28,6 +28,7 @@ defmodule SymphonyElixir.TestSupport do
       setup do
         client_modules =
           SymphonyElixir.TestSupport.snapshot_app_env_keys([
+            :linear_client_module,
             :github_client_module,
             :gitlab_client_module
           ])

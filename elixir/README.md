@@ -213,12 +213,15 @@ Notes:
 - `tracker.stage_states` maps provider-neutral workflow stage ids to provider-visible states. These
   provider states are an external observable and recoverable record; they are not the normal trigger
   for progressing one issue through workflow stages.
+- `tracker.workflow_state` can derive `stage_states` for provider-specific strategies. GitHub
+  Project v2 Status uses `workflow_state.state_options`; GitLab scoped labels use
+  `workflow_state.strategy: scoped_label` and `workflow_state.label_prefix`.
 - The scheduler uses `tracker.stage_states[workflow.start_stage].state` for new candidate discovery.
   Legacy `tracker.active_states` and `tracker.terminal_states` are derived for compatibility but are
   not the workflow-stage dispatch model.
-- At this stage the Memory tracker implements the workflow-stage dispatch contract. Linear,
-  GitHub, and GitLab adapters still expose an explicit unsupported stage-contract boundary until
-  provider-specific mappings are implemented.
+- Memory, Linear, GitHub Project v2, and GitLab scoped-label trackers implement the workflow-stage
+  dispatch contract. GitHub issues-only mode does not support multi-stage provider-visible workflow
+  state and fails fast when configured for more than one visible stage state.
 - The runner-internal stage outcome channel drives workflow transitions. Direct provider status
   writes through ordinary tracker tools may still be useful for comments or external metadata, but
   they are not accepted as the stage result.
@@ -229,20 +232,55 @@ Notes:
   `tracker.stage_states.*.state` value against this declared provider-visible state set.
 - Linear uses `tracker.project_slug` and defaults to `https://api.linear.app/graphql`.
 - GitHub uses `tracker.owner` and `tracker.repo`; `tracker.project_number` is optional. When it is
-  present, GitHub Project v2 status is used for issue state. When it is omitted, GitHub `OPEN` maps
-  to the first configured active state and `CLOSED` maps to the first configured terminal state.
+  present, GitHub Project v2 Status is used for workflow stage state. GitHub native `CLOSED` remains
+  terminal even if the Project Status field is stale. When `project_number` is omitted, GitHub
+  issues-only mode cannot represent multi-stage provider-visible workflow state.
 - GitLab uses `tracker.project_slug` as the project path or ID and defaults to
-  `https://gitlab.com/api/v4`. GitLab `opened` maps to the first configured active state and
-  `closed` maps to the first configured terminal state. When `tracker.state_label_prefix` is set,
-  GitLab labels refine those states. For example, `state_label_prefix: "status::"` maps
-  `Human Review` to `status::human-review`; state writes add the target state label and remove other
-  labels in that configured state-label group.
+  `https://gitlab.com/api/v4`. Scoped-label workflow state writes add the target label and remove
+  other labels in that configured state-label group. `workflow_state.close_on_terminal` controls
+  which terminal stages close the GitLab issue.
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
 - Legacy provider fields in `WORKFLOW.md` front matter remain available only for the old runtime
   path while #45 migration work continues. New configurations should use `WORKFLOW.md` +
   `TRACKER.yaml`; the old state-model config will be removed in a later #45 cleanup.
+
+GitHub Project v2 Status `TRACKER.yaml` example:
+
+```yaml
+tracker:
+  kind: github
+  api_key: "$GITHUB_TOKEN"
+  owner: your-org
+  repo: your-repo
+  project_number: 1
+  workflow_state:
+    strategy: project_v2_status
+    field_name: Status
+    state_options:
+      ready: Context Check
+      in_progress: Implementation
+      done: Done
+      blocked: Blocked
+      protocol_blocked: Protocol Blocked
+```
+
+GitLab scoped-label `TRACKER.yaml` example:
+
+```yaml
+tracker:
+  kind: gitlab
+  endpoint: "https://gitlab.com/api/v4"
+  api_key: "$GITLAB_TOKEN"
+  project_slug: "your-group/your-project"
+  workflow_state:
+    strategy: scoped_label
+    label_prefix: "status::"
+    state_name_format: kebab_case
+    close_on_terminal:
+      - done
+```
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
