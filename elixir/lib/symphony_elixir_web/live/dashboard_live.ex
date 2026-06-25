@@ -163,9 +163,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= display_state(entry.state) %>
-                      </span>
+                      <div class="detail-stack">
+                        <span class={state_badge_class(entry.state)}>
+                          <%= display_state(entry.state) %>
+                        </span>
+                        <span :if={entry.current_stage} class="muted event-meta">
+                          stage <span class="mono"><%= entry.current_stage %></span>
+                        </span>
+                        <span :if={entry.stage_conflict} class="muted event-meta">
+                          冲突 <span class="mono"><%= stage_conflict_text(entry.stage_conflict) %></span>
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <div class="session-stack">
@@ -244,9 +252,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td>
-                      <span class={state_badge_class(entry.state || "Blocked")}>
-                        <%= display_state(entry.state || "Blocked") %>
-                      </span>
+                      <div class="detail-stack">
+                        <span class={state_badge_class(entry.state || "Blocked")}>
+                          <%= display_state(entry.state || "Blocked") %>
+                        </span>
+                        <span :if={entry.current_stage} class="muted event-meta">
+                          stage <span class="mono"><%= entry.current_stage %></span>
+                        </span>
+                        <span :if={entry.stage_conflict} class="muted event-meta">
+                          冲突 <span class="mono"><%= stage_conflict_text(entry.stage_conflict) %></span>
+                        </span>
+                      </div>
                     </td>
                     <td>
                       <%= if entry.session_id do %>
@@ -315,7 +331,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON 详情</a>
                       </div>
                     </td>
-                    <td><%= entry.attempt %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= entry.attempt %></span>
+                        <span :if={entry.current_stage} class="muted event-meta">
+                          stage <span class="mono"><%= entry.current_stage %></span>
+                        </span>
+                      </div>
+                    </td>
                     <td class="mono"><%= entry.due_at || "暂无" %></td>
                     <td><%= entry.error || "暂无" %></td>
                   </tr>
@@ -422,6 +445,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
       _ -> state
     end
   end
+
+  defp stage_conflict_text(%{local_stage: local_stage, provider_stage: provider_stage}) do
+    "#{local_stage || "unknown"} -> #{provider_stage || "unknown"}"
+  end
+
+  defp stage_conflict_text(%{"local_stage" => local_stage, "provider_stage" => provider_stage}) do
+    "#{local_stage || "unknown"} -> #{provider_stage || "unknown"}"
+  end
+
+  defp stage_conflict_text(conflict), do: inspect(conflict, pretty: true)
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

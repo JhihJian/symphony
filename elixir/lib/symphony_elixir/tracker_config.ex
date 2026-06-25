@@ -39,12 +39,14 @@ defmodule SymphonyElixir.TrackerConfig do
 
   def set_tracker_file_path(path) when is_binary(path) do
     Application.put_env(:symphony_elixir, :tracker_config_file_path, path)
+    maybe_reload_store()
     :ok
   end
 
   @spec clear_tracker_file_path() :: :ok
   def clear_tracker_file_path do
     Application.delete_env(:symphony_elixir, :tracker_config_file_path)
+    maybe_reload_store()
     :ok
   end
 
@@ -312,4 +314,12 @@ defmodule SymphonyElixir.TrackerConfig do
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
+
+  defp maybe_reload_store do
+    if Process.whereis(SymphonyElixir.WorkflowStore) do
+      _ = SymphonyElixir.WorkflowStore.force_reload()
+    end
+
+    :ok
+  end
 end

@@ -108,12 +108,12 @@ defmodule SymphonyElixir.TestSupport do
   def stop_default_http_server do
     ensure_application_started!()
 
-    case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
+    case Enum.find(supervisor_children(), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false
          end) do
       {SymphonyElixir.HttpServer, pid, _type, _modules} when is_pid(pid) ->
-        :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.HttpServer)
+        terminate_supervisor_child(SymphonyElixir.HttpServer)
 
         if Process.alive?(pid) do
           Process.exit(pid, :normal)
@@ -124,6 +124,26 @@ defmodule SymphonyElixir.TestSupport do
       _ ->
         :ok
     end
+  end
+
+  defp supervisor_children do
+    if Process.whereis(SymphonyElixir.Supervisor) do
+      Supervisor.which_children(SymphonyElixir.Supervisor)
+    else
+      []
+    end
+  catch
+    :exit, _reason -> []
+  end
+
+  defp terminate_supervisor_child(child_id) do
+    if Process.whereis(SymphonyElixir.Supervisor) do
+      Supervisor.terminate_child(SymphonyElixir.Supervisor, child_id)
+    else
+      :ok
+    end
+  catch
+    :exit, _reason -> :ok
   end
 
   defp workflow_content(overrides) do
