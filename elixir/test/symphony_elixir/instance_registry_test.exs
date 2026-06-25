@@ -52,6 +52,7 @@ defmodule SymphonyElixir.InstanceRegistryTest do
              workspace_root: Path.join([runtime_root, "project-a", "workspaces"]),
              logs_root: Path.join([runtime_root, "project-a", "logs"]),
              config_path: Path.join([config_root, "project-a", "WORKFLOW.md"]),
+             tracker_config_path: nil,
              env_path: Path.join([config_root, "project-a", "env"]),
              runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42},
              strategy: "idle_restart"
@@ -92,10 +93,167 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     assert instance.status == "running"
     assert instance.systemd == %{active: "active", enabled: "enabled", sub: "running", failed: false}
     assert instance.config_path == Path.join([config_root, "orphan", "WORKFLOW.md"])
+    assert instance.tracker_config_path == nil
     assert instance.port == nil
     assert instance.dashboard_url == nil
     assert instance.counts == %{running: 0, retrying: 0, blocked: 0}
     refute_received :unexpected_http_call
+  end
+
+  test "discovers workflow-stage instances from sibling TRACKER.yaml" do
+    root = temporary_root("instance-registry-two-file-discovery")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+
+    write_stage_instance!(config_root, runtime_root, "project-stage", port: 20_003)
+
+    assert {:ok, [instance]} = InstanceRegistry.list_instances(registry_opts(config_root))
+
+    assert instance.name == "project-stage"
+    assert instance.tracker == %{kind: "github", scope: "acme/project-stage", required_labels: ["symphony", "triage"]}
+    assert instance.workspace_root == Path.join([runtime_root, "project-stage", "workspaces"])
+    assert instance.tracker_config_path == Path.join([config_root, "project-stage", "TRACKER.yaml"])
+    assert instance.dashboard_url == "http://127.0.0.1:20003/"
+  end
+
+  test "install script smoke writes WORKFLOW.md, TRACKER.yaml and tracker-aware unit" do
+    root = temporary_root("instance-registry-install-script-smoke")
+    source_root = Path.join(root, "source")
+    origin_root = Path.join(root, "origin.git")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+    home = Path.join(root, "home")
+
+    File.mkdir_p!(Path.join(source_root, "elixir/bin"))
+    File.mkdir_p!(Path.join(source_root, "scripts"))
+    File.mkdir_p!(home)
+    File.write!(Path.join([source_root, "elixir", "bin", "symphony"]), "#!/bin/sh\n")
+    File.write!(Path.join([source_root, "scripts", "update-systemd-template.sh"]), "#!/bin/sh\n")
+    File.chmod!(Path.join([source_root, "elixir", "bin", "symphony"]), 0o755)
+    File.chmod!(Path.join([source_root, "scripts", "update-systemd-template.sh"]), 0o755)
+    System.cmd("git", ["-C", source_root, "init", "-b", "main"], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "config", "user.name", "Test User"], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "config", "user.email", "test@example.com"], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "add", "."], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "commit", "-m", "initial"], stderr_to_stdout: true)
+    System.cmd("git", ["init", "--bare", origin_root], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "remote", "add", "origin", origin_root], stderr_to_stdout: true)
+    System.cmd("git", ["-C", source_root, "push", "-u", "origin", "main"], stderr_to_stdout: true)
+
+    install_script = Path.expand("../../../scripts/install-systemd-template.sh", __DIR__)
+
+    {output, 0} =
+      System.cmd(
+        install_script,
+        [
+          "--project",
+          "project-a",
+          "--owner",
+          "acme",
+          "--repo",
+          "project-a",
+          "--project-number",
+          "14",
+          "--token",
+          "test-token",
+          "--port",
+          "20042",
+          "--config-root",
+          config_root,
+          "--runtime-root",
+          runtime_root,
+          "--source-root",
+          source_root,
+          "--stage-state",
+          "ready=Ready",
+          "--stage-state",
+          "in_progress=Implementation",
+          "--stage-state",
+          "human_review=Review",
+          "--stage-state",
+          "rework=Rework",
+          "--stage-state",
+          "merging=Merging",
+          "--terminal-stage-state",
+          "done=Done",
+          "--terminal-stage-state",
+          "blocked=Blocked",
+          "--terminal-stage-state",
+          "protocol_blocked=Protocol Blocked",
+          "--label",
+          "symphony",
+          "--label",
+          "triage",
+          "--no-systemd",
+          "--no-start",
+          "--skip-build"
+        ],
+        env: [{"HOME", home}, {"GITHUB_TOKEN", "env-token"}],
+        stderr_to_stdout: true
+      )
+
+    workflow_path = Path.join([config_root, "project-a", "WORKFLOW.md"])
+    tracker_config_path = Path.join([config_root, "project-a", "TRACKER.yaml"])
+    unit_path = Path.join([home, ".config", "systemd", "user", "symphony@.service"])
+
+    assert output =~ "Installed Symphony project instance: project-a"
+    assert output =~ workflow_path
+    assert output =~ tracker_config_path
+
+    assert File.exists?(workflow_path)
+    assert File.exists?(tracker_config_path)
+    assert File.exists?(unit_path)
+
+    workflow = File.read!(workflow_path)
+    refute workflow =~ "tracker:"
+    refute workflow =~ "Project v2"
+    assert workflow =~ "tracker issue"
+
+    assert {:ok, tracker_config} = TrackerConfig.load(tracker_config_path)
+    assert tracker_config["tracker"]["kind"] == "github"
+    assert tracker_config["tracker"]["api_key"] == "$GITHUB_TOKEN"
+    assert tracker_config["tracker"]["owner"] == "acme"
+    assert tracker_config["tracker"]["repo"] == "project-a"
+    assert tracker_config["tracker"]["project_number"] == 14
+    assert tracker_config["tracker"]["workflow_state"]["strategy"] == "project_v2_status"
+    assert tracker_config["tracker"]["workflow_state"]["field_name"] == "Status"
+    assert tracker_config["tracker"]["required_labels"] == ["symphony", "triage"]
+    assert tracker_config["tracker"]["stage_states"]["in_progress"]["state"] == "Implementation"
+    assert tracker_config["tracker"]["stage_states"]["done"]["terminal"] == true
+    assert tracker_config["server"]["host"] == "0.0.0.0"
+    assert tracker_config["workspace"]["root"] == Path.join([runtime_root, "project-a", "workspaces"])
+    assert tracker_config["hooks"]["after_create"] =~ "git clone --depth 1 https://github.com/acme/project-a ."
+    assert tracker_config["agent"]["max_concurrent_agents"] == 2
+    assert tracker_config["codex"]["turn_sandbox_policy"]["networkAccess"] == true
+
+    unit = File.read!(unit_path)
+    assert unit =~ "--tracker-config #{config_root}/%i/TRACKER.yaml #{config_root}/%i/WORKFLOW.md"
+  end
+
+  test "two-file discovery ignores invalid tracker stage mappings" do
+    root = temporary_root("instance-registry-invalid-stage-mapping")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+
+    write_stage_instance!(config_root, runtime_root, "project-stage", port: 20_003)
+
+    File.write!(Path.join([config_root, "project-stage", "TRACKER.yaml"]), """
+    tracker:
+      kind: memory
+      stage_states:
+        ready:
+          state: Ready
+    server:
+      host: 127.0.0.1
+    workspace:
+      root: #{Path.join([runtime_root, "project-stage", "workspaces"])}
+    """)
+
+    assert {:ok, [instance]} = InstanceRegistry.list_instances(registry_opts(config_root))
+
+    assert instance.tracker == %{kind: nil, scope: nil, required_labels: []}
+    assert instance.workspace_root == nil
+    assert instance.tracker_config_path == Path.join([config_root, "project-stage", "TRACKER.yaml"])
   end
 
   test "lifecycle actions call systemd user services and surface failures" do
@@ -431,6 +589,38 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     Process.put(:state_by_url, Map.put(state_by_url, url, state_result))
   end
 
+  defp write_stage_instance!(config_root, runtime_root, name, opts) do
+    project_config_root = Path.join(config_root, name)
+    project_runtime_root = Path.join(runtime_root, name)
+    workflow_path = Path.join(project_config_root, "WORKFLOW.md")
+    tracker_config_path = Path.join(project_config_root, "TRACKER.yaml")
+    env_path = Path.join(project_config_root, "env")
+    logs_root = Path.join(project_runtime_root, "logs")
+    workspace_root = Path.join(project_runtime_root, "workspaces")
+    port = Keyword.fetch!(opts, :port)
+
+    File.mkdir_p!(project_config_root)
+    File.mkdir_p!(logs_root)
+    File.mkdir_p!(workspace_root)
+
+    File.write!(
+      env_path,
+      "SYMPHONY_PORT=#{port}\nSYMPHONY_LOGS_ROOT=#{logs_root}\nSYMPHONY_UPDATE_STRATEGY=idle_restart\n"
+    )
+
+    File.write!(workflow_path, stage_workflow_contents())
+    File.write!(tracker_config_path, stage_tracker_contents(name, workspace_root))
+
+    service = "symphony@#{name}.service"
+    Process.put(:status_by_service, Map.put(Process.get(:status_by_service, %{}), service, "active"))
+    Process.put(:enabled_by_service, Map.put(enabled_by_service(), service, "enabled"))
+    Process.put(:show_by_service, Map.put(show_by_service(), service, %{active: "active", sub: "running", failed: false}))
+
+    url = "http://127.0.0.1:#{port}/api/v1/state"
+    state_by_url = Process.get(:state_by_url, %{})
+    Process.put(:state_by_url, Map.put(state_by_url, url, {:ok, %{counts: %{running: 0, retrying: 0, blocked: 0}}}))
+  end
+
   defp enabled_by_service, do: Process.get(:enabled_by_service, %{})
   defp show_by_service, do: Process.get(:show_by_service, %{})
 
@@ -466,6 +656,65 @@ defmodule SymphonyElixir.InstanceRegistryTest do
       root: #{workspace_root}
     ---
     Prompt
+    """
+  end
+
+  defp stage_workflow_contents do
+    """
+    ---
+    workflow:
+      start_stage: ready
+      terminal_stages: [done, blocked]
+      outcomes: [started, completed, blocked]
+      missing_outcome:
+        max_retries: 3
+        on_exhausted: blocked
+      stages:
+        ready:
+          prompt: Ready.
+          transitions:
+            started: working
+            blocked: blocked
+        working:
+          prompt: Work.
+          transitions:
+            completed: done
+            blocked: blocked
+        done:
+          prompt: Done.
+          transitions: {}
+        blocked:
+          prompt: Blocked.
+          transitions: {}
+    ---
+    """
+  end
+
+  defp stage_tracker_contents(name, workspace_root) do
+    """
+    tracker:
+      kind: github
+      owner: acme
+      repo: #{name}
+      project_number: 14
+      required_labels:
+        - symphony
+        - triage
+      stage_states:
+        ready:
+          state: Ready
+        working:
+          state: In Progress
+        done:
+          state: Done
+          terminal: true
+        blocked:
+          state: Blocked
+          terminal: true
+    server:
+      host: 127.0.0.1
+    workspace:
+      root: #{workspace_root}
     """
   end
 

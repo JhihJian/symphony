@@ -21,8 +21,10 @@ Options:
   --source-branch <name>    Symphony source branch. Default: main.
   --host <host>             Dashboard bind host. Default: 0.0.0.0.
   --label <label>           Required issue label. May be repeated. Default: symphony.
-  --active-state <state>    Active Project v2 status. May be repeated. Default: Ready, In progress.
-  --terminal-state <state>  Terminal Project v2 status. May be repeated. Default: Done.
+  --stage-state <stage=status>
+                            Map workflow stage id to Project v2 Status. May be repeated.
+  --terminal-stage-state <stage=status>
+                            Map terminal workflow stage id to Project v2 Status. May be repeated.
   --max-agents <n>          Maximum concurrent agents for this instance. Default: 2.
   --skip-build              Do not run mix setup/build when bin/symphony is missing.
   --auto-update             Install and enable symphony-update.timer.
@@ -66,8 +68,10 @@ update_calendar="daily"
 update_strategy=""
 run_systemd=1
 labels=()
-active_states=()
-terminal_states=()
+stage_states=()
+terminal_stage_states=()
+legacy_active_states=()
+legacy_terminal_states=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -128,11 +132,19 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --active-state)
-      active_states+=("${2:?missing value for --active-state}")
+      legacy_active_states+=("${2:?missing value for --active-state}")
       shift 2
       ;;
     --terminal-state)
-      terminal_states+=("${2:?missing value for --terminal-state}")
+      legacy_terminal_states+=("${2:?missing value for --terminal-state}")
+      shift 2
+      ;;
+    --stage-state)
+      stage_states+=("${2:?missing value for --stage-state}")
+      shift 2
+      ;;
+    --terminal-stage-state)
+      terminal_stage_states+=("${2:?missing value for --terminal-stage-state}")
       shift 2
       ;;
     --max-agents)
@@ -292,12 +304,59 @@ if [ "${#labels[@]}" -eq 0 ]; then
   labels=("symphony")
 fi
 
-if [ "${#active_states[@]}" -eq 0 ]; then
-  active_states=("Ready" "In progress")
+default_active_stage_names=(ready in_progress human_review rework merging)
+default_terminal_stage_names=(done blocked protocol_blocked)
+default_active_stage_states=("Ready" "In Progress" "Human Review" "Rework" "Merging")
+default_terminal_stage_states=("Done" "Blocked" "Protocol Blocked")
+
+if [ "${#legacy_active_states[@]}" -gt 0 ]; then
+  if [ "${#stage_states[@]}" -gt 0 ]; then
+    echo "Do not mix --active-state with --stage-state; use explicit --stage-state <stage=status> mappings." >&2
+    exit 2
+  fi
+
+  if [ "${#legacy_active_states[@]}" -gt "${#default_active_stage_names[@]}" ]; then
+    echo "Too many --active-state values; use --stage-state <stage=status> for explicit mappings." >&2
+    exit 2
+  fi
+
+  for index in "${!default_active_stage_names[@]}"; do
+    stage_states+=("${default_active_stage_names[$index]}=${legacy_active_states[$index]:-${default_active_stage_states[$index]}}")
+  done
 fi
 
-if [ "${#terminal_states[@]}" -eq 0 ]; then
-  terminal_states=("Done")
+if [ "${#legacy_terminal_states[@]}" -gt 0 ]; then
+  if [ "${#terminal_stage_states[@]}" -gt 0 ]; then
+    echo "Do not mix --terminal-state with --terminal-stage-state; use explicit --terminal-stage-state <stage=status> mappings." >&2
+    exit 2
+  fi
+
+  if [ "${#legacy_terminal_states[@]}" -gt "${#default_terminal_stage_names[@]}" ]; then
+    echo "Too many --terminal-state values; use --terminal-stage-state <stage=status> for explicit mappings." >&2
+    exit 2
+  fi
+
+  for index in "${!default_terminal_stage_names[@]}"; do
+    terminal_stage_states+=("${default_terminal_stage_names[$index]}=${legacy_terminal_states[$index]:-${default_terminal_stage_states[$index]}}")
+  done
+fi
+
+if [ "${#stage_states[@]}" -eq 0 ]; then
+  stage_states=(
+    "${default_active_stage_names[0]}=${default_active_stage_states[0]}"
+    "${default_active_stage_names[1]}=${default_active_stage_states[1]}"
+    "${default_active_stage_names[2]}=${default_active_stage_states[2]}"
+    "${default_active_stage_names[3]}=${default_active_stage_states[3]}"
+    "${default_active_stage_names[4]}=${default_active_stage_states[4]}"
+  )
+fi
+
+if [ "${#terminal_stage_states[@]}" -eq 0 ]; then
+  terminal_stage_states=(
+    "${default_terminal_stage_names[0]}=${default_terminal_stage_states[0]}"
+    "${default_terminal_stage_names[1]}=${default_terminal_stage_states[1]}"
+    "${default_terminal_stage_names[2]}=${default_terminal_stage_states[2]}"
+  )
 fi
 
 if [ -z "$repo_url" ]; then
@@ -315,6 +374,8 @@ project_config_dir="${config_root%/}/${project}"
 project_runtime_dir="${runtime_root%/}/${project}"
 logs_root="${project_runtime_dir}/logs"
 workspace_root="${project_runtime_dir}/workspaces"
+workflow_path="${project_config_dir}/WORKFLOW.md"
+tracker_config_path="${project_config_dir}/TRACKER.yaml"
 systemd_user_dir="$HOME/.config/systemd/user"
 unit_file="${systemd_user_dir}/symphony@.service"
 update_service_file="${systemd_user_dir}/symphony-update.service"
@@ -413,7 +474,7 @@ Type=simple
 WorkingDirectory=${app_dir}
 Environment=SYMPHONY_PROJECT=%i
 EnvironmentFile=${config_root}/%i/env
-ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_LOGS_ROOT} --port \${SYMPHONY_PORT} ${config_root}/%i/WORKFLOW.md
+ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_LOGS_ROOT} --port \${SYMPHONY_PORT} --tracker-config ${config_root}/%i/TRACKER.yaml ${config_root}/%i/WORKFLOW.md
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT
@@ -443,26 +504,63 @@ write_yaml_list() {
   done
 }
 
+write_stage_state_entries() {
+  local terminal="$1"
+  shift
+  local entry
+  local stage
+  local state
+
+  for entry in "$@"; do
+    stage="${entry%%=*}"
+    state="${entry#*=}"
+
+    if [ -z "$stage" ] || [ "$stage" = "$entry" ] || [ -z "$state" ]; then
+      echo "Invalid stage mapping: ${entry}. Use <stage=status>." >&2
+      exit 2
+    fi
+
+    cat <<EOF
+    ${stage}:
+      state: ${state}
+EOF
+
+    if [ "$terminal" = "1" ]; then
+      cat <<'EOF'
+      terminal: true
+EOF
+    fi
+  done
+}
+
 {
   cat <<EOF
----
 tracker:
   kind: github
+  api_key: \$GITHUB_TOKEN
   owner: ${owner}
   repo: ${repo}
   project_number: ${project_number}
-  project_status_field_name: Status
+  workflow_state:
+    strategy: project_v2_status
+    field_name: Status
+    state_options:
+      ready: Ready
+      in_progress: In Progress
+      human_review: Human Review
+      rework: Rework
+      merging: Merging
+      done: Done
+      blocked: Blocked
+      protocol_blocked: Protocol Blocked
   required_labels:
 EOF
   write_yaml_list 4 "${labels[@]}"
   cat <<EOF
-  active_states:
+  stage_states:
 EOF
-  write_yaml_list 4 "${active_states[@]}"
-  cat <<EOF
-  terminal_states:
-EOF
-  write_yaml_list 4 "${terminal_states[@]}"
+  write_stage_state_entries 0 "${stage_states[@]}"
+  write_stage_state_entries 1 "${terminal_stage_states[@]}"
   cat <<EOF
 polling:
   interval_ms: 30000
@@ -489,43 +587,109 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
----
-
-你正在处理 GitHub Project v2 中的 Issue \`{{ issue.identifier }}\`。
-
-Issue 信息：
-
-- ID: \`{{ issue.id }}\`
-- Tracker: \`{{ issue.tracker_kind }}\`
-- 标题: \`{{ issue.title }}\`
-- 当前状态: \`{{ issue.state }}\`
-- 标签: \`{{ issue.labels }}\`
-- URL: \`{{ issue.url }}\`
-- PR Issue Reference: \`{{ issue.closing_reference }}\`
-
-{{ issue.closing_instruction }}
-
-Issue 描述：
-{% if issue.description %}
-{{ issue.description }}
-{% else %}
-无描述。
-{% endif %}
-
-工作要求：
-
-1. 这是无人值守的 Symphony 编排任务，不要要求人工执行后续动作。
-2. 只在缺少必要权限、密钥或外部服务不可用时停止。
-3. 只在当前 workspace 内工作，不要修改 workspace 外的路径。
-4. 开始后先用 \`github_issue\` 工具读取 issue 和评论，维护一个标题为 \`## Codex Workpad\` 的持久评论。
-5. 执行前在 workpad 里记录计划、验收标准和验证方式。
-6. 变更完成后运行与改动范围匹配的验证命令。
-7. 如需提交代码，创建清晰的 commit，并使用 \`github_pr\` 工具创建 PR。PR 描述必须包含 \`Issue: {{ issue.closing_reference }}\`，以便 GitHub 关联 PR 并在合并后自动关闭 Issue。
-8. 需要变更任务状态时，使用 \`github_issue\` 的 \`set_status\` 操作更新 GitHub Project v2 的 \`Status\` 字段。
-9. 最终在 workpad 中记录完成摘要、验证结果、commit 和 PR 链接。
 EOF
-} > "${project_config_dir}/WORKFLOW.md"
-chmod 644 "${project_config_dir}/WORKFLOW.md"
+} > "${tracker_config_path}"
+chmod 644 "${tracker_config_path}"
+
+cat > "${workflow_path}" <<'EOF'
+---
+workflow:
+  start_stage: ready
+  terminal_stages:
+    - done
+    - blocked
+    - protocol_blocked
+  outcomes:
+    - started
+    - needs_review
+    - approved
+    - changes_requested
+    - merged
+    - blocked
+  missing_outcome:
+    max_retries: 3
+    on_exhausted: protocol_blocked
+  stages:
+    ready:
+      prompt: |
+        你正在处理 tracker issue `{{ issue.identifier }}`。
+
+        Issue 信息：
+
+        - ID: `{{ issue.id }}`
+        - Tracker: `{{ issue.tracker_kind }}`
+        - 标题: `{{ issue.title }}`
+        - 当前状态: `{{ issue.state }}`
+        - 标签: `{{ issue.labels }}`
+        - URL: `{{ issue.url }}`
+        - PR Issue Reference: `{{ issue.closing_reference }}`
+
+        {{ issue.closing_instruction }}
+
+        Issue 描述：
+        {% if issue.description %}
+        {{ issue.description }}
+        {% else %}
+        无描述。
+        {% endif %}
+
+        工作要求：
+
+        1. 这是无人值守的 Symphony 编排任务，不要要求人工执行后续动作。
+        2. 只在缺少必要权限、密钥或外部服务不可用时停止。
+        3. 只在当前 workspace 内工作，不要修改 workspace 外的路径。
+        4. 开始后先用运行时提供的 tracker 工具读取 issue 和评论，维护一个标题为 `## Codex Workpad` 的持久评论。
+        5. 执行前在 workpad 里记录计划、验收标准和验证方式。
+        6. 变更完成后运行与改动范围匹配的验证命令。
+        7. 如需提交代码，创建清晰的 commit，并通过仓库托管平台创建 PR。PR 描述必须包含 `Issue: {{ issue.closing_reference }}`，以便 tracker 关联 PR 并在合并后自动关闭 Issue。
+        8. 需要变更任务状态时，使用运行时提供的 tracker 状态操作更新对应 provider-visible 状态。
+        9. 最终在 workpad 中记录完成摘要、验证结果、commit 和 PR 链接。
+
+        完成 ready 阶段的初始化和计划记录后，提交结构化 outcome `started` 进入实现阶段；遇到真实阻塞时提交 `blocked`。
+      transitions:
+        started: in_progress
+        blocked: blocked
+    in_progress:
+      prompt: |
+        实现 issue 要求的功能、脚本、文档和测试变更。
+
+        保持 workpad 更新，避免修改无关文件。完成后运行与改动范围匹配的验证，并提交结构化 outcome `needs_review`；遇到真实阻塞时提交 `blocked`。
+      transitions:
+        needs_review: human_review
+        blocked: blocked
+    human_review:
+      prompt: |
+        准备交付审核。
+
+        确认 PR 描述、验证结果、commit 和 workpad 都已更新。审核通过后提交 `approved`，需要返工时提交 `changes_requested`，遇到真实阻塞时提交 `blocked`。
+      transitions:
+        approved: merging
+        changes_requested: rework
+        blocked: blocked
+    rework:
+      prompt: |
+        处理审核反馈，更新代码、测试和文档，重新运行验证。
+      transitions:
+        needs_review: human_review
+        blocked: blocked
+    merging:
+      prompt: |
+        按仓库合并流程落地已审核的 PR，并在 workpad 记录最终结果。
+      transitions:
+        merged: done
+        blocked: blocked
+    done:
+      prompt: Terminal completion stage.
+      transitions: {}
+    blocked:
+      prompt: Terminal blocked stage.
+      transitions: {}
+    protocol_blocked:
+      prompt: Terminal protocol blocked stage.
+      transitions: {}
+---
+EOF
+chmod 644 "${workflow_path}"
 
 if [ "$auto_update" = "1" ]; then
   cat > "$update_service_file" <<UNIT
@@ -579,7 +743,8 @@ Service:
 
 Files:
   ${project_config_dir}/env
-  ${project_config_dir}/WORKFLOW.md
+  ${workflow_path}
+  ${tracker_config_path}
 
 Runtime:
   ${logs_root}

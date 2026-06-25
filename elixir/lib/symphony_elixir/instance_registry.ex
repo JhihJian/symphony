@@ -7,7 +7,8 @@ defmodule SymphonyElixir.InstanceRegistry do
   orchestrator state between instances.
   """
 
-  alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.{Config, Tracker, TrackerConfig, Workflow}
+  alias SymphonyElixir.Workflow.Definition
 
   @instance_name_pattern ~r/\A[A-Za-z0-9_.-]+\z/
   @env_var_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
@@ -30,6 +31,7 @@ defmodule SymphonyElixir.InstanceRegistry do
           workspace_root: String.t() | nil,
           logs_root: String.t() | nil,
           config_path: String.t(),
+          tracker_config_path: String.t() | nil,
           env_path: String.t(),
           runtime: map(),
           strategy: String.t()
@@ -219,9 +221,10 @@ defmodule SymphonyElixir.InstanceRegistry do
   defp load_instance(config_root, name, opts) do
     project_config_root = Path.join(config_root, name)
     workflow_path = Path.join(project_config_root, "WORKFLOW.md")
+    tracker_config_path = Path.join(project_config_root, "TRACKER.yaml")
     env_path = Path.join(project_config_root, "env")
     env = read_env_file(env_path)
-    settings = parse_settings(workflow_path)
+    settings = parse_settings(workflow_path, tracker_config_path)
     service = service_name(name)
     systemd = systemd_summary(service, opts)
     status = normalize_systemd_status(systemd.active)
@@ -244,6 +247,7 @@ defmodule SymphonyElixir.InstanceRegistry do
       workspace_root: workspace_root(settings),
       logs_root: Map.get(env, "SYMPHONY_LOGS_ROOT"),
       config_path: workflow_path,
+      tracker_config_path: existing_file_path(tracker_config_path),
       env_path: env_path,
       runtime: runtime_summary(state_result),
       strategy: update_strategy(env)
@@ -647,13 +651,43 @@ defmodule SymphonyElixir.InstanceRegistry do
     end
   end
 
-  defp parse_settings(workflow_path) do
-    with {:ok, %{config: config}} <- Workflow.load(workflow_path),
-         {:ok, settings} <- Config.Schema.parse(config) do
+  defp parse_settings(workflow_path, tracker_config_path) do
+    case Workflow.load(workflow_path) do
+      {:ok, %{config: config, workflow: workflow_definition}} ->
+        parse_settings_config(config, workflow_definition, tracker_config_path)
+
+      _error ->
+        nil
+    end
+  end
+
+  defp parse_settings_config(config, nil, _tracker_config_path) do
+    case Config.Schema.parse(config) do
+      {:ok, settings} -> settings
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_settings_config(config, workflow_definition, tracker_config_path) do
+    with true <- File.regular?(tracker_config_path),
+         {:ok, tracker_config} <- TrackerConfig.load(tracker_config_path),
+         workflow_map <- Definition.to_map(workflow_definition),
+         :ok <- Tracker.validate_workflow_state_mapping(workflow_map, tracker_config),
+         runtime_config <-
+           config
+           |> Map.drop(["workflow", "start_stage", "terminal_stages", "outcomes", "missing_outcome", "stages"])
+           |> Map.merge(TrackerConfig.normalize_for_settings(tracker_config, workflow_map))
+           |> Map.put("workflow", workflow_map)
+           |> Map.put("tracker_config", tracker_config),
+         {:ok, settings} <- Config.Schema.parse(runtime_config) do
       settings
     else
       _error -> nil
     end
+  end
+
+  defp existing_file_path(path) do
+    if File.regular?(path), do: path, else: nil
   end
 
   defp systemd_summary(service, opts) do

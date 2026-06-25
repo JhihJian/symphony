@@ -498,6 +498,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                     <p class="panel-label">Config / Runtime</p>
                     <div class="detail-stack mono">
                       <span><%= instance.config_path || "workflow 未知" %></span>
+                      <span class="muted"><%= Map.get(instance, :tracker_config_path) || "tracker config 未知" %></span>
                       <span class="muted"><%= instance.env_path || "env 未知" %></span>
                       <span><%= instance.workspace_root || "workspace 未知" %></span>
                       <span class="muted"><%= instance.logs_root || "logs 未知" %></span>

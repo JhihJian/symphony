@@ -26,6 +26,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            workspace_root: "/runtime/project-a/workspaces",
            logs_root: "/runtime/project-a/logs",
            config_path: "/config/project-a/WORKFLOW.md",
+           tracker_config_path: "/config/project-a/TRACKER.yaml",
            env_path: "/config/project-a/env",
            runtime: %{codex_total_tokens: 1234, primary_rate_limit_remaining: 42},
            strategy: "idle_restart"
@@ -44,6 +45,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            workspace_root: "/runtime/project-b/workspaces",
            logs_root: "/runtime/project-b/logs",
            config_path: "/config/project-b/WORKFLOW.md",
+           tracker_config_path: "/config/project-b/TRACKER.yaml",
            env_path: "/config/project-b/env",
            runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
            strategy: "manual_restart"
