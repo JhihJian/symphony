@@ -42,7 +42,10 @@ provide variables and workflow policy, not tool implementation details. In workf
 runner advances stages inside one workspace and app-server session from structured outcomes, writing
 provider-visible stages for observability instead of rereading provider state between stages.
 Scheduler dispatch is also stage-aware: new work is discovered only from `workflow.start_stage`, and
-dispatch is revalidated against the provider-visible stage before a worker is spawned. The stage
+dispatch is revalidated against the provider-visible stage before a worker is spawned. Running
+worker recovery is scoped by issue id instead of the start-stage scan: an abnormal or stalled
+middle-stage run can be retried at its current provider-visible workflow stage, while unreadable or
+conflicting recovery state is exposed as blocked instead of silently releasing the claim. The stage
 contract is implemented for Memory, Linear workflow states, GitHub Project v2 Status, and GitLab
 scoped labels. GitHub issues-only mode fails fast for multi-stage provider-visible workflow state.
 Legacy `WORKFLOW.md` tracker front matter is rejected at runtime; migrate to the split

@@ -2460,13 +2460,14 @@ on_worker_exit(issue_id, reason, state):
 
   if reason == normal:
     state.completed.add(issue_id)  # bookkeeping only
-    state = schedule_retry(state, issue_id, 1, {
-      identifier: running_entry.identifier,
-      delay_type: continuation
-    })
+    state.claimed.remove(issue_id)
   else:
     state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+      retry_kind: "running",
       identifier: running_entry.identifier,
+      current_stage: running_entry.current_stage,
+      workspace_path: running_entry.workspace_path,
+      session_id: running_entry.session_id,
       error: format("worker exited: %reason")
     })
 
@@ -2489,12 +2490,32 @@ on_retry_timer(issue_id, state):
 
   issue = refreshed[0]
   if issue is null:
-    state.claimed.remove(issue_id)
+    if retry_entry.retry_kind == "running":
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "issue not found")
+    else:
+      state.claimed.remove(issue_id)
     return state
+
+  if retry_entry.retry_kind == "running":
+    provider_stage = tracker.read_issue_stage(issue)
+    if provider_stage in workflow.terminal_stages:
+      remove_workspace(issue.identifier, retry_entry.worker_host)
+      state.claimed.remove(issue_id)
+      return state
+
+    if provider_stage is unreadable or issue is no longer routable or has unresolved blockers:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "running retry recovery blocked")
+      return state
+
+    if retry_entry.current_stage exists and provider_stage != retry_entry.current_stage:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "workflow stage conflict")
+      return state
 
   if available_slots(state) == 0:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
+      retry_kind: retry_entry.retry_kind,
       identifier: issue.identifier,
+      current_stage: provider_stage or retry_entry.current_stage,
       error: "no available orchestrator slots"
     })
 
@@ -2588,8 +2609,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Workflow-stage normal worker exit releases the claim without scheduling continuation retry
 - Legacy normal worker exit schedules a short continuation retry (attempt 1)
 - Abnormal worker exit increments retries with 10s-based exponential backoff
+- Workflow-stage abnormal/stalled running retries recover the same issue by id at a non-terminal
+  middle stage without applying the new-dispatch start-stage filter
+- Workflow-stage running retries release terminal provider stages and block unreadable, conflicting,
+  unroutable, or dependency-blocked recovery state instead of orphaning the claim
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
-- Retry queue entries include attempt, due time, identifier, and error
+- Retry queue entries include attempt, due time, retry kind, identifier, current stage, and error
 - Stall detection kills stalled sessions and schedules retry
 - Slot exhaustion requeues retries with explicit error reason
 - If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate
