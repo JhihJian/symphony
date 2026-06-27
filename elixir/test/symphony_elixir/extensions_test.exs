@@ -667,6 +667,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                    "provider_state" => "Human Review"
                  },
                  "error" => "codex turn requires operator input",
+                 "recovery_artifact" => %{
+                   "available?" => true,
+                   "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+                 },
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
@@ -696,6 +700,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
              },
+             "recovery" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
@@ -729,6 +734,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{
              "status" => "blocked",
              "last_error" => "codex turn requires operator input",
+             "recovery" => %{
+               "available?" => true,
+               "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+             },
              "blocked" => %{
                "session_id" => "thread-blocked",
                "state" => "In Progress",
@@ -739,6 +748,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "observed_at" => _observed_at,
                  "provider_stage" => "review",
                  "provider_state" => "Human Review"
+               },
+               "recovery_artifact" => %{
+                 "available?" => true,
+                 "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
                },
                "error" => "codex turn requires operator input"
              }
@@ -1223,6 +1236,10 @@ defmodule SymphonyElixir.ExtensionsTest do
             observed_at: DateTime.utc_now()
           },
           error: "codex turn requires operator input",
+          recovery_artifact: %{
+            available?: true,
+            artifact_dir: "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+          },
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",

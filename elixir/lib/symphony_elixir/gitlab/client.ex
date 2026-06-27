@@ -409,10 +409,11 @@ defmodule SymphonyElixir.GitLab.Client do
 
   defp state_event_for(state_name, _tracker) do
     cond do
-      provider_state?(state_name, StageState.terminal_provider_states()) ->
+      StageState.completion_provider_state?(state_name) ->
         {:ok, "close"}
 
-      provider_state?(state_name, StageState.non_terminal_provider_states()) ->
+      provider_state?(state_name, StageState.non_terminal_provider_states()) or
+          StageState.workflow_provider_state?(state_name) ->
         {:ok, "reopen"}
 
       true ->

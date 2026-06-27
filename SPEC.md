@@ -1136,7 +1136,12 @@ claim state.
 4. `RetryQueued`
    - Worker is not running, but a retry timer exists in `retry_attempts`.
 
-5. `Released`
+5. `Blocked`
+   - Claim retained because the issue cannot be safely completed or retried automatically.
+   - Entries SHOULD include issue id, stage, blocked reason, session id, workspace path, worker host,
+     and recovery artifact path when available.
+
+6. `Released`
    - Claim removed because issue is terminal, non-active, missing, or retry path completed without
      re-dispatch.
 
@@ -1152,8 +1157,12 @@ Important nuance:
 - Workflow-stage progression MUST NOT use provider issue state refresh as the normal decision point
   between in-process stages. Provider-visible stage writes are external observability/recovery
   records.
-- Once the worker exits normally, the orchestrator MUST NOT schedule a continuation retry; the runner
-  has already completed the in-process stage loop.
+- Once the worker exits normally at a completion terminal stage, the orchestrator MUST NOT schedule a
+  continuation retry; the runner has already completed the in-process stage loop.
+- A worker exit at a non-completion terminal stage, including `blocked`, `protocol_blocked`,
+  `rework`, or equivalent diagnostic stages, MUST NOT be interpreted as delivered work. The issue
+  MUST remain open or provider-visible as blocked/rework/protocol-blocked, MUST NOT be counted as
+  completed, and MUST NOT lose its only recoverable workspace evidence.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -1298,8 +1307,9 @@ Retry handling behavior:
 
 Note:
 
-- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation
-  (including terminal transitions for currently running issues).
+- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation only
+  for completion terminal stages. Non-completion terminal stages keep the claim blocked and preserve
+  workspace recovery evidence.
 - Retries can only re-dispatch issues that are back at `workflow.start_stage`; they MUST NOT advance
   middle stages through a provider-wide scan.
 
@@ -1319,7 +1329,10 @@ Part B: Tracker state refresh
 
 - Fetch current issue states for all running issue IDs.
 - For each running issue:
-  - If provider state maps to a terminal workflow stage: terminate worker and clean workspace.
+  - If provider state maps to a completion terminal workflow stage: terminate worker and clean
+    workspace.
+  - If provider state maps to a blocked/protocol-blocked/rework terminal workflow stage: terminate
+    worker, keep the claim in blocked state, and preserve recovery evidence.
   - If provider state disagrees with the runner's local current stage: keep the worker running,
     update the in-memory issue snapshot, log a stage conflict, and expose
     `stage_conflict` through observability.
@@ -1328,7 +1341,7 @@ Part B: Tracker state refresh
 ### 8.6 Startup Terminal Workspace Cleanup
 
 Startup no longer performs a provider-wide terminal-state cleanup scan. Terminal workspace cleanup is
-handled by active-run reconciliation and normal terminal stage completion.
+handled by active-run reconciliation and normal completion terminal stage completion.
 4. In workflow-stage mode, provider-wide terminal cleanup is not scanned at startup. Restart
    recovery is bounded by provider-visible stage plus workspace metadata; a fresh dispatch is only
    possible for issues visible in `workflow.start_stage`, while running in-memory stage position is
@@ -1351,7 +1364,10 @@ Per-issue workspace path:
 Workspace persistence:
 
 - Workspaces are reused across runs for the same issue.
-- Successful runs do not auto-delete workspaces.
+- Completion terminal runs may delete workspaces according to the configured cleanup path.
+- Blocked terminal runs MUST retain the workspace or write enough recovery artifact data before any
+  cleanup. Local recovery artifacts SHOULD include `git status --short --branch`, `git diff --stat`,
+  `git diff --name-status`, an untracked-file list, patch data, session id, and blocked reason.
 
 ### 9.2 Workspace Creation and Reuse
 
@@ -1707,6 +1723,9 @@ GitHub-specific requirements for `tracker.kind == "github"`:
 - GitHub Project v2 writes MUST fail clearly when the configured issue is not in the project, the
   configured Status field is missing, or the requested Status option is missing.
 - GitHub native `CLOSED` is authoritative terminal state even if the Project Status field is stale.
+- GitHub Project v2 Status writes to non-completion terminal stages such as `Blocked` or
+  `Protocol Blocked` MUST NOT close the native GitHub issue. Native issue close is reserved for
+  completion terminal stages or the linked PR merge path.
 - When `tracker.project_number` is omitted, GitHub issues-only mode MUST NOT claim support for
   multi-stage provider-visible workflow state. Multi-stage workflow-stage config that needs
   provider-visible state MUST fail fast and point users to Project v2 Status or another tracker with
@@ -1721,6 +1740,8 @@ GitLab-specific requirements for `tracker.kind == "gitlab"`:
 - The default endpoint is `https://gitlab.com/api/v4`.
 - GitLab native `opened` maps to the first configured active state and `closed` maps to the first
   configured terminal state.
+- GitLab native state writes SHOULD close issues only for completion terminal stages; non-completion
+  terminal workflow stages remain provider-visible without being treated as delivered work.
 - GitLab scoped-label workflow state maps stage ids to labels such as
   `status::context-check`. Reads reject unmapped/conflicting provider states through the adapter
   stage contract; writes add the target scoped label and remove other labels in the configured
@@ -2067,6 +2088,10 @@ Minimum endpoints:
           "issue_identifier": "MT-651",
           "state": "In Progress",
           "error": "codex MCP elicitation requires operator input",
+          "recovery_artifact": {
+            "artifact_dir": "/workspaces/MT-651/.symphony/blocked/2026-02-24T20-12-00Z-thread-2-turn-3",
+            "available?": true
+          },
           "session_id": "thread-2-turn-3",
           "blocked_at": "2026-02-24T20:12:00Z",
           "last_event": "turn_input_required",
@@ -2430,8 +2455,10 @@ function reconcile_running_issues(state):
     return state
 
   for issue in refreshed:
-    if workflow_stage_mode and tracker.read_issue_stage(issue) in workflow.terminal_stages:
+    if workflow_stage_mode and tracker.read_issue_stage(issue) is completion_terminal_stage:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
+    else if workflow_stage_mode and tracker.read_issue_stage(issue) in workflow.terminal_stages:
+      state = stop_worker_and_block_issue(state, issue.id, preserve_recovery_artifact=true)
     else if workflow_stage_mode and tracker.read_issue_stage(issue) != state.running[issue.id].current_stage:
       state.running[issue.id].issue = issue
       state.running[issue.id].stage_conflict = {
@@ -2558,8 +2585,22 @@ on_worker_exit(issue_id, reason, state):
   state = add_runtime_seconds_to_totals(state, running_entry)
 
   if reason == normal:
-    state.completed.add(issue_id)  # bookkeeping only
-    state.claimed.remove(issue_id)
+    if running_entry.current_stage is completion_terminal_stage:
+      state.completed.add(issue_id)  # bookkeeping only
+      remove_workspace(running_entry.identifier, running_entry.worker_host)
+      state.claimed.remove(issue_id)
+    else if running_entry.current_stage in workflow.terminal_stages:
+      state.blocked[issue_id] = blocked_context(running_entry, "terminal blocked stage")
+      preserve_recovery_artifact(running_entry.workspace_path, running_entry.session_id)
+    else:
+      state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+        retry_kind: "running",
+        identifier: running_entry.identifier,
+        current_stage: running_entry.current_stage,
+        workspace_path: running_entry.workspace_path,
+        session_id: running_entry.session_id,
+        error: "worker exited before terminal stage"
+      })
   else:
     state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
       retry_kind: "running",
@@ -2597,9 +2638,13 @@ on_retry_timer(issue_id, state):
 
   if retry_entry.retry_kind == "running":
     provider_stage = tracker.read_issue_stage(issue)
-    if provider_stage in workflow.terminal_stages:
+    if provider_stage is completion_terminal_stage:
       remove_workspace(issue.identifier, retry_entry.worker_host)
       state.claimed.remove(issue_id)
+      return state
+    if provider_stage in workflow.terminal_stages:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "terminal blocked stage")
+      preserve_recovery_artifact(retry_entry.workspace_path, retry_entry.session_id)
       return state
 
     if provider_stage is unreadable or issue is no longer routable or has unresolved blockers:

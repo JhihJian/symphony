@@ -933,7 +933,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "workflow-stage canceled provider stage stops running agent through terminal mapping" do
+  test "workflow-stage canceled provider stage blocks running agent through terminal mapping" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -977,6 +977,7 @@ defmodule SymphonyElixir.CoreTest do
             identifier: issue_identifier,
             issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
             current_stage: "working",
+            workspace_path: workspace,
             started_at: DateTime.utc_now()
           }
         },
@@ -997,9 +998,16 @@ defmodule SymphonyElixir.CoreTest do
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
       refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
-      refute File.exists?(workspace)
+      assert File.exists?(workspace)
+
+      assert %{
+               current_stage: "protocol_blocked",
+               issue: %Issue{state: "Canceled"},
+               error: "provider workflow stage protocol_blocked is blocked terminal",
+               recovery_artifact: %{available?: true}
+             } = updated_state.blocked[issue_id]
     after
       File.rm_rf(test_root)
     end
@@ -1549,7 +1557,7 @@ defmodule SymphonyElixir.CoreTest do
            } = updated_state.blocked[issue_id]
   end
 
-  test "normal worker exit releases claim without active-state continuation retry" do
+  test "normal worker exit on completion stage releases claim without active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
@@ -1572,7 +1580,7 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-558",
       issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
-      current_stage: "working",
+      current_stage: "done",
       started_at: DateTime.utc_now()
     }
 
@@ -1598,7 +1606,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.retry_attempts, issue_id)
   end
 
-  test "workflow-stage normal exit completes without continuation retry" do
+  test "workflow-stage normal exit on completion stage completes without continuation retry" do
     workflow_path = Workflow.workflow_file_path()
     tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
@@ -1625,7 +1633,7 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-STAGE-560",
       issue: %Issue{id: issue_id, identifier: "MT-STAGE-560", state: "Ready"},
-      current_stage: "ready",
+      current_stage: "done",
       started_at: DateTime.utc_now()
     }
 
@@ -2778,34 +2786,37 @@ defmodule SymphonyElixir.CoreTest do
       #!/bin/sh
       trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
-      count=0
+      turn_count=0
 
       while IFS= read -r line; do
-        count=$((count + 1))
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
+
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
             ;;
-          3)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-route"}}}'
             ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-1"}}}'
-            printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route","threadId":"thread-route","turnId":"turn-route-1","arguments":{"outcome":"accepted","summary":"Ready stage accepted."}}}'
+          *'"method":"turn/start"'*)
+            turn_count=$((turn_count + 1))
+
+            if [ "$turn_count" -eq 1 ]; then
+              printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-1"}}}'
+              printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route","threadId":"thread-route","turnId":"turn-route-1","arguments":{"outcome":"accepted","summary":"Ready stage accepted."}}}'
+            else
+              printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-2"}}}'
+              printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route-2","threadId":"thread-route","turnId":"turn-route-2","arguments":{"outcome":"completed","summary":"Working stage completed."}}}'
+            fi
             ;;
-          5)
+          *'"result"'*)
             printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          6)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-2"}}}'
-            printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route-2","threadId":"thread-route","turnId":"turn-route-2","arguments":{"outcome":"completed","summary":"Working stage completed."}}}'
-            ;;
-          7)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
+
+            if [ "$turn_count" -ge 2 ]; then
+              exit 0
+            fi
             ;;
         esac
       done
@@ -2996,32 +3007,28 @@ defmodule SymphonyElixir.CoreTest do
       #!/bin/sh
       trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
-      count=0
+      turn_count=0
 
       while IFS= read -r line; do
-        count=$((count + 1))
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
+
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
             ;;
-          3)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-missing"}}}'
             ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-1"}}}'
+          *'"method":"turn/start"'*)
+            turn_count=$((turn_count + 1))
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-'"$turn_count"'"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          6)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-3"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
+
+            if [ "$turn_count" -ge 3 ]; then
+              exit 0
+            fi
             ;;
         esac
       done

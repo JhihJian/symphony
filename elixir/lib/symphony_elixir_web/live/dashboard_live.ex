@@ -239,6 +239,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>状态</th>
                     <th>会话</th>
+                    <th>恢复证据</th>
                     <th>阻塞时间</th>
                     <th>最近更新</th>
                     <th>错误</th>
@@ -279,6 +280,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <% else %>
                         <span class="muted">暂无</span>
                       <% end %>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class="mono event-text" title={recovery_artifact_path(entry.recovery_artifact)}>
+                          <%= recovery_artifact_path(entry.recovery_artifact) || entry.workspace_path || "暂无" %>
+                        </span>
+                        <span :if={entry.recovery_artifact && entry.recovery_artifact.available? == false} class="muted event-meta">
+                          <%= entry.recovery_artifact.error || "workspace retained" %>
+                        </span>
+                      </div>
                     </td>
                     <td class="mono"><%= entry.blocked_at || "暂无" %></td>
                     <td>
@@ -456,6 +467,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp stage_conflict_text(conflict), do: inspect(conflict, pretty: true)
+
+  defp recovery_artifact_path(%{artifact_dir: artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp recovery_artifact_path(%{"artifact_dir" => artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp recovery_artifact_path(_artifact), do: nil
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

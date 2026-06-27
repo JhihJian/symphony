@@ -792,15 +792,20 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp sync_issue_open_closed(issue_number, state_name, rest_fun, opts \\ []) do
     normalized_state_name = normalize_state(state_name)
-    terminal_provider_states = MapSet.new(Enum.map(StageState.terminal_provider_states(), &normalize_state/1))
     open_states = MapSet.new(Enum.map(StageState.non_terminal_provider_states(), &normalize_state/1))
 
     cond do
-      MapSet.member?(terminal_provider_states, normalized_state_name) ->
+      Config.settings!().tracker.project_number == nil and normalized_state_name == "closed" ->
+        patch_issue_state(issue_number, "closed", close_state_reason(state_name), rest_fun)
+
+      StageState.completion_provider_state?(state_name) ->
         patch_issue_state(issue_number, "closed", close_state_reason(state_name), rest_fun)
 
       MapSet.member?(open_states, normalized_state_name) ->
         patch_issue_state(issue_number, "open", "reopened", rest_fun)
+
+      StageState.workflow_provider_state?(state_name) ->
+        :ok
 
       Keyword.get(opts, :require_known_state, false) ->
         {:error, :github_project_number_required_for_status_update}

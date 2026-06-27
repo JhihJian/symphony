@@ -209,7 +209,19 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert StageState.terminal_provider_state?("Done")
     refute StageState.terminal_provider_state?("External")
     refute StageState.terminal_provider_state?(123)
+    assert StageState.completion_stage?("done")
+    refute StageState.completion_stage?("blocked")
+    refute StageState.completion_stage?("protocol_blocked")
+    refute StageState.completion_stage?(123)
+    assert StageState.completion_provider_state?("Done")
+    refute StageState.completion_provider_state?("Blocked")
+    refute StageState.completion_provider_state?("External")
+    refute StageState.completion_provider_state?(123)
+    assert StageState.workflow_provider_state?("Blocked")
+    refute StageState.workflow_provider_state?("External")
+    refute StageState.workflow_provider_state?(123)
     assert StageState.native_terminal?(%Issue{state: "Done"})
+    assert {:error, {:invalid_issue, 123}} = StageState.native_terminal?(123)
     assert {:error, {:unmapped_provider_state, "External"}} = StageState.native_terminal?(%Issue{state: "External"})
     assert %{stage_contract: :unsupported} = Tracker.unsupported_stage_capabilities(:custom)
     assert {:error, {:stage_contract_not_implemented, :custom}} = Tracker.unsupported_stage_contract(:custom)
@@ -226,6 +238,19 @@ defmodule SymphonyElixir.TrackerContractTest do
     )
 
     assert StageState.terminal_stage?("ready")
+    refute StageState.completion_stage?("ready")
+
+    write_stage_workflow_and_tracker!(
+      tracker:
+        memory_tracker_config(%{
+          "done" => %{"state" => "Done", "terminal" => false},
+          "blocked" => %{"state" => "Blocked", "terminal" => true}
+        })
+    )
+
+    assert StageState.completion_stage?("done")
+    refute StageState.completion_stage?("blocked")
+    refute StageState.completion_stage?("cancelled")
 
     legacy_workflow_path = Workflow.workflow_file_path()
 
