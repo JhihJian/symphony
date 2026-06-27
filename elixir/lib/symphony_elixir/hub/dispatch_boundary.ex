@@ -61,10 +61,12 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     with {:ok, issue_ref} <- normalize_issue_ref(candidate),
          {:ok, project_id} <- required_string(candidate, :project_id),
          :ok <- validate_issue_project(project_id, issue_ref),
+         :ok <- validate_issue_identity(issue_ref),
          {:ok, workspace_path} <- required_workspace_path(candidate),
          {:ok, trigger_source} <-
            normalize_trigger_source(value(candidate, :trigger_source) || value(candidate, :source)) do
       ledger = RuntimeLedger.to_snapshot(ledger)
+      issue_ref = ensure_issue_ref_project(issue_ref, project_id)
       issue_key = RuntimeLedger.issue_key(issue_ref)
       attempt_number = next_attempt_number(ledger, project_id, issue_key, value(candidate, :attempt_number))
 
@@ -113,7 +115,7 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
           runtime_identity: sanitize_value(value(candidate, :runtime_identity) || %{}),
           runner: optional_string(candidate, :runner),
           start_command_summary: sanitize_value(value(candidate, :start_command_summary) || %{}),
-          preflight: preflight(ledger, project_id, issue_key, workspace_path, candidate)
+          preflight: preflight(ledger, project_id, issue_key, workspace_path, candidate, opts)
         }
 
       {:ok, context}
@@ -139,24 +141,27 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
   @spec acknowledge_start(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def acknowledge_start(ledger, ack, opts \\ []) when is_map(ledger) and is_map(ack) and is_list(opts) do
     now = normalize_time(Keyword.get(opts, :now)) || normalize_time(DateTime.utc_now())
+    project_id = required_string!(ack, :project_id)
+    issue_key = required_string!(ack, :issue_key)
+    attempt_id = required_string!(ack, :attempt_id)
+    start_intent_id = required_string!(ack, :start_intent_id)
     session_id = optional_string(ack, :session_id)
+    ledger = RuntimeLedger.to_snapshot(ledger)
 
-    ledger =
-      ledger
-      |> RuntimeLedger.to_snapshot()
-      |> update_issue(required_string!(ack, :project_id), required_string!(ack, :issue_key), fn issue ->
-        issue
-        |> Map.put(:claim_status, :running)
-        |> Map.put(:terminal_reason, nil)
-      end)
-      |> update_attempt(
-        required_string!(ack, :project_id),
-        required_string!(ack, :issue_key),
-        required_string!(ack, :attempt_id),
-        fn attempt ->
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id) do
+      ledger =
+        ledger
+        |> update_issue(project_id, issue_key, fn issue ->
+          issue
+          |> Map.put(:claim_status, :running)
+          |> Map.put(:terminal_reason, nil)
+        end)
+        |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+          existing_context = attempt.run_context || %{}
+
           run_context =
-            attempt.run_context
-            |> Map.put(:session_id, session_id || attempt.run_context.session_id)
+            existing_context
+            |> Map.put(:session_id, session_id || Map.get(existing_context, :session_id))
             |> Map.put(:started_at, normalize_time(value(ack, :started_at)) || now)
             |> Map.put(:last_activity_at, normalize_time(value(ack, :last_activity_at)) || now)
             |> Map.put(:status, "running")
@@ -165,19 +170,23 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
           |> Map.put(:status, :running)
           |> Map.put(:started_at, attempt.started_at || now)
           |> Map.put(:worker_host, optional_string(ack, :worker_host) || attempt.worker_host)
-          |> Map.put(:agent_session, %{session_id: session_id, last_activity_at: normalize_time(value(ack, :last_activity_at)) || now, usage: sanitize_value(value(ack, :usage) || %{})})
+          |> Map.put(:agent_session, %{
+            session_id: session_id,
+            last_activity_at: normalize_time(value(ack, :last_activity_at)) || now,
+            usage: sanitize_value(value(ack, :usage) || %{})
+          })
           |> Map.put(:run_context, run_context)
-        end
-      )
-      |> update_start_intent(required_string!(ack, :project_id), required_string!(ack, :start_intent_id), fn intent ->
-        intent
-        |> Map.put(:status, :acknowledged)
-        |> Map.put(:acked_at, normalize_time(value(ack, :acked_at)) || now)
-        |> Map.put(:worker_host, optional_string(ack, :worker_host) || intent.worker_host)
-        |> Map.put(:manual_attention, false)
-      end)
+        end)
+        |> update_start_intent(project_id, start_intent_id, fn intent ->
+          intent
+          |> Map.put(:status, :acknowledged)
+          |> Map.put(:acked_at, normalize_time(value(ack, :acked_at)) || now)
+          |> Map.put(:worker_host, optional_string(ack, :worker_host) || intent.worker_host)
+          |> Map.put(:manual_attention, false)
+        end)
 
-    {:ok, RuntimeLedger.to_snapshot(ledger)}
+      {:ok, RuntimeLedger.to_snapshot(ledger)}
+    end
   end
 
   @spec record_start_failure(map(), map(), atom(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -188,39 +197,43 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     attempt_id = required_string!(failure, :attempt_id)
     start_intent_id = required_string!(failure, :start_intent_id)
     error_summary = optional_string(failure, :error_summary) || Atom.to_string(failure_status)
+    ledger = RuntimeLedger.to_snapshot(ledger)
 
-    ledger =
-      ledger
-      |> RuntimeLedger.to_snapshot()
-      |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
-        run_context =
-          attempt.run_context
-          |> Map.put(:exit_summary, sanitize_value(%{status: Atom.to_string(failure_status), error_summary: error_summary}))
-          |> Map.put(:status, Atom.to_string(failure_status))
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id) do
+      ledger =
+        ledger
+        |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+          existing_context = attempt.run_context || %{}
 
-        attempt
-        |> Map.put(:status, failure_attempt_status(failure_status))
-        |> Map.put(:ended_at, failure_attempt_ended_at(failure_status, now))
-        |> Map.put(:terminal_reason, error_summary)
-        |> Map.put(:run_context, run_context)
-      end)
-      |> update_start_intent(project_id, start_intent_id, fn intent ->
-        intent
-        |> Map.put(:status, failure_start_intent_status(failure_status))
-        |> Map.put(:finished_at, if(failure_status == :manual_attention, do: nil, else: now))
-        |> Map.put(:error_summary, error_summary)
-        |> Map.put(:manual_attention, failure_status == :manual_attention)
-      end)
-      |> update_issue(project_id, issue_key, fn issue ->
-        issue
-        |> Map.put(:claim_status, failure_status)
-        |> maybe_put_retry_backoff(failure_status, attempt_id, failure, opts)
-        |> maybe_put_released_at(failure_status, now)
-        |> Map.put(:terminal_reason, error_summary)
-      end)
-      |> maybe_release_workspace_on_failure(project_id, issue_key, attempt_id, failure_status, now)
+          run_context =
+            existing_context
+            |> Map.put(:exit_summary, sanitize_value(%{status: Atom.to_string(failure_status), error_summary: error_summary}))
+            |> Map.put(:status, Atom.to_string(failure_status))
 
-    {:ok, RuntimeLedger.to_snapshot(ledger)}
+          attempt
+          |> Map.put(:status, failure_attempt_status(failure_status))
+          |> Map.put(:ended_at, failure_attempt_ended_at(failure_status, now))
+          |> Map.put(:terminal_reason, error_summary)
+          |> Map.put(:run_context, run_context)
+        end)
+        |> update_start_intent(project_id, start_intent_id, fn intent ->
+          intent
+          |> Map.put(:status, failure_start_intent_status(failure_status))
+          |> Map.put(:finished_at, if(failure_status == :manual_attention, do: nil, else: now))
+          |> Map.put(:error_summary, error_summary)
+          |> Map.put(:manual_attention, failure_status == :manual_attention)
+        end)
+        |> update_issue(project_id, issue_key, fn issue ->
+          issue
+          |> Map.put(:claim_status, failure_status)
+          |> maybe_put_retry_backoff(failure_status, attempt_id, failure, opts)
+          |> maybe_put_released_at(failure_status, now)
+          |> Map.put(:terminal_reason, error_summary)
+        end)
+        |> maybe_release_workspace_on_failure(project_id, issue_key, attempt_id, failure_status, now)
+
+      {:ok, RuntimeLedger.to_snapshot(ledger)}
+    end
   end
 
   @spec release_attempt(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -230,41 +243,45 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     issue_key = required_string!(release, :issue_key)
     attempt_id = required_string!(release, :attempt_id)
     reason = optional_string(release, :reason) || "released"
+    ledger = RuntimeLedger.to_snapshot(ledger)
 
-    ledger =
-      ledger
-      |> RuntimeLedger.to_snapshot()
-      |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
-        run_context =
-          attempt.run_context
-          |> Map.put(:exit_summary, sanitize_value(%{status: "released", reason: reason}))
-          |> Map.put(:status, "released")
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id) do
+      ledger =
+        ledger
+        |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+          existing_context = attempt.run_context || %{}
 
-        attempt
-        |> Map.put(:status, :succeeded)
-        |> Map.put(:ended_at, now)
-        |> Map.put(:terminal_reason, reason)
-        |> Map.put(:run_context, run_context)
-      end)
-      |> update_issue(project_id, issue_key, fn issue ->
-        issue
-        |> Map.put(:claim_status, :released)
-        |> Map.put(:released_at, now)
-        |> Map.put(:terminal_reason, reason)
-      end)
-      |> update_workspace_leases(project_id, issue_key, attempt_id, fn lease ->
-        lease
-        |> Map.put(:status, :released)
-        |> Map.put(:released_at, now)
-      end)
-      |> update_start_intents(project_id, issue_key, attempt_id, fn intent ->
-        intent
-        |> Map.put(:status, :acknowledged)
-        |> Map.put(:finished_at, intent.finished_at || now)
-        |> Map.put(:manual_attention, false)
-      end)
+          run_context =
+            existing_context
+            |> Map.put(:exit_summary, sanitize_value(%{status: "released", reason: reason}))
+            |> Map.put(:status, "released")
 
-    {:ok, RuntimeLedger.to_snapshot(ledger)}
+          attempt
+          |> Map.put(:status, :succeeded)
+          |> Map.put(:ended_at, now)
+          |> Map.put(:terminal_reason, reason)
+          |> Map.put(:run_context, run_context)
+        end)
+        |> update_issue(project_id, issue_key, fn issue ->
+          issue
+          |> Map.put(:claim_status, :released)
+          |> Map.put(:released_at, now)
+          |> Map.put(:terminal_reason, reason)
+        end)
+        |> update_workspace_leases(project_id, issue_key, attempt_id, fn lease ->
+          lease
+          |> Map.put(:status, :released)
+          |> Map.put(:released_at, now)
+        end)
+        |> update_start_intents(project_id, issue_key, attempt_id, fn intent ->
+          intent
+          |> Map.put(:status, :acknowledged)
+          |> Map.put(:finished_at, intent.finished_at || now)
+          |> Map.put(:manual_attention, false)
+        end)
+
+      {:ok, RuntimeLedger.to_snapshot(ledger)}
+    end
   end
 
   @spec run_context_snapshot(dispatch_context(), keyword()) :: map()
@@ -415,7 +432,7 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     }
   end
 
-  defp preflight(ledger, project_id, issue_key, workspace_path, candidate) do
+  defp preflight(ledger, project_id, issue_key, workspace_path, candidate, opts) do
     project = Enum.find(ledger.projects, &(&1.project_id == project_id))
     issue = project && Enum.find(project.issues, &(&1.issue_key == issue_key))
     active_attempt = issue && Enum.find(issue.attempts, &active_attempt?/1)
@@ -423,11 +440,10 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     active_start_intent =
       project && Enum.find(project.start_intents, &(active_start_intent?(&1) and &1.issue_key == issue_key))
 
-    active_workspace =
-      project &&
-        Enum.find(project.workspace_leases, &(active_lease?(&1) and &1.workspace_path == workspace_path))
+    active_workspace = active_workspace_lease(ledger, workspace_path)
 
     retry = issue && issue.retry_backoff
+    retry_active? = retry_backoff_active?(retry, Keyword.get(opts, :now))
     blockers = explicit_blockers(candidate)
 
     cond do
@@ -464,7 +480,7 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
           blockers
         )
 
-      retry ->
+      retry_active? ->
         preflight_result(:retry_backoff, :retry_backoff_active, "Issue is waiting for retry/backoff before dispatch", nil, nil, retry.due_at, blockers)
 
       blockers != [] ->
@@ -473,6 +489,26 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
 
       true ->
         preflight_result(:allowed, nil, nil, nil, nil, nil, [])
+    end
+  end
+
+  defp active_workspace_lease(ledger, workspace_path) do
+    Enum.find_value(ledger.projects, fn project ->
+      project.workspace_leases
+      |> Enum.find(&(active_lease?(&1) and &1.workspace_path == workspace_path))
+      |> case do
+        nil -> nil
+        lease -> Map.put(lease, :project_id, project.project_id)
+      end
+    end)
+  end
+
+  defp retry_backoff_active?(nil, _now), do: false
+
+  defp retry_backoff_active?(retry, now) do
+    case {parse_datetime(retry.due_at), parse_datetime(now) || DateTime.utc_now()} do
+      {nil, _now} -> true
+      {due_at, now} -> DateTime.compare(due_at, now) == :gt
     end
   end
 
@@ -577,6 +613,27 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     end)
   end
 
+  defp require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id \\ nil) do
+    project = Enum.find(ledger.projects, &(&1.project_id == project_id))
+    issue = project && Enum.find(project.issues, &(&1.issue_key == issue_key))
+    attempt = issue && Enum.find(issue.attempts, &(&1.attempt_id == attempt_id))
+
+    start_intent =
+      if project && start_intent_id do
+        Enum.find(project.start_intents, fn intent ->
+          intent.intent_id == start_intent_id and intent.issue_key == issue_key and intent.attempt_id == attempt_id
+        end)
+      end
+
+    cond do
+      is_nil(project) -> {:error, {:unknown_project, project_id}}
+      is_nil(issue) -> {:error, {:unknown_issue, issue_key}}
+      is_nil(attempt) -> {:error, {:unknown_attempt, attempt_id}}
+      start_intent_id && is_nil(start_intent) -> {:error, {:unknown_start_intent, start_intent_id}}
+      true -> :ok
+    end
+  end
+
   defp maybe_put_retry_backoff(issue, :retry_queued, attempt_id, failure, opts) do
     due_at = normalize_time(value(failure, :due_at) || Keyword.get(opts, :due_at))
 
@@ -642,6 +699,30 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
   end
 
   defp validate_issue_project(_project_id, _issue_ref), do: {:error, :issue_project_mismatch}
+
+  defp ensure_issue_ref_project(%IssueRef{} = issue_ref, _project_id), do: issue_ref
+  defp ensure_issue_ref_project(%{} = issue_ref, project_id), do: Map.put(issue_ref, :project_id, project_id)
+
+  defp validate_issue_identity(issue_ref) do
+    safe_ref = safe_issue_ref(issue_ref)
+
+    cond do
+      is_nil(optional_string(safe_ref, :provider_scope_key)) ->
+        {:error, :issue_ref_missing_provider_scope}
+
+      is_nil(provider_issue_identity(safe_ref)) ->
+        {:error, :issue_ref_missing_provider_issue_identity}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp provider_issue_identity(issue_ref) do
+    optional_string(issue_ref, :provider_issue_id) ||
+      optional_string(issue_ref, :provider_local_id) ||
+      optional_string(issue_ref, :identifier)
+  end
 
   defp required_workspace_path(candidate) do
     case optional_string(candidate, :workspace_path) do
@@ -752,6 +833,19 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
 
   defp normalize_time(_value), do: nil
 
+  defp parse_datetime(nil), do: nil
+
+  defp parse_datetime(%DateTime{} = value), do: value
+
+  defp parse_datetime(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_datetime(_value), do: nil
+
   defp value(map, key) when is_map(map) and is_atom(key) do
     case Map.fetch(map, key) do
       {:ok, nil} -> Map.get(map, Atom.to_string(key))
@@ -801,7 +895,8 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
       |> to_string()
       |> String.downcase()
 
-    String.contains?(key, ["api_key", "apikey", "authorization", "token", "secret", "credential", "cookie", "prompt", "transcript", "raw_config"])
+    String.contains?(key, ["api_key", "apikey", "authorization", "secret", "credential", "cookie", "prompt", "transcript", "raw_config"]) or
+      Regex.match?(~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config)$/, key)
   end
 
   defp sensitive_value?(value) when is_binary(value) do

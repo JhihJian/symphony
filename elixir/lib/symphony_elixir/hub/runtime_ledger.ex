@@ -11,7 +11,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   alias SymphonyElixir.Hub.ProjectRegistry
 
   @version 1
-  @issue_statuses [:unclaimed, :claimed, :running, :retry_queued, :blocked, :released, :terminal]
+  @issue_statuses [:unclaimed, :claimed, :running, :retry_queued, :blocked, :manual_attention, :released, :terminal]
   @attempt_statuses [:pending, :running, :succeeded, :failed, :cancelled, :lost]
   @lease_statuses [:active, :released, :lost]
   @start_intent_statuses [:pending, :acknowledged, :failed, :cancelled, :unknown, :manual_attention]
@@ -512,7 +512,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   end
 
   defp validation_diagnostics(ledger) do
-    privacy_diagnostics(ledger) ++
+    project_diagnostics =
       Enum.flat_map(ledger.projects, fn project ->
         validate_project(project) ++
           issue_identity_conflicts(project) ++
@@ -523,6 +523,8 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           retry_backoff_conflicts(project) ++
           writeback_conflicts(project)
       end)
+
+    privacy_diagnostics(ledger) ++ project_diagnostics ++ cross_project_workspace_lease_conflicts(ledger.projects)
   end
 
   defp validate_project(project) do
@@ -640,6 +642,40 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     end)
   end
 
+  defp cross_project_workspace_lease_conflicts(projects) do
+    projects
+    |> Enum.flat_map(fn project ->
+      Enum.map(project.workspace_leases, &Map.put(&1, :project_id, project.project_id))
+    end)
+    |> Enum.filter(&active_lease?/1)
+    |> Enum.group_by(& &1.workspace_path)
+    |> Enum.flat_map(fn
+      {_workspace_path, [_single]} ->
+        []
+
+      {workspace_path, leases} ->
+        project_ids = leases |> Enum.map(& &1.project_id) |> Enum.uniq() |> Enum.sort()
+
+        if length(project_ids) > 1 do
+          message = "Workspace has active leases in multiple projects: #{Enum.join(project_ids, ", ")}"
+
+          Enum.map(leases, fn lease ->
+            diagnostic(
+              :error,
+              :workspace_cross_project_active_lease_conflict,
+              lease.project_id,
+              lease.issue_key,
+              workspace_path,
+              lease.attempt_id,
+              message
+            )
+          end)
+        else
+          []
+        end
+    end)
+  end
+
   defp orphan_workspace_lease_conflicts(project) do
     Enum.flat_map(project.workspace_leases, fn lease ->
       if active_lease?(lease) and not active_attempt_exists?(project, lease.issue_key, lease.attempt_id) do
@@ -662,7 +698,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp active_attempt_missing_workspace_lease_conflicts(project) do
     Enum.flat_map(project.issues, fn issue ->
-      if issue.claim_status in [:claimed, :running] do
+      if issue.claim_status in [:claimed, :running, :manual_attention] do
         issue.attempts
         |> Enum.filter(&active_attempt?/1)
         |> Enum.reject(&active_lease_for(project, issue.issue_key, &1.attempt_id))
@@ -1006,7 +1042,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp filter_diagnostics(diagnostics, project_id), do: Enum.filter(diagnostics, &(&1.project_id == project_id))
 
   defp project_counts(project) do
-    base = %{claimed: 0, running: 0, retry: 0, blocked: 0, released: 0, terminal: 0}
+    base = %{claimed: 0, running: 0, retry: 0, blocked: 0, manual_attention: 0, released: 0, terminal: 0}
 
     Enum.reduce(project.issues, base, fn issue, counts ->
       case issue.claim_status do
@@ -1014,6 +1050,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
         :running -> Map.update!(counts, :running, &(&1 + 1))
         :retry_queued -> Map.update!(counts, :retry, &(&1 + 1))
         :blocked -> Map.update!(counts, :blocked, &(&1 + 1))
+        :manual_attention -> Map.update!(counts, :manual_attention, &(&1 + 1))
         :released -> Map.update!(counts, :released, &(&1 + 1))
         :terminal -> Map.update!(counts, :terminal, &(&1 + 1))
         _status -> counts

@@ -172,8 +172,25 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
     summary = RuntimeLedger.replay(restored)
     projects = Map.new(summary.projects, &{&1.project_id, &1})
 
-    assert projects["alpha"].counts == %{claimed: 0, running: 1, retry: 1, blocked: 1, released: 1, terminal: 0}
-    assert projects["beta"].counts == %{claimed: 1, running: 0, retry: 0, blocked: 0, released: 0, terminal: 0}
+    assert projects["alpha"].counts == %{
+             claimed: 0,
+             running: 1,
+             retry: 1,
+             blocked: 1,
+             manual_attention: 0,
+             released: 1,
+             terminal: 0
+           }
+
+    assert projects["beta"].counts == %{
+             claimed: 1,
+             running: 0,
+             retry: 0,
+             blocked: 0,
+             manual_attention: 0,
+             released: 0,
+             terminal: 0
+           }
 
     alpha_running = Enum.find(projects["alpha"].active_issues, &(&1.issue_key == alpha_key))
     assert alpha_running.stage == "in_progress"
