@@ -240,6 +240,57 @@ Notes:
   `mix workflow.split_tracker_config` to migrate old single-file configs to `WORKFLOW.md` plus
   `TRACKER.yaml` before starting the service.
 
+### Hub mode project registry
+
+The Elixir implementation includes a model-only Hub mode project registry. Put multiple project
+registrations in a `HUB.yaml` file and load it with `SymphonyElixir.Hub.ProjectRegistry.load/1`:
+
+```yaml
+projects:
+  - project_id: symphony
+    name: Symphony
+    workflow_path: /path/to/symphony/WORKFLOW.md
+    tracker_config_path: /path/to/symphony/TRACKER.yaml
+    dispatch_enabled: true
+  - project_id: docs
+    workflow_path: ./docs/WORKFLOW.md
+    paused: true
+```
+
+Fields:
+
+- `project_id` is required, unique within the Hub registry, and limited to safe key characters:
+  letters, numbers, `.`, `_`, and `-`. It cannot contain path separators, `..`, whitespace padding,
+  newlines, or NUL.
+- `name` is optional display text.
+- `workflow_path` is required. Relative paths are resolved relative to `HUB.yaml`.
+- `tracker_config_path` is optional. If omitted, Symphony uses `TRACKER.yaml` next to
+  `workflow_path`.
+- `dispatch_enabled` defaults to `true`; `enabled` is accepted as a compatibility alias.
+- `paused: true` disables new dispatch for that project snapshot.
+
+Each valid project snapshot contains `project_id`, name, dispatch/paused status, workflow and
+tracker paths, workflow summary, tracker kind and provider scope, workspace root, agent concurrency
+limit, polling interval, Dashboard/API port, fingerprint, load time, and load error. Snapshots do
+not include token values, API keys, env secret names, credentials, or raw secret-bearing tracker
+config. A single invalid project is returned as `status: :error` and paused; other valid projects
+still produce snapshots. Duplicate or unsafe `project_id` values reject the registry before
+snapshots are accepted.
+
+The registry also reports cross-project validation results. Shared workspace roots and shared
+provider scopes are warnings. Shared Dashboard/API ports are errors because two live services cannot
+bind the same port.
+
+`SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
+ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
+id or provider-local number/key, identifier, and URL. This is intentionally compatible with the
+current GitHub adapter where normalized issue `id` may still be the repository-local issue number:
+Hub keys include provider scope and never treat a bare GitHub/GitLab number as globally unique.
+
+This is the #74 Hub model baseline only. It does not start a Hub poll loop, provider queue, ledger,
+or dispatcher. The existing `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup
+path remains the legacy single-project runtime.
+
 GitHub Project v2 Status `TRACKER.yaml` example:
 
 ```yaml

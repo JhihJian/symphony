@@ -53,6 +53,13 @@ visualization. It renders the current `WORKFLOW.md` stages and transitions, summ
 `TRACKER.yaml` stage-state coverage without exposing credentials, and overlays available runtime
 stage counts from the local orchestrator snapshot.
 
+The Elixir implementation also includes the first Hub mode model baseline for the #74 direction.
+`HUB.yaml` can register multiple projects, each pointing at its own `WORKFLOW.md` and optional
+`TRACKER.yaml`; the Hub loader builds stable project identities, safe configuration snapshots, and
+provider-neutral issue references. This is not a Hub scheduler yet: without explicit Hub usage,
+the existing single-project startup, polling, workspace, and agent dispatch behavior remains
+unchanged.
+
 ---
 
 ## License

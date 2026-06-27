@@ -2,6 +2,11 @@
 
 本文档说明如何用用户级 systemd template 部署多个 Symphony 项目实例。
 
+当前 systemd template 仍是 legacy 多实例模型：每个 `symphony@<project>.service` 是独立
+进程，读取自己的 `WORKFLOW.md`、`TRACKER.yaml`、workspace、tracker scope 和 Dashboard/API
+端口。Elixir 代码中新增的 Hub mode `HUB.yaml` 项目注册表只提供进程内 Hub 方向的模型加载、
+身份快照和校验能力；它不会让本部署方式变成单进程 Hub 调度，也不会接管现有 poll loop。
+
 ## 快速安装
 
 推荐直接使用远程安装脚本创建或更新项目实例。脚本会先把 Symphony `main` 分支 clone 或更新到 `~/.codex/symphony`，再从这份 clone 安装 systemd 服务：

@@ -284,12 +284,84 @@ Fields:
 - `codex_totals` (aggregate tokens + runtime seconds)
 - `codex_rate_limits` (latest rate-limit snapshot from agent events)
 
+#### 4.1.9 Hub Project Snapshot (OPTIONAL)
+
+Implementations that expose Hub mode MAY load several project registrations into a device-level
+project registry. A Hub project snapshot is a safe, observable view of one registered project. It is
+used as a model baseline for future Hub ledgers, provider queues, and device-level status surfaces;
+it does not by itself require a Hub-owned poll loop.
+
+Fields:
+
+- `project_id` (string)
+  - Stable project identity suitable for logs, filesystem keys, and future ledger keys.
+- `name` (string or null)
+  - Human-readable display name.
+- `dispatch_enabled` (boolean)
+  - Whether new dispatch is enabled for this project registration.
+- `paused` (boolean)
+  - True when dispatch is disabled or the project failed to load.
+- `status` (`ready`, `paused`, or `error`)
+- `workflow_path` (absolute path string)
+- `tracker_config_path` (absolute path string)
+- `workflow_summary`
+  - `start_stage`, `terminal_stages`, and sorted `stage_ids`.
+- `tracker_summary`
+  - `kind`, provider scope, provider scope key, and required labels.
+  - MUST NOT contain tokens, API keys, credentials, or raw secret-bearing tracker config.
+- `runtime_summary`
+  - Workspace root, agent concurrency limits, polling interval, and Dashboard/API port if any.
+- `fingerprint`
+  - Stable digest of the non-secret configuration snapshot used to detect project config changes.
+- `loaded_at`
+  - Timestamp of the most recent load attempt.
+- `load_error` (string or null)
+  - Diagnostic error for the project only. One invalid project MUST NOT discard valid snapshots for
+    other projects.
+
+#### 4.1.10 Hub IssueRef (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a provider-neutral issue reference used by future
+ledgers, queues, and cross-project observability.
+
+Fields:
+
+- `project_id`
+- `tracker_kind`
+- `provider_scope`
+  - GitHub: owner/repo, optionally project number.
+  - GitLab: project slug or numeric project ID.
+  - Linear: project/team scope as configured by the adapter.
+  - Memory: namespace.
+- `provider_scope_key`
+  - Stable string form of `tracker_kind + provider_scope`.
+- `provider_issue_id`
+  - Provider issue ID when available.
+- `provider_local_id`
+  - Provider-local number/key when available.
+- `identifier`
+  - Human-readable issue identifier.
+- `url`
+  - Provider URL when available.
+
+The Hub key MUST include `project_id` and provider scope. Provider-local numbers such as GitHub
+`#42` or GitLab `iid=42` MUST NOT be used alone as globally unique Hub identifiers.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
+- `Project ID`
+  - Use as the Hub project identity and future per-project ledger partition key.
+  - MUST be non-empty and contain only safe key characters such as ASCII letters, digits, `.`, `_`,
+    and `-`.
+  - MUST NOT contain whitespace padding, path separators, path traversal (`..`), newlines, or NUL.
+  - MUST be unique within one Hub registry.
 - `Issue ID`
   - Use for tracker lookups and internal map keys.
 - `Issue Identifier`
   - Use for human-readable logs and workspace naming.
+- `IssueRef`
+  - Use for Hub ledgers and provider queues.
+  - Compose from `project_id`, provider scope, and provider issue identity/local key.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
   - Use the sanitized value for the workspace directory name.
@@ -631,6 +703,72 @@ Dispatch gating behavior:
 
 - Workflow file read/YAML errors block new dispatches until fixed.
 - Template errors fail only the affected run attempt.
+
+### 5.7 `HUB.yaml` Project Registry (OPTIONAL)
+
+An implementation MAY define `HUB.yaml` as the Hub mode project registry. This registry declares
+several independent projects on one device while preserving each project's own workflow, tracker
+scope, workspace root, and dispatch capacity.
+
+Minimal schema:
+
+```yaml
+projects:
+  - project_id: symphony
+    name: Symphony
+    workflow_path: /path/to/project/WORKFLOW.md
+    tracker_config_path: /path/to/project/TRACKER.yaml
+    dispatch_enabled: true
+  - project_id: docs
+    workflow_path: ./docs/WORKFLOW.md
+    paused: true
+```
+
+Fields:
+
+- `projects` (list)
+  - REQUIRED.
+- `project_id` (string)
+  - REQUIRED.
+  - MUST follow the stable project ID rules in section 4.2.
+- `name` (string)
+  - OPTIONAL.
+- `workflow_path` (path)
+  - REQUIRED.
+  - Relative paths are resolved relative to the `HUB.yaml` file.
+- `tracker_config_path` (path)
+  - OPTIONAL.
+  - If omitted, defaults to `TRACKER.yaml` next to the selected `workflow_path`.
+- `dispatch_enabled` (boolean)
+  - OPTIONAL, default `true`.
+- `enabled` (boolean)
+  - OPTIONAL compatibility alias for `dispatch_enabled`.
+- `paused` (boolean)
+  - OPTIONAL. When `true`, the project snapshot is paused and new dispatch is disabled.
+
+Loading behavior:
+
+- The Hub loader MUST load each project as `WORKFLOW.md + TRACKER.yaml` using the same workflow and
+  tracker/runtime parsing rules as the single-project mode.
+- A single invalid project MUST produce a paused/error project snapshot and MUST NOT discard other
+  valid snapshots.
+- Duplicate or invalid `project_id` values MUST fail registry loading before project snapshots are
+  treated as valid.
+- Snapshots MUST include workflow summary, provider scope summary, workspace root, agent concurrency
+  limits, polling interval, Dashboard/API port when configured, fingerprint, load time, and load
+  error.
+- Snapshot output MUST NOT expose token values, API keys, env secret names, credential fields, or
+  raw secret-bearing config.
+- The Hub loader SHOULD detect shared workspace roots and shared provider scopes as warnings.
+- Shared Dashboard/API ports SHOULD be treated as an error because two live services cannot safely
+  bind the same local port.
+
+Compatibility boundary:
+
+- `HUB.yaml` defines a model and validation entrypoint. It does not require the existing
+  single-project orchestrator to become a Hub scheduler.
+- Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
+  `TRACKER.yaml` MUST remain compatible.
 
 ## 6. Configuration Specification
 
