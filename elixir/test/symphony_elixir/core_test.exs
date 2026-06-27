@@ -883,7 +883,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
       File.write!(workflow_path, workflow_stage_file(%{workspace_root: test_root}))
-      File.write!(tracker_config_path, memory_tracker_stage_config())
+      File.write!(tracker_config_path, workflow_state_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
 
@@ -1397,7 +1397,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
       File.write!(workflow_path, workflow_stage_file(%{workspace_root: test_root}))
-      File.write!(tracker_config_path, memory_tracker_stage_config())
+      File.write!(tracker_config_path, workflow_state_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
 
@@ -1981,6 +1981,23 @@ defmodule SymphonyElixir.CoreTest do
         protocol_blocked:
           state: Protocol Blocked
           terminal: true
+    """
+  end
+
+  defp workflow_state_stage_config do
+    """
+    tracker:
+      kind: memory
+      workflow_state:
+        strategy: project_v2_status
+        field_name: Status
+        state_options:
+          ready: Ready
+          working: In progress
+          review: Human Review
+          done: Done
+          blocked: Blocked
+          protocol_blocked: Protocol Blocked
     """
   end
 
@@ -2800,7 +2817,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
       File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
-      File.write!(tracker_config_path, memory_tracker_stage_config())
+      File.write!(tracker_config_path, workflow_state_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
 
@@ -2854,7 +2871,7 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Implement the accepted scope."
       assert Enum.at(turn_texts, 1) =~ "- completed -> done"
 
-      assert_receive {:memory_tracker_stage_update, "issue-route", "working", "In Progress"}
+      assert_receive {:memory_tracker_stage_update, "issue-route", "working", "In progress"}
       assert_receive {:memory_tracker_stage_update, "issue-route", "done", "Done"}
       refute_receive :unexpected_issue_state_fetch, 100
     after

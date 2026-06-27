@@ -12,6 +12,7 @@ defmodule SymphonyElixir.AgentRunner do
     StageOutcomeChannel,
     StagePromptRenderer,
     Tracker,
+    TrackerConfig,
     Workflow,
     Workspace
   }
@@ -332,7 +333,7 @@ defmodule SymphonyElixir.AgentRunner do
       do_run_codex_turns(
         app_session,
         workspace,
-        issue_for_stage(issue, stage_loop.current_stage, stage_loop.tracker_config),
+        issue_for_stage(issue, stage_loop.current_stage, stage_loop.tracker_config, stage_loop.workflow),
         codex_update_recipient,
         opts,
         stage_loop,
@@ -399,7 +400,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp stage_turn_context(issue, opts, %{workflow: workflow, tracker_config: tracker_config, current_stage: stage_id}) do
-    stage_issue = issue_for_stage(issue, stage_id, tracker_config)
+    stage_issue = issue_for_stage(issue, stage_id, tracker_config, workflow)
     prompt = StagePromptRenderer.render(workflow, stage_id, stage_issue, opts)
     stage = Map.fetch!(workflow.stages, stage_id)
     outcome_capture = StageOutcomeChannel.new(stage_id, workflow.outcomes, Map.get(stage, "transitions", %{}))
@@ -446,15 +447,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp write_issue_stage(issue, next_stage), do: {:error, {:stage_write_failed, issue, next_stage, :missing_issue_id}}
 
-  defp issue_for_stage(%Issue{} = issue, stage_id, tracker_config) do
-    %Issue{issue | state: provider_state_for_stage(stage_id, tracker_config) || stage_id}
+  defp issue_for_stage(%Issue{} = issue, stage_id, tracker_config, workflow) do
+    %Issue{issue | state: provider_state_for_stage(stage_id, tracker_config, workflow) || stage_id}
   end
 
-  defp provider_state_for_stage(stage_id, tracker_config) when is_binary(stage_id) and is_map(tracker_config) do
+  defp provider_state_for_stage(stage_id, tracker_config, workflow) when is_binary(stage_id) and is_map(tracker_config) do
     tracker_config
-    |> normalize_keys()
-    |> then(&Map.get(&1, "tracker", &1))
-    |> Map.get("stage_states", %{})
+    |> TrackerConfig.stage_states(Definition.to_map(workflow))
     |> Map.get(stage_id)
     |> case do
       %{"state" => provider_state} when is_binary(provider_state) -> provider_state
@@ -462,7 +461,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp provider_state_for_stage(_stage_id, _tracker_config), do: nil
+  defp provider_state_for_stage(_stage_id, _tracker_config, _workflow), do: nil
 
   defp terminal_stage?(%Definition{terminal_stages: terminal_stages}, stage_id) when is_binary(stage_id) do
     stage_id in terminal_stages
@@ -497,18 +496,6 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
-
-  defp normalize_keys(value) when is_map(value) do
-    Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
-      Map.put(normalized, normalize_key(key), normalize_keys(raw_value))
-    end)
-  end
-
-  defp normalize_keys(value) when is_list(value), do: Enum.map(value, &normalize_keys/1)
-  defp normalize_keys(value), do: value
-
-  defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_key(value), do: to_string(value)
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
