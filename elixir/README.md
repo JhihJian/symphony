@@ -318,12 +318,42 @@ known attempts, and logical writeback intent keys stay stable across retry attem
 snapshots must not include token values, API keys, credentials, full prompts, full Codex
 transcripts, or raw secret-bearing provider config.
 
-This remains a #74 Hub model baseline only. It does not start a Hub poll loop, provider queue,
-database-backed store, atomic agent-start transaction, provider writeback executor, Dashboard/API,
-or dispatcher. The existing `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup
-path remains the legacy single-project runtime, and the legacy `Orchestrator` keeps its current
-in-memory `running`, `claimed`, `retry_attempts`, and `blocked` behavior until a later explicit
-Hub integration.
+`SymphonyElixir.Hub.ProviderGovernance` adds the provider request governance baseline for the next
+#74 slice. It is also a pure model API. `new_request/1` builds a safe provider request record with a
+stable request id, provider kind and provider scope key, `project_id`, configuration fingerprint or
+snapshot version, optional `IssueRef`, operation kind, priority, fairness key, replay policy,
+timeout/deadline/cancellation boundary, and sanitized correlation metadata. `new_queue/1`,
+`enqueue/3`, `next_request/2`, `record_result/2`, and `queue_summary/2` define an in-memory
+scheduling contract for later Hub poll-coordinator integration: higher-priority work is selected
+first, requests within one provider scope are constrained by scope concurrency, and equal-priority
+same-scope work rotates across fairness keys so one project cannot continuously occupy the shared
+scope. Running issue reconciliation has a higher default priority than candidate scans, and manual
+refresh requests can be marked as user initiated in summaries.
+
+Provider governance tracks scope-level availability with sanitized quota/rate-limit summaries,
+`backoff_until`, circuit state, last error class, and a backpressure reason. Scope state is keyed by
+the same safe provider scope key used by `IssueRef`; bare provider-local issue numbers are not used
+as Hub queue identifiers. Blocking errors such as rate limits, active backoff, open circuit, or
+scope-concurrency saturation delay only matching-scope requests and are reflected in queue
+summaries. Request snapshots, queue summaries, scope state, and result summaries must not include
+provider tokens, API keys, credentials, cookies, full prompts, full Codex transcripts, cancellation
+token values, or raw secret-bearing provider config.
+
+Provider results are classified as `success`, `retryable_failure`, `permanent_failure`,
+`rate_limited`, `circuit_open`, `canceled`, `timed_out`, or `unknown_result`. A result can carry a
+provider-safe summary, external reference, retry/backoff suggestion, error class, and ledger link to
+an issue key or writeback intent. Unknown results for writeback requests whose replay policy is
+`non_replayable` or `unknown_requires_manual_attention` are marked for manual attention and are not
+treated as automatically replayable; this prevents duplicate comments, PRs, statuses, or other
+provider side effects when a timeout leaves the external outcome uncertain.
+
+This remains a #74 Hub model baseline only. It does not start a Hub poll loop, persistent provider
+queue, database-backed store, atomic agent-start transaction, real provider writeback executor,
+Dashboard/API endpoint, or dispatcher. The existing
+`./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup path remains the legacy
+single-project runtime, and the legacy `Orchestrator` keeps its current in-memory `running`,
+`claimed`, `retry_attempts`, `blocked`, tracker fetch, stage writeback, workpad/PR operation, and
+dynamic-tool behavior until a later explicit Hub integration.
 
 GitHub Project v2 Status `TRACKER.yaml` example:
 
