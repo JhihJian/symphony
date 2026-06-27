@@ -315,6 +315,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -334,6 +335,7 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
+        blocked = Map.get(snapshot, :blocked, [])
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
@@ -346,6 +348,8 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        backoff_to_blocked_spacer = if(retrying == [], do: [], else: ["│"])
+        blocked_rows = format_blocked_rows(blocked)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +378,9 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           backoff_to_blocked_spacer ++
+           [colorize("├─ Blocked", @ansi_bold), "│"] ++
+           blocked_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -636,6 +643,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -776,6 +784,47 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_blocked_rows(blocked) do
+    if blocked == [] do
+      ["│  " <> colorize("No blocked issues", @ansi_gray)]
+    else
+      blocked
+      |> Enum.sort_by(&(&1.identifier || &1.issue_id || ""))
+      |> Enum.map(&format_blocked_summary/1)
+    end
+  end
+
+  defp format_blocked_summary(blocked_entry) do
+    issue_id = Map.get(blocked_entry, :issue_id) || "unknown"
+    identifier = Map.get(blocked_entry, :identifier) || issue_id
+    stage = Map.get(blocked_entry, :current_stage) || "unknown"
+    session = Map.get(blocked_entry, :session_id) |> compact_session_id()
+    workspace = Map.get(blocked_entry, :workspace_path) || "workspace n/a"
+    artifact = blocked_artifact_path(Map.get(blocked_entry, :recovery_artifact))
+    error = format_retry_error(Map.get(blocked_entry, :error))
+
+    "│  #{colorize("!", @ansi_red)} " <>
+      colorize(identifier, @ansi_red) <>
+      " " <>
+      colorize("stage=#{stage}", @ansi_yellow) <>
+      " " <>
+      colorize("session=#{session}", @ansi_cyan) <>
+      " " <>
+      colorize("workspace=#{truncate(workspace, 64)}", @ansi_dim) <>
+      blocked_artifact_suffix(artifact) <>
+      error
+  end
+
+  defp blocked_artifact_path(%{artifact_dir: artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp blocked_artifact_path(%{"artifact_dir" => artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp blocked_artifact_path(_artifact), do: nil
+
+  defp blocked_artifact_suffix(nil), do: ""
+
+  defp blocked_artifact_suffix(artifact) do
+    " " <> colorize("artifact=#{truncate(artifact, 64)}", @ansi_dim)
+  end
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)

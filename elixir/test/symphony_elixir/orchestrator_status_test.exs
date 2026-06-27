@@ -829,6 +829,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       workspace_path: "/workspaces/MT-BLOCKED-RUNNING",
       session_id: "thread-blocked-running",
       error: "stalled; recovery blocked",
+      recovery_artifact: %{available?: true, artifact_dir: "/workspaces/MT-BLOCKED-RUNNING/.symphony/blocked/artifact"},
       blocked_at: timestamp,
       last_codex_timestamp: timestamp,
       last_codex_event: :notification,
@@ -853,12 +854,166 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                workspace_path: "/workspaces/MT-BLOCKED-RUNNING",
                session_id: "thread-blocked-running",
                error: "stalled; recovery blocked",
+               recovery_artifact: %{
+                 available?: true,
+                 artifact_dir: "/workspaces/MT-BLOCKED-RUNNING/.symphony/blocked/artifact"
+               },
                blocked_at: ^timestamp,
                last_codex_timestamp: ^timestamp,
                last_codex_event: :notification,
                last_codex_message: %{message: %{method: "turn/diff"}}
              }
            ] = snapshot.blocked
+  end
+
+  test "blocked terminal stage on normal worker exit keeps claim and preserves recovery artifact" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-blocked-terminal-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-BLOCKED")
+      File.mkdir_p!(workspace)
+      System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      System.cmd("git", ["-C", workspace, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", workspace, "config", "user.email", "test@example.com"])
+      File.write!(Path.join(workspace, "README.md"), "# before\n")
+      System.cmd("git", ["-C", workspace, "add", "README.md"])
+      System.cmd("git", ["-C", workspace, "commit", "-m", "initial"])
+      File.write!(Path.join(workspace, "README.md"), "# after\n")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: nil
+      )
+
+      issue_id = "issue-blocked-terminal"
+      orchestrator_name = Module.concat(__MODULE__, :BlockedTerminalExitOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      ref = make_ref()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-BLOCKED",
+        issue: %Issue{id: issue_id, identifier: "MT-BLOCKED", state: "Blocked"},
+        worker_host: nil,
+        workspace_path: workspace,
+        session_id: "thread-blocked-terminal",
+        current_stage: "blocked",
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), :normal})
+      Process.sleep(50)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      refute MapSet.member?(state.completed, issue_id)
+      assert MapSet.member?(state.claimed, issue_id)
+      assert File.dir?(workspace)
+
+      assert %{
+               current_stage: "blocked",
+               session_id: "thread-blocked-terminal",
+               recovery_artifact: %{available?: true, artifact_dir: artifact_dir, files: files}
+             } = state.blocked[issue_id]
+
+      assert File.dir?(artifact_dir)
+      assert File.read!(files.git_status) =~ "README.md"
+      assert File.read!(files.git_diff_name_status) =~ "README.md"
+      assert File.read!(files.patch) =~ "# after"
+
+      assert %{blocked: [%{recovery_artifact: %{artifact_dir: ^artifact_dir}}]} =
+               Orchestrator.snapshot(orchestrator_name, 1_000)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "completion terminal stage on normal worker exit still releases claim and cleans workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-done-terminal-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-DONE")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_api_token: nil
+      )
+
+      issue_id = "issue-done-terminal"
+      orchestrator_name = Module.concat(__MODULE__, :DoneTerminalExitOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      ref = make_ref()
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-DONE",
+        issue: %Issue{id: issue_id, identifier: "MT-DONE", state: "Done"},
+        worker_host: nil,
+        workspace_path: workspace,
+        session_id: "thread-done-terminal",
+        current_stage: "done",
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), :normal})
+      Process.sleep(50)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      refute Map.has_key?(state.blocked, issue_id)
+      assert MapSet.member?(state.completed, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "orchestrator snapshot includes poll countdown and checking status" do

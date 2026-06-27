@@ -47,7 +47,10 @@ worker recovery is scoped by issue id instead of the start-stage scan: an abnorm
 middle-stage run can be retried at its current provider-visible workflow stage, while unreadable or
 conflicting recovery state is exposed as blocked instead of silently releasing the claim. The stage
 contract is implemented for Memory, Linear workflow states, GitHub Project v2 Status, and GitLab
-scoped labels. GitHub issues-only mode fails fast for multi-stage provider-visible workflow state.
+scoped labels. Terminal stages are not all completion states: `blocked` and `protocol_blocked`
+remain observable blocked records, do not close issues, and preserve workspace recovery evidence
+instead of being cleaned up as delivered work. GitHub issues-only mode fails fast for multi-stage
+provider-visible workflow state.
 Legacy `WORKFLOW.md` tracker front matter is rejected at runtime; migrate to the split
 `WORKFLOW.md` plus `TRACKER.yaml` layout before starting the service.
 

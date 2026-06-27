@@ -72,6 +72,7 @@ defmodule SymphonyElixirWeb.Presenter do
         path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry, blocked)
       },
+      recovery: blocked && Map.get(blocked, :recovery_artifact),
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -143,6 +144,7 @@ defmodule SymphonyElixirWeb.Presenter do
       current_stage: Map.get(entry, :current_stage),
       stage_conflict: Map.get(entry, :stage_conflict),
       error: entry.error,
+      recovery_artifact: Map.get(entry, :recovery_artifact),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -194,6 +196,7 @@ defmodule SymphonyElixirWeb.Presenter do
       current_stage: Map.get(blocked, :current_stage),
       stage_conflict: Map.get(blocked, :stage_conflict),
       error: blocked.error,
+      recovery_artifact: Map.get(blocked, :recovery_artifact),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),

@@ -956,7 +956,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert human_review_request[:method] == :put
 
     assert human_review_request[:json] == %{
-             state_event: "close",
+             state_event: "reopen",
              add_labels: "status::human-review",
              remove_labels: "status::todo,status::in-progress,status::done,status::protocol-blocked"
            }

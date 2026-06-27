@@ -28,8 +28,10 @@ For GitHub Issues and GitLab Issues, rendered workflow prompts expose
 descriptions as `Issue: Closes #123` or a fully qualified cross-project reference so the provider
 links the change and closes the issue automatically when the PR/MR is merged.
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+If a claimed issue moves to a completion terminal stage such as `done`, Symphony stops the active
+agent for that issue and cleans up matching workspaces. Blocked terminal stages such as `blocked`
+or `protocol_blocked` are not completion: Symphony keeps the claim visible as blocked and preserves
+the workspace or a local recovery artifact.
 
 If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
 issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
@@ -118,23 +120,33 @@ the next in-process stage.
 Scheduler dispatch is stage-aware in workflow-stage mode. The orchestrator fetches runnable issues
 only for `workflow.start_stage`, re-reads the issue stage immediately before dispatch, and skips
 issues that have already moved to implementation, validation, blocked, done, or any other non-start
-stage. Middle-stage progression stays inside the runner stage loop. A normal runner exit releases
-the claim without scheduling a continuation retry; abnormal/stalled retries refresh only the specific
-issue by id. If the issue is still visible at the same non-terminal workflow stage, Symphony can
-re-dispatch it without requiring it to move back to `workflow.start_stage`. If the provider-visible
-stage is terminal, the claim is released and the workspace is cleaned. If the stage is unreadable,
-conflicts with the remembered running stage, is dependency-blocked, or is no longer routable,
-Symphony keeps the claim in the local blocked map with retry context instead of silently orphaning
-the provider item.
+stage. Middle-stage progression stays inside the runner stage loop. A normal runner exit at a
+completion terminal stage releases the claim and may clean the workspace; a normal runner exit at
+`blocked`, `protocol_blocked`, `rework`, or another non-completion terminal stage records a blocked
+entry instead. Abnormal/stalled retries refresh only the specific issue by id. If the issue is still
+visible at the same non-terminal workflow stage, Symphony can re-dispatch it without requiring it to
+move back to `workflow.start_stage`. If the provider-visible stage is a completion terminal stage,
+the claim is released and the workspace is cleaned. If the provider-visible stage is a blocked
+terminal stage, is unreadable, conflicts with the remembered running stage, is dependency-blocked,
+or is no longer routable, Symphony keeps the claim in the local blocked map with retry context
+instead of silently orphaning the provider item.
 
 Low-frequency reconciliation still refreshes running and blocked issues by id. If an operator moves
-a running issue to a terminal workflow stage, the orchestrator stops the worker and removes the
-workspace. If the provider-visible stage disagrees with the runner's local current stage, Symphony
-keeps the worker running, logs a `Workflow stage conflict`, and exposes `current_stage` plus
-`stage_conflict` in the JSON API and Live dashboard. Service restart recovery is currently provider
-state plus workspace metadata only: running in-memory stage position is not durable, so after a
-restart a fresh dispatch is only possible for issues visible in `workflow.start_stage`; the
-issue-id-scoped running retry context is in memory and is not restored after process restart.
+a running issue to a completion terminal workflow stage, the orchestrator stops the worker and
+removes the workspace. If it moves to a blocked terminal workflow stage, the orchestrator stops the
+worker, keeps the claim blocked, and preserves recovery evidence. If the provider-visible stage
+disagrees with the runner's local current stage, Symphony keeps the worker running, logs a
+`Workflow stage conflict`, and exposes `current_stage` plus `stage_conflict` in the JSON API and
+Live dashboard. Service restart recovery is currently provider state plus workspace metadata only:
+running in-memory stage position is not durable, so after a restart a fresh dispatch is only
+possible for issues visible in `workflow.start_stage`; issue-id-scoped running retry and blocked
+context is in memory and is not restored after process restart.
+
+For local workspaces, a blocked terminal outcome writes recovery evidence under
+`.symphony/blocked/<timestamp>-<session>/` in the issue workspace. The artifact includes
+`git status --short --branch`, diff stat, name-status, untracked-file list, a patch file, the
+session id, and the blocked reason. Remote worker workspaces are retained and reported with their
+host/path; remote artifact capture is intentionally not attempted by the local orchestrator.
 
 Minimal example:
 
@@ -231,13 +243,19 @@ Notes:
 - If a completed non-terminal turn submits no valid outcome, the runner retries the same stage up to
   `workflow.missing_outcome.max_retries`. After retries are exhausted, it writes
   `workflow.missing_outcome.on_exhausted`, commonly a terminal `protocol_blocked` stage.
+- Terminal stages are classified by scheduler semantics, not only by provider state names.
+  Completion terminals such as `done` may close provider-native issues and trigger workspace
+  cleanup. Non-completion terminals such as `blocked`, `protocol_blocked`, or `rework` remain
+  provider-visible but do not close the issue or delete the only workspace evidence.
 - `tracker.provider_states` is optional. When present, Symphony validates every
   `tracker.stage_states.*.state` value against this declared provider-visible state set.
 - Linear uses `tracker.project_slug` and defaults to `https://api.linear.app/graphql`.
 - GitHub uses `tracker.owner` and `tracker.repo`; `tracker.project_number` is optional. When it is
   present, GitHub Project v2 Status is used for workflow stage state. GitHub native `CLOSED` remains
-  terminal even if the Project Status field is stale. When `project_number` is omitted, GitHub
-  issues-only mode cannot represent multi-stage provider-visible workflow state.
+  terminal even if the Project Status field is stale. Project Status updates to non-completion
+  terminal stages such as `Blocked` do not close the native GitHub issue; the issue should close
+  through the linked PR/MR merge path or a completion terminal stage. When `project_number` is
+  omitted, GitHub issues-only mode cannot represent multi-stage provider-visible workflow state.
 - GitLab uses `tracker.project_slug` as the project path or ID and defaults to
   `https://gitlab.com/api/v4`. Scoped-label workflow state writes add the target label and remove
   other labels in that configured state-label group. `workflow_state.close_on_terminal` controls
