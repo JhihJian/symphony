@@ -120,7 +120,12 @@ only for `workflow.start_stage`, re-reads the issue stage immediately before dis
 issues that have already moved to implementation, validation, blocked, done, or any other non-start
 stage. Middle-stage progression stays inside the runner stage loop. A normal runner exit releases
 the claim without scheduling a continuation retry; abnormal/stalled retries refresh only the specific
-issue and can re-dispatch it only if it is visible again at `workflow.start_stage`.
+issue by id. If the issue is still visible at the same non-terminal workflow stage, Symphony can
+re-dispatch it without requiring it to move back to `workflow.start_stage`. If the provider-visible
+stage is terminal, the claim is released and the workspace is cleaned. If the stage is unreadable,
+conflicts with the remembered running stage, is dependency-blocked, or is no longer routable,
+Symphony keeps the claim in the local blocked map with retry context instead of silently orphaning
+the provider item.
 
 Low-frequency reconciliation still refreshes running and blocked issues by id. If an operator moves
 a running issue to a terminal workflow stage, the orchestrator stops the worker and removes the
@@ -128,7 +133,8 @@ workspace. If the provider-visible stage disagrees with the runner's local curre
 keeps the worker running, logs a `Workflow stage conflict`, and exposes `current_stage` plus
 `stage_conflict` in the JSON API and Live dashboard. Service restart recovery is currently provider
 state plus workspace metadata only: running in-memory stage position is not durable, so after a
-restart a fresh dispatch is only possible for issues visible in `workflow.start_stage`.
+restart a fresh dispatch is only possible for issues visible in `workflow.start_stage`; the
+issue-id-scoped running retry context is in memory and is not restored after process restart.
 
 Minimal example:
 

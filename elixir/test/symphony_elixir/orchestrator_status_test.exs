@@ -751,6 +751,116 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert due_in_ms > 0
   end
 
+  test "orchestrator snapshot exposes running retry recovery context" do
+    orchestrator_name = Module.concat(__MODULE__, :RunningRetrySnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    timestamp = DateTime.utc_now()
+
+    retry_entry = %{
+      attempt: 3,
+      retry_kind: :running,
+      timer_ref: nil,
+      due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+      identifier: "MT-RUNNING",
+      current_stage: "working",
+      error: "stalled for 5000ms without codex activity",
+      worker_host: "worker-a",
+      workspace_path: "/workspaces/MT-RUNNING",
+      session_id: "thread-running",
+      last_codex_timestamp: timestamp,
+      last_codex_event: :notification,
+      last_codex_message: %{event: :notification, message: %{method: "turn/diff"}, timestamp: timestamp}
+    }
+
+    initial_state = :sys.get_state(pid)
+    new_state = %{initial_state | retry_attempts: %{"issue-running" => retry_entry}}
+    :sys.replace_state(pid, fn _ -> new_state end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert [
+             %{
+               issue_id: "issue-running",
+               attempt: 3,
+               retry_kind: :running,
+               current_stage: "working",
+               identifier: "MT-RUNNING",
+               error: "stalled for 5000ms without codex activity",
+               worker_host: "worker-a",
+               workspace_path: "/workspaces/MT-RUNNING",
+               session_id: "thread-running",
+               last_codex_timestamp: ^timestamp,
+               last_codex_event: :notification,
+               last_codex_message: %{message: %{method: "turn/diff"}}
+             }
+           ] = snapshot.retrying
+  end
+
+  test "orchestrator snapshot exposes blocked running retry context" do
+    orchestrator_name = Module.concat(__MODULE__, :BlockedRunningRetrySnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    timestamp = DateTime.utc_now()
+
+    blocked_entry = %{
+      identifier: "MT-BLOCKED-RUNNING",
+      issue: %Issue{
+        id: "issue-blocked-running",
+        identifier: "MT-BLOCKED-RUNNING",
+        state: "Mystery"
+      },
+      current_stage: "working",
+      retry_kind: :running,
+      retry_attempt: 4,
+      worker_host: "worker-a",
+      workspace_path: "/workspaces/MT-BLOCKED-RUNNING",
+      session_id: "thread-blocked-running",
+      error: "stalled; recovery blocked",
+      blocked_at: timestamp,
+      last_codex_timestamp: timestamp,
+      last_codex_event: :notification,
+      last_codex_message: %{event: :notification, message: %{method: "turn/diff"}, timestamp: timestamp}
+    }
+
+    initial_state = :sys.get_state(pid)
+    new_state = %{initial_state | blocked: %{"issue-blocked-running" => blocked_entry}}
+    :sys.replace_state(pid, fn _ -> new_state end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert [
+             %{
+               issue_id: "issue-blocked-running",
+               identifier: "MT-BLOCKED-RUNNING",
+               state: "Mystery",
+               current_stage: "working",
+               retry_kind: :running,
+               retry_attempt: 4,
+               worker_host: "worker-a",
+               workspace_path: "/workspaces/MT-BLOCKED-RUNNING",
+               session_id: "thread-blocked-running",
+               error: "stalled; recovery blocked",
+               blocked_at: ^timestamp,
+               last_codex_timestamp: ^timestamp,
+               last_codex_event: :notification,
+               last_codex_message: %{message: %{method: "turn/diff"}}
+             }
+           ] = snapshot.blocked
+  end
+
   test "orchestrator snapshot includes poll countdown and checking status" do
     orchestrator_name = Module.concat(__MODULE__, :PollingSnapshotOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)

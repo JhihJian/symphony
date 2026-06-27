@@ -1321,6 +1321,234 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
   end
 
+  test "workflow-stage running retry keeps middle-stage issues recoverable without start-stage filter" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-working"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-RETRY",
+      title: "Recover in-progress work",
+      state: "In Progress",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 0,
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    retry_window_start_ms = System.monotonic_time(:millisecond)
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "stalled for 5000ms without codex activity",
+        worker_host: "worker-a",
+        workspace_path: "/workspaces/MT-RUNNING-RETRY",
+        session_id: "thread-running-retry"
+      })
+
+    retry_window_end_ms = System.monotonic_time(:millisecond)
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.blocked, issue_id)
+
+    assert %{
+             attempt: 2,
+             retry_kind: :running,
+             identifier: "MT-RUNNING-RETRY",
+             current_stage: "working",
+             worker_host: "worker-a",
+             workspace_path: "/workspaces/MT-RUNNING-RETRY",
+             session_id: "thread-running-retry",
+             due_at_ms: due_at_ms
+           } = updated_state.retry_attempts[issue_id]
+
+    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 20_000)
+  end
+
+  test "workflow-stage running retry releases terminal provider stages and cleans workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-running-retry-terminal-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-running-retry-terminal"
+    issue_identifier = "MT-RUNNING-DONE"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, workflow_stage_file(%{workspace_root: test_root}))
+      File.write!(tracker_config_path, memory_tracker_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+      File.mkdir_p!(workspace)
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Terminal during retry",
+        state: "Done",
+        labels: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new([issue_id]),
+        blocked: %{},
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+          retry_kind: :running,
+          identifier: issue.identifier,
+          current_stage: "working",
+          error: "agent exited: :boom"
+        })
+
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Map.has_key?(updated_state.blocked, issue_id)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workflow-stage running retry blocks unreadable provider stages instead of orphaning claims" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-unmapped"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-UNMAPPED",
+      title: "Unmapped retry state",
+      state: "Mystery",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 3, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "stalled for 5000ms without codex activity",
+        worker_host: "worker-a",
+        workspace_path: "/workspaces/MT-RUNNING-UNMAPPED",
+        session_id: "thread-running-unmapped"
+      })
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+
+    assert %{
+             identifier: "MT-RUNNING-UNMAPPED",
+             current_stage: "working",
+             worker_host: "worker-a",
+             workspace_path: "/workspaces/MT-RUNNING-UNMAPPED",
+             session_id: "thread-running-unmapped",
+             retry_kind: :running,
+             retry_attempt: 3,
+             error: error,
+             stage_conflict: %{
+               kind: :running_retry,
+               local_stage: "working",
+               provider_stage: {:error, {:unmapped_provider_state, "Mystery"}},
+               provider_state: "Mystery"
+             }
+           } = updated_state.blocked[issue_id]
+
+    assert error =~ "stalled for 5000ms without codex activity"
+    assert error =~ "recovery blocked"
+  end
+
+  test "workflow-stage running retry blocks provider stage conflicts instead of restarting the wrong stage" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-conflict"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-CONFLICT",
+      title: "Conflicting retry state",
+      state: "Human Review",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 2, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "agent exited: :shutdown"
+      })
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+
+    assert %{
+             identifier: "MT-RUNNING-CONFLICT",
+             current_stage: "review",
+             retry_kind: :running,
+             retry_attempt: 2,
+             stage_conflict: %{
+               kind: :running_retry,
+               local_stage: "working",
+               provider_stage: "review",
+               provider_state: "Human Review"
+             }
+           } = updated_state.blocked[issue_id]
+  end
+
   test "normal worker exit releases claim without active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
