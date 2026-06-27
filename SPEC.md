@@ -459,6 +459,95 @@ Safety invariants:
 - Ledger snapshots MUST NOT contain token values, API keys, credentials, full prompts, full Codex
   transcripts, or raw secret-bearing provider configuration.
 
+#### 4.1.12 Hub Provider Request Governance (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a provider request governance model as the future
+single Hub-owned exit for external tracker/provider access. This model is a contract for later Hub
+poll coordination, writeback execution, Dashboard/API backpressure reporting, and provider quota
+observation. It does not by itself require existing tracker adapters or single-project orchestrator
+paths to stop calling providers directly.
+
+Provider request fields:
+
+- `request_id` or stable logical key
+  - Stable request identity suitable for logs, queue summaries, and replay diagnostics.
+- `provider_kind`
+  - Provider kind such as `github`, `gitlab`, `linear`, or `memory`.
+- `provider_scope` and `provider_scope_key`
+  - Safe scope summary from the same boundary as Hub project snapshots and `IssueRef`.
+  - MUST NOT be replaced by a bare provider-local issue or repository number.
+- `project_id`
+  - Stable Hub project identity.
+- `config_fingerprint` or `snapshot_version`
+  - Identifies the safe project configuration snapshot used when the request was built.
+- `issue_ref` or `issue_key`
+  - OPTIONAL. When present, MUST use the Hub `IssueRef` boundary or a key derived from
+    `project_id + IssueRef`.
+- `operation_kind`
+  - Examples include `candidate_scan`, `running_reconciliation`, `stage_writeback`,
+    `comment_workpad_upsert`, `pr_lookup`, `pr_create`, `dynamic_tool_provider_call`, and
+    `manual_refresh`.
+- `priority`
+  - Lower numeric values indicate higher scheduling priority unless documented otherwise.
+  - Running reconciliation SHOULD have higher default priority than ordinary candidate scans.
+- `fairness_key`
+  - A key, typically `project_id`, used to avoid one project monopolizing a shared provider scope.
+- `replay_policy`
+  - Should distinguish idempotent requests, marker/upsert requests, non-replayable requests, and
+    requests whose unknown result requires manual attention.
+- `timeout`, `deadline`, or cancellation boundary
+  - Defines when the provider request should stop waiting. Observable snapshots SHOULD expose only
+    the existence of a cancellation boundary, not secret token values.
+- `correlation`
+  - Sanitized metadata for logs, ledgers, and Dashboard/API summaries.
+
+Queue and scheduling behavior:
+
+- Implementations SHOULD provide a testable queue, scheduler model, or in-memory executor API.
+- Higher-priority requests SHOULD be selected before lower-priority requests.
+- Requests within the same provider scope SHOULD execute sequentially or under an explicit
+  controlled-concurrency limit.
+- Equal-priority requests sharing a provider scope SHOULD apply basic fairness across projects or
+  fairness keys.
+- Manual/user-triggered refresh requests SHOULD be observable in queue summaries.
+- Queue summaries SHOULD include pending count, running count, wait/running duration, current
+  running requests, recent safe results, provider-scope state, and backpressure reasons.
+
+Provider-scope availability state:
+
+- Scope state SHOULD be keyed by `provider_scope_key`.
+- Scope state SHOULD record a sanitized quota/rate-limit summary, optional `backoff_until`, circuit
+  state such as `closed`, `half_open`, or `open`, and the latest error class.
+- Error classes SHOULD cover at least auth/config, rate-limited, network timeout, provider 5xx,
+  validation, not found, conflict, and unknown.
+- Blocking conditions such as active rate limit, active backoff, open circuit, or scope concurrency
+  saturation SHOULD delay new matching-scope requests and expose a backpressure reason. Errors that
+  affect only one request SHOULD NOT block unrelated scopes.
+
+Provider result classifications:
+
+- `success`
+  - Contains provider-safe result summary and external reference when available.
+- `retryable_failure`
+  - Contains error class and optional retry/backoff suggestion.
+- `permanent_failure`
+  - Contains diagnostic error class.
+- `rate_limited` or `circuit_open`
+  - Explains provider-scope availability blocking.
+- `canceled` or `timed_out`
+- `unknown_result`
+  - Used when the implementation cannot determine whether a provider side effect happened.
+
+For writeback-like requests, result summaries SHOULD be able to link to the runtime ledger issue key
+or writeback intent key. Unknown results for non-replayable writebacks MUST require manual attention
+and MUST NOT be marked automatically replayable.
+
+Privacy boundary:
+
+- Request snapshots, queue summaries, provider-scope summaries, and result summaries MUST NOT
+  contain provider tokens, API keys, credentials, cookies, raw secret-bearing config, full prompts,
+  full Codex transcripts, or cancellation token values.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
 - `Project ID`
@@ -478,6 +567,10 @@ Safety invariants:
   - Derive from `project_id`, `IssueRef.provider_scope_key`, and the provider issue identity/local
     key.
   - MUST remain stable across process restarts and retry attempts.
+- `Provider Request Key`
+  - Derive from `project_id`, `provider_scope_key`, optional runtime ledger issue key, and the
+    request logical key.
+  - MUST NOT use a bare provider-local issue number as a globally unique provider request key.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
   - Use the sanitized value for the workspace directory name.
@@ -890,6 +983,9 @@ Compatibility boundary:
   future Hub coordination. They do not by themselves implement a Hub poll loop, provider request
   queue, database/transaction backend, atomic agent-start transaction, Dashboard/API endpoint, or
   provider writeback execution.
+- Hub provider request governance defines the model and in-memory scheduling contract for a future
+  shared provider exit. It does not require existing legacy tracker/provider calls, dynamic tools,
+  or writeback paths to be migrated until an explicit Hub integration enables that path.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 

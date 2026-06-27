@@ -5,7 +5,9 @@
 当前 systemd template 仍是 legacy 多实例模型：每个 `symphony@<project>.service` 是独立
 进程，读取自己的 `WORKFLOW.md`、`TRACKER.yaml`、workspace、tracker scope 和 Dashboard/API
 端口。Elixir 代码中新增的 Hub mode `HUB.yaml` 项目注册表只提供进程内 Hub 方向的模型加载、
-身份快照和校验能力；它不会让本部署方式变成单进程 Hub 调度，也不会接管现有 poll loop。
+身份快照和校验能力；Hub provider request governance 也只是定义未来统一 provider 出口的请求、
+队列、quota/backoff/circuit 和结果分类模型。它不会让本部署方式变成单进程 Hub 调度，也不会接管
+现有 poll loop、tracker fetch、写回或 dynamic tools provider 调用。
 
 ## 快速安装
 
