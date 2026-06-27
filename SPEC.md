@@ -548,6 +548,55 @@ Privacy boundary:
   contain provider tokens, API keys, credentials, cookies, raw secret-bearing config, full prompts,
   full Codex transcripts, or cancellation token values.
 
+#### 4.1.13 Hub Poll Coordination (OPTIONAL)
+
+Hub-compatible implementations MAY define a provider-neutral poll coordination model that plans Hub
+polls across several project snapshots before any provider I/O is performed. This model is the
+bridge between `HUB.yaml` project identity, runtime ledger recovery facts, and provider request
+governance. It does not by itself require the legacy single-project poll loop to be replaced.
+
+Poll plan entries SHOULD include:
+
+- `project_id`, optional display name, project status, config fingerprint or snapshot version.
+- Provider scope kind, safe provider scope summary, and `provider_scope_key`.
+- Workflow/tracker identity such as workflow start stage, terminal stages, tracker kind, and
+  required labels.
+- Effective poll interval, `next_due_at`, optional `backoff_until`, last poll result summary, and a
+  boolean `allow_poll`.
+- Eligibility reason such as `ready`, `not_due`, `paused`, `config_error`, `backoff`,
+  `rate_limited`, `circuit_open`, `scope_concurrency`, or `provider_unavailable`.
+- Governance request metadata proving that poll requests are represented as provider governance
+  requests, commonly with `operation_kind: candidate_scan`, idempotent replay policy, and
+  `project_id` fairness key.
+
+Scheduling behavior:
+
+- A single project's config error, provider backoff, circuit state, quota state, or poll failure MUST
+  NOT make unrelated project snapshots ineligible.
+- When several projects are due at the same time, selection SHOULD be deterministic and SHOULD use a
+  fairness key, typically `project_id`, so one project cannot monopolize a shared provider scope.
+- Scope-level backpressure from provider governance MUST apply only to matching provider scopes.
+- The poll coordinator SHOULD expose the planned poll order separately from blocked or not-yet-due
+  entries.
+
+Recoverable facts:
+
+- Poll coordination SHOULD emit or accept recoverable facts for poll plan generation, poll attempts,
+  poll results, and backoff/circuit changes.
+- Result facts SHOULD carry provider governance result classifications such as `success`,
+  `retryable_failure`, `permanent_failure`, `rate_limited`, `circuit_open`, `timed_out`, or
+  `unknown_result`.
+- Restart planning SHOULD replay persisted poll result/backoff facts before deciding eligibility,
+  so restart does not unconditionally poll every registered project at once.
+
+Observability:
+
+- API, snapshot, or dashboard output SHOULD expose a sanitized Hub poll coordination summary:
+  allowed projects, blocked/not-due/error projects, next due time, backoff/circuit state, recent
+  result summary, and provider queue/backpressure summary.
+- Poll coordination snapshots MUST NOT contain provider tokens, API keys, credentials, cookies, raw
+  secret-bearing config, full prompts, full Codex transcripts, or cancellation token values.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
 - `Project ID`
@@ -980,12 +1029,13 @@ Compatibility boundary:
 - `HUB.yaml` defines a model and validation entrypoint. It does not require the existing
   single-project orchestrator to become a Hub scheduler.
 - Hub runtime ledgers define recoverable claim/attempt/workspace/retry/session/writeback facts for
-  future Hub coordination. They do not by themselves implement a Hub poll loop, provider request
-  queue, database/transaction backend, atomic agent-start transaction, Dashboard/API endpoint, or
-  provider writeback execution.
-- Hub provider request governance defines the model and in-memory scheduling contract for a future
-  shared provider exit. It does not require existing legacy tracker/provider calls, dynamic tools,
-  or writeback paths to be migrated until an explicit Hub integration enables that path.
+  future Hub coordination. They do not by themselves implement a provider poll loop,
+  database/transaction backend, atomic agent-start transaction, or provider writeback execution.
+- Hub provider request governance defines the model and in-memory scheduling contract for a shared
+  provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
+  snapshots from that contract. These model APIs do not perform provider I/O or require existing
+  legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated until an explicit
+  Hub integration enables that path.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 

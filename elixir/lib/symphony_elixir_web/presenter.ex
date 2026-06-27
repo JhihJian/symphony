@@ -4,6 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Hub.PollCoordinator
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -24,6 +25,7 @@ defmodule SymphonyElixirWeb.Presenter do
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
+        |> maybe_put_hub_poll_coordination(snapshot)
 
       :timeout ->
         %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
@@ -60,6 +62,17 @@ defmodule SymphonyElixirWeb.Presenter do
 
       payload ->
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+    end
+  end
+
+  defp maybe_put_hub_poll_coordination(payload, snapshot) do
+    hub_poll_coordination =
+      Map.get(snapshot, :hub_poll_coordination) ||
+        Map.get(snapshot, "hub_poll_coordination")
+
+    case PollCoordinator.observability_snapshot(hub_poll_coordination) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_poll_coordination, safe_snapshot)
     end
   end
 

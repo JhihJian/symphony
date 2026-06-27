@@ -365,9 +365,25 @@ an issue key or writeback intent. Unknown results for writeback requests whose r
 treated as automatically replayable; this prevents duplicate comments, PRs, statuses, or other
 provider side effects when a timeout leaves the external outcome uncertain.
 
+`SymphonyElixir.Hub.PollCoordinator` adds the Hub poll coordination baseline. It is a pure model
+API: `build_plan/2` combines Hub project snapshots, provider governance queue/scope state, and
+recoverable poll facts into a safe poll plan. Each plan entry reports project identity, workflow and
+tracker identity, provider scope, effective poll interval, eligibility reason, `next_due_at`,
+optional `backoff_until`, governance request metadata, and whether the project may poll now. Poll
+requests are represented through `ProviderGovernance` as `candidate_scan` requests with project
+fairness keys, so shared-scope backoff, circuit, quota, and concurrency decisions use the same
+boundary as future provider exits.
+
+The coordinator also exposes `attempt_fact/2`, `result_fact/3`, `plan_fact/2`, `to_snapshot/1`,
+`from_snapshot/1`, and `observability_snapshot/1`. Replaying result/backoff facts into
+`build_plan/2` prevents restart from immediately polling every registered project without regard to
+the previous safe due time. If an orchestrator or Hub runtime snapshot includes
+`hub_poll_coordination`, the observability presenter exposes the sanitized plan summary in
+`/api/v1/state`; legacy snapshots without that field keep the existing API shape.
+
 This remains a #74 Hub model baseline only. It does not start a Hub poll loop, persistent provider
-queue, database-backed store, atomic agent-start transaction, real provider writeback executor,
-Dashboard/API endpoint, or dispatcher. The existing
+queue, database-backed store, atomic agent-start transaction, real provider I/O, provider writeback
+executor, or dispatcher. The existing
 `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup path remains the legacy
 single-project runtime, and the legacy `Orchestrator` keeps its current in-memory `running`,
 `claimed`, `retry_attempts`, `blocked`, tracker fetch, stage writeback, workpad/PR operation, and
