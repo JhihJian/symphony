@@ -347,6 +347,118 @@ Fields:
 The Hub key MUST include `project_id` and provider scope. Provider-local numbers such as GitHub
 `#42` or GitLab `iid=42` MUST NOT be used alone as globally unique Hub identifiers.
 
+#### 4.1.11 Hub Runtime Ledger Snapshot (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a recoverable runtime ledger fact model keyed by
+`project_id + IssueRef`. The ledger is a stable, serializable model for restart/replay diagnostics
+and future Hub coordination. It does not by itself require the implementation to move polling,
+claiming, workspace cleanup, provider requests, or agent dispatch out of the existing
+single-project orchestrator.
+
+Ledger-level fields:
+
+- `version`
+  - Integer snapshot schema version.
+- `generated_at`
+  - Timestamp for initial snapshot creation.
+- `updated_at`
+  - Timestamp for the most recent snapshot update.
+- `projects`
+  - Per-project ledger partitions.
+
+Project ledger fields:
+
+- `project_id`
+  - MUST follow the Project ID rules in section 4.2.
+- `config_fingerprint` or `snapshot_version`
+  - Identifies the safe Hub project configuration snapshot used by the ledger facts.
+- `issues`
+  - Runtime facts for issue scopes keyed by `project_id + IssueRef`.
+- `workspace_leases`
+  - Workspace occupancy facts for active/released/lost leases.
+
+Issue ledger fields:
+
+- `issue_ref`
+  - Provider-neutral Hub `IssueRef`; a bare GitHub/GitLab number MUST NOT be used as the global key.
+- `issue_key`
+  - Stable key derived from `project_id`, provider scope key, and provider issue identity.
+- `claim_status`
+  - Diagnostic status such as `unclaimed`, `claimed`, `running`, `retry_queued`, `blocked`,
+    `released`, or `terminal`.
+- `current_stage`, `claimed_at`, `released_at`, `terminal_reason`
+  - Current workflow-stage and lifecycle summary.
+- `attempts`
+  - Run-attempt facts.
+- `retry_backoff`
+  - Optional retry/backoff fact referencing a known attempt.
+- `writebacks`
+  - Writeback intent/result facts.
+
+Run attempt fields:
+
+- `attempt_id` and `attempt_number`
+  - Stable attempt identity within one issue ledger scope.
+- `status`
+  - Diagnostic attempt status such as `pending`, `running`, `succeeded`, `failed`, `cancelled`, or
+    `lost`.
+- `started_at`, `ended_at`, `terminal_reason`, `current_stage`
+- `worker_host`, `workspace_path`
+- `agent_session`
+  - Compact session summary only: session id, last activity timestamp, and observable statistics
+    such as token counts or turn counts. It MUST NOT contain full prompts or full transcripts.
+
+Workspace lease fields:
+
+- `lease_id`
+- `issue_key`, `attempt_id`
+  - The issue/attempt occupying the workspace.
+- `workspace_path`
+- `status`
+  - `active`, `released`, or `lost`.
+- `acquired_at`, `released_at`, `worker_host`
+
+Retry/backoff fields:
+
+- `attempt_id`
+  - MUST reference an attempt in the same issue ledger scope.
+- `due_at`
+- `error_summary`
+- `preferred_worker_host`, `preferred_workspace_path`
+
+Writeback fields:
+
+- `intent_key`
+  - Stable logical writeback key within the same project/issue scope. It MUST remain stable across
+    retry attempts for the same logical external side effect.
+- `logical_action`, `operation_type`, `target`
+- `replay_policy`
+  - `idempotent` or `non_idempotent`.
+- `result_status`
+  - `pending`, `succeeded`, `failed`, or `unknown`.
+- `attempt_id`
+- `provider_marker`, `external_ref`, `error_summary`
+
+Replay summary behavior:
+
+- Implementations SHOULD replay a ledger snapshot into project-level summaries that include current
+  claimed/running/retry/blocked/released counts.
+- Replay summaries SHOULD list active issues with issue ref, stage, attempt id/number, workspace,
+  worker host, last error, and backoff due time.
+- Replay summaries SHOULD expose conflicts/orphans and manual-attention items, for example active
+  workspace leases that do not reference active attempts or non-idempotent writebacks whose result
+  is `unknown`.
+
+Safety invariants:
+
+- One `project_id + IssueRef` MUST have at most one active attempt.
+- One workspace path MUST NOT have more than one active lease.
+- `released` or `terminal` issue ledger facts MUST NOT retain active workspace leases.
+- Retry/backoff facts MUST reference recognizable project/issue/attempt facts.
+- Writeback intent keys MUST not change merely because a retry attempt changed.
+- Ledger snapshots MUST NOT contain token values, API keys, credentials, full prompts, full Codex
+  transcripts, or raw secret-bearing provider configuration.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
 - `Project ID`
@@ -362,6 +474,10 @@ The Hub key MUST include `project_id` and provider scope. Provider-local numbers
 - `IssueRef`
   - Use for Hub ledgers and provider queues.
   - Compose from `project_id`, provider scope, and provider issue identity/local key.
+- `Runtime Ledger Issue Key`
+  - Derive from `project_id`, `IssueRef.provider_scope_key`, and the provider issue identity/local
+    key.
+  - MUST remain stable across process restarts and retry attempts.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
   - Use the sanitized value for the workspace directory name.
@@ -767,6 +883,10 @@ Compatibility boundary:
 
 - `HUB.yaml` defines a model and validation entrypoint. It does not require the existing
   single-project orchestrator to become a Hub scheduler.
+- Hub runtime ledgers define recoverable claim/attempt/workspace/retry/session/writeback facts for
+  future Hub coordination. They do not by themselves implement a Hub poll loop, provider request
+  queue, database/transaction backend, atomic agent-start transaction, Dashboard/API endpoint, or
+  provider writeback execution.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 

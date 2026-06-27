@@ -56,9 +56,11 @@ stage counts from the local orchestrator snapshot.
 The Elixir implementation also includes the first Hub mode model baseline for the #74 direction.
 `HUB.yaml` can register multiple projects, each pointing at its own `WORKFLOW.md` and optional
 `TRACKER.yaml`; the Hub loader builds stable project identities, safe configuration snapshots, and
-provider-neutral issue references. This is not a Hub scheduler yet: without explicit Hub usage,
-the existing single-project startup, polling, workspace, and agent dispatch behavior remains
-unchanged.
+provider-neutral issue references. The Hub runtime ledger model builds on those identities with
+recoverable claim, attempt, workspace lease, retry/backoff, session summary, and writeback
+intent/result facts keyed by `project_id + IssueRef`. It is still not a Hub scheduler: without
+explicit Hub usage, the existing single-project startup, polling, workspace, and agent dispatch
+behavior remains unchanged.
 
 ---
 

@@ -287,9 +287,34 @@ id or provider-local number/key, identifier, and URL. This is intentionally comp
 current GitHub adapter where normalized issue `id` may still be the repository-local issue number:
 Hub keys include provider scope and never treat a bare GitHub/GitLab number as globally unique.
 
-This is the #74 Hub model baseline only. It does not start a Hub poll loop, provider queue, ledger,
+`SymphonyElixir.Hub.RuntimeLedger` adds the recoverable runtime fact model for the next #74 slice.
+It is a pure model API: `new/1` builds normalized ledgers, `to_snapshot/1` returns a stable
+JSON/YAML-safe structure, `from_snapshot/1` rejects snapshots that contain secret-bearing fields,
+`validate/1` reports unsafe invariants, and `replay/1` produces project-level summaries.
+
+Runtime ledger facts are partitioned by project and keyed by `project_id + IssueRef`. They cover:
+
+- issue claim status such as unclaimed, claimed, running, retry queued, blocked, released, or
+  terminal
+- run attempts with attempt id/number, timestamps, stage, worker host, workspace path, terminal
+  reason, and compact agent session usage
+- workspace leases with active/released/lost status
+- retry/backoff facts tied to a known attempt
+- writeback intent/result facts with a stable logical intent key, replay policy, provider marker,
+  external reference, and unknown/manual-attention state for non-idempotent results
+
+The ledger validates that one project/issue has at most one active attempt, one workspace has at
+most one active lease, terminal/released issues do not retain active leases, retry records reference
+known attempts, and logical writeback intent keys stay stable across retry attempts. Ledger
+snapshots must not include token values, API keys, credentials, full prompts, full Codex
+transcripts, or raw secret-bearing provider config.
+
+This remains a #74 Hub model baseline only. It does not start a Hub poll loop, provider queue,
+database-backed store, atomic agent-start transaction, provider writeback executor, Dashboard/API,
 or dispatcher. The existing `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup
-path remains the legacy single-project runtime.
+path remains the legacy single-project runtime, and the legacy `Orchestrator` keeps its current
+in-memory `running`, `claimed`, `retry_attempts`, and `blocked` behavior until a later explicit
+Hub integration.
 
 GitHub Project v2 Status `TRACKER.yaml` example:
 

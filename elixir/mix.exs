@@ -28,6 +28,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.IssueRef,
           SymphonyElixir.Hub.ProjectRegistry,
           SymphonyElixir.Hub.ProviderScope,
+          SymphonyElixir.Hub.RuntimeLedger,
           SymphonyElixir.HttpServer,
           SymphonyElixir.InstanceRegistry,
           SymphonyElixir.PullRequest,
