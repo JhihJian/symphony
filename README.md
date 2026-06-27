@@ -67,9 +67,12 @@ recoverable claim, attempt, workspace lease, retry/backoff, session summary, and
 intent/result facts keyed by `project_id + IssueRef`. A model-only provider governance API now
 defines the future Hub provider exit: provider requests carry safe project/scope/issue correlation,
 priority, fairness key, replay policy, cancellation boundary, quota/backoff/circuit observations,
-and result classifications. It is still not a Hub scheduler: without explicit Hub usage, the
-existing single-project startup, polling, workspace, provider calls, and agent dispatch behavior
-remains unchanged.
+and result classifications. `SymphonyElixir.Hub.PollCoordinator` adds the first Hub poll
+coordination baseline on top of those models: it builds safe poll plans, candidate-scan governance
+requests, eligibility/backoff decisions, recoverable poll facts, and optional sanitized
+observability snapshots. It is still not a provider executor or dispatcher: without explicit Hub
+usage, the existing single-project startup, polling, workspace, provider calls, and agent dispatch
+behavior remains unchanged.
 
 ---
 
