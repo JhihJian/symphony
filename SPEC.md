@@ -548,6 +548,55 @@ Privacy boundary:
   contain provider tokens, API keys, credentials, cookies, raw secret-bearing config, full prompts,
   full Codex transcripts, or cancellation token values.
 
+#### 4.1.12.1 Hub Provider Tool / Writeback Routing (OPTIONAL)
+
+Hub-compatible implementations MAY add an opt-in provider tool routing boundary for dynamic tools
+and writeback helpers. This boundary connects worker-initiated provider operations to
+`ProviderGovernance` without requiring the legacy single-project runtime to stop calling provider
+clients directly by default.
+
+A routed provider tool call SHOULD:
+
+- Build a `ProviderGovernance` request before provider execution.
+- Carry `project_id`, provider scope, provider scope key, optional `IssueRef`, operation kind,
+  priority, replay policy, and sanitized correlation.
+- Accept an injectable executor or adapter so tests can replace real provider I/O.
+- Classify execution outcomes as `success`, `retryable_failure`, `permanent_failure`,
+  `rate_limited`, `circuit_open`, `timed_out`, `canceled`, or `unknown_result`.
+- Return a payload compatible with the existing dynamic tool response protocol.
+- Expose a sanitized summary that explains project, provider scope, operation type, retryability,
+  manual-attention state, and ledger/writeback linkage.
+
+Structured tools that create this routing boundary SHOULD at least cover:
+
+- GitHub issue operations: get issue, list comments, workpad marker upsert, status set, and label
+  add.
+- GitHub pull request operations: list by branch head, get PR, create PR, list issue comments, list
+  reviews, list review comments, and get check status.
+- Provider-neutral tracker issue operations: create comment and set status.
+
+Operation mapping SHOULD distinguish:
+
+- Workpad upsert as marker/upsert replay semantics using a stable header or marker key.
+- Status set as idempotent replay semantics keyed by target state.
+- PR lookup and comment/review/check reads as idempotent lookup semantics.
+- PR create as non-blind replay semantics keyed by branch/head marker; if the create result is
+  unknown, the implementation MUST NOT create another PR without first checking for an existing PR
+  or requiring manual attention.
+- Ordinary append comments as non-blind replay semantics; unknown results MUST require manual
+  attention because the provider may already have accepted the side effect.
+
+Correlation snapshots MUST be safe. They MAY include run-context identifiers such as attempt id,
+attempt number, session id, current stage, workspace lease id, tool name, and operation. They MUST
+NOT include provider tokens, API keys, authorization headers, cookies, secret env values, full
+prompts, full transcripts, or raw secret-bearing config. Large provider payloads such as comment or
+PR bodies SHOULD be summarized with size and digest rather than copied into governance snapshots.
+
+Raw provider escape hatches such as `linear_graphql` MAY remain outside this boundary until the
+implementation defines a structured GraphQL operation model and scope validator. Implementations
+that leave such a tool direct MUST document that decision and keep its legacy response behavior
+unchanged.
+
 #### 4.1.13 Hub Poll Coordination (OPTIONAL)
 
 Hub-compatible implementations MAY define a provider-neutral poll coordination model that plans Hub
@@ -1038,6 +1087,10 @@ Compatibility boundary:
   snapshots from that contract. These model APIs do not perform provider I/O or require existing
   legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated until an explicit
   Hub integration enables that path.
+- Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
+  builds `ProviderGovernance` requests for structured provider calls and returns safe result
+  summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned
+  provider exit migration; legacy direct provider calls stay compatible by default.
 - Hub atomic dispatch defines the candidate-to-run-intent model boundary. It MUST key active
   attempts by `project_id + IssueRef`, bind claim, attempt, workspace lease, start intent, and run
   context in one model transition, and expose replay diagnostics for duplicate candidates, workspace
@@ -1924,6 +1977,9 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
   `Human Review`) rather than tracker terminal state `Done`.
 - If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
   toolchain rather than orchestrator business logic.
+- If Hub provider tool/writeback routing is implemented, it is an opt-in execution boundary for
+  structured provider tools. It does not make tracker writes first-class orchestrator business
+  logic, and it does not imply that the Hub scheduler owns all provider I/O.
 
 ## 12. Prompt Construction and Context Assembly
 

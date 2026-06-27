@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
 
   alias SymphonyElixir.{Config, GitHub, Linear, PullRequest, Tracker}
+  alias SymphonyElixir.Hub.ProviderToolRouting
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -223,19 +224,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     github_add_labels = Keyword.get(opts, :github_add_labels, &github_client.add_labels/2)
 
     with :ok <- validate_github_tracker(opts),
-         {:ok, operation, issue_id, payload} <- normalize_github_issue_arguments(arguments),
-         {:ok, response} <-
-           execute_github_issue_operation(
-             operation,
-             issue_id,
-             payload,
-             github_fetch_issue,
-             github_list_comments,
-             github_upsert_workpad_comment,
-             github_update_issue_state,
-             github_add_labels
-           ) do
-      dynamic_tool_response(true, encode_payload(response))
+         {:ok, operation, issue_id, payload} <- normalize_github_issue_arguments(arguments) do
+      provider_call = fn ->
+        execute_github_issue_operation(
+          operation,
+          issue_id,
+          payload,
+          github_fetch_issue,
+          github_list_comments,
+          github_upsert_workpad_comment,
+          github_update_issue_state,
+          github_add_labels
+        )
+      end
+
+      "github_issue"
+      |> maybe_execute_provider_tool(operation, github_issue_target(operation, issue_id, payload), provider_call, opts)
+      |> provider_tool_response()
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -277,20 +282,24 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       )
 
     with :ok <- validate_github_tracker(opts),
-         {:ok, operation, payload} <- normalize_github_pr_arguments(arguments),
-         {:ok, response} <-
-           execute_github_pr_operation(
-             operation,
-             payload,
-             github_list_pull_requests_for_head,
-             github_get_pull_request,
-             github_create_pull_request,
-             github_list_pull_request_issue_comments,
-             github_list_pull_request_reviews,
-             github_list_pull_request_review_comments,
-             github_get_pull_request_check_status
-           ) do
-      dynamic_tool_response(true, encode_payload(response))
+         {:ok, operation, payload} <- normalize_github_pr_arguments(arguments) do
+      provider_call = fn ->
+        execute_github_pr_operation(
+          operation,
+          payload,
+          github_list_pull_requests_for_head,
+          github_get_pull_request,
+          github_create_pull_request,
+          github_list_pull_request_issue_comments,
+          github_list_pull_request_reviews,
+          github_list_pull_request_review_comments,
+          github_get_pull_request_check_status
+        )
+      end
+
+      "github_pr"
+      |> maybe_execute_provider_tool(operation, github_pr_target(operation, payload), provider_call, opts)
+      |> provider_tool_response()
     else
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
@@ -301,17 +310,24 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     tracker_create_comment = Keyword.get(opts, :tracker_create_comment, &Tracker.create_comment/2)
     tracker_update_issue_state = Keyword.get(opts, :tracker_update_issue_state, &Tracker.update_issue_state/2)
 
-    with {:ok, operation, issue_id, payload} <- normalize_tracker_issue_arguments(arguments),
-         {:ok, response} <-
-           execute_tracker_issue_operation(
-             operation,
-             issue_id,
-             payload,
-             tracker_create_comment,
-             tracker_update_issue_state
-           ) do
-      dynamic_tool_response(true, encode_payload(response))
-    else
+    case normalize_tracker_issue_arguments(arguments) do
+      {:ok, operation, issue_id, payload} ->
+        provider_call = fn ->
+          execute_tracker_issue_operation(
+            operation,
+            issue_id,
+            payload,
+            tracker_create_comment,
+            tracker_update_issue_state
+          )
+        end
+
+        target = tracker_issue_target(operation, issue_id, payload)
+
+        "tracker_issue"
+        |> maybe_execute_provider_tool(operation, target, provider_call, opts)
+        |> provider_tool_response()
+
       {:error, reason} ->
         failure_response(tool_error_payload(reason))
     end
@@ -901,6 +917,77 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     with {:ok, check_status} <- github_get_pull_request_check_status.(pr_number) do
       {:ok, check_status}
     end
+  end
+
+  defp maybe_execute_provider_tool(tool_name, operation, target, provider_call, opts) do
+    if ProviderToolRouting.enabled?(opts) do
+      case ProviderToolRouting.execute(tool_name, operation, target, provider_call, opts) do
+        {:ok, routed_result} -> {:routed, routed_result}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      provider_call.()
+    end
+  end
+
+  defp provider_tool_response({:routed, %{success: success, payload: payload}}) do
+    dynamic_tool_response(success, encode_payload(payload))
+  end
+
+  defp provider_tool_response({:ok, payload}) do
+    dynamic_tool_response(true, encode_payload(payload))
+  end
+
+  defp provider_tool_response({:error, reason}) do
+    failure_response(tool_error_payload(reason))
+  end
+
+  defp github_issue_target("upsert_workpad_comment", issue_id, %{"body" => body, "header" => header}) do
+    %{issue_id: issue_id, body: body, header: header}
+  end
+
+  defp github_issue_target("set_status", issue_id, %{"state" => state}) do
+    %{issue_id: issue_id, state: state}
+  end
+
+  defp github_issue_target("add_labels", issue_id, %{"labels" => labels}) do
+    %{issue_id: issue_id, labels: labels}
+  end
+
+  defp github_issue_target(_operation, issue_id, _payload), do: %{issue_id: issue_id}
+
+  defp tracker_issue_target("create_comment", issue_id, %{"body" => body}) do
+    %{issue_id: issue_id, body: body}
+  end
+
+  defp tracker_issue_target("set_status", issue_id, %{"state" => state}) do
+    %{issue_id: issue_id, state: state}
+  end
+
+  defp tracker_issue_target(_operation, issue_id, _payload), do: %{issue_id: issue_id}
+
+  defp github_pr_target("list_for_head", %{"headRefName" => head_ref_name}) do
+    %{head_ref_name: head_ref_name}
+  end
+
+  defp github_pr_target("create_pr", %{
+         "headRefName" => head_ref_name,
+         "baseRefName" => base_ref_name,
+         "title" => title,
+         "body" => body,
+         "draft" => draft
+       }) do
+    %{
+      head_ref_name: head_ref_name,
+      base_ref_name: base_ref_name,
+      title: title,
+      body: body,
+      draft: draft
+    }
+  end
+
+  defp github_pr_target(_operation, %{"prNumber" => pr_number}) do
+    %{pr_number: pr_number}
   end
 
   defp normalize_query(arguments) do
