@@ -219,6 +219,30 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 
+  test "workflow and tracker path changes tolerate workflow store shutdown window" do
+    ensure_workflow_store_running()
+    workflow_path = Workflow.workflow_file_path()
+    tracker_path = TrackerConfig.tracker_file_path()
+    workflow_store_pid = Process.whereis(WorkflowStore)
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_path)
+
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(WorkflowStore)) do
+        Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+      end
+    end)
+
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+
+    missing_workflow = Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
+    missing_tracker = Path.join(System.tmp_dir!(), "missing-tracker-#{System.unique_integer([:positive])}.yaml")
+
+    assert :ok = Workflow.set_workflow_file_path(missing_workflow)
+    assert :ok = TrackerConfig.set_tracker_file_path(missing_tracker)
+  end
+
   test "workflow store watches sibling tracker config changes in workflow-stage mode" do
     ensure_workflow_store_running()
 

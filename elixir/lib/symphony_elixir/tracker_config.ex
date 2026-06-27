@@ -316,7 +316,11 @@ defmodule SymphonyElixir.TrackerConfig do
 
   defp maybe_reload_store do
     if Process.whereis(SymphonyElixir.WorkflowStore) do
-      _ = SymphonyElixir.WorkflowStore.force_reload()
+      try do
+        _ = SymphonyElixir.WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
     end
 
     :ok

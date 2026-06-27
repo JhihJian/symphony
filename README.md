@@ -64,15 +64,18 @@ The Elixir implementation also includes the first Hub mode model baseline for th
 `TRACKER.yaml`; the Hub loader builds stable project identities, safe configuration snapshots, and
 provider-neutral issue references. The Hub runtime ledger model builds on those identities with
 recoverable claim, attempt, workspace lease, retry/backoff, session summary, and writeback
-intent/result facts keyed by `project_id + IssueRef`. A model-only provider governance API now
-defines the future Hub provider exit: provider requests carry safe project/scope/issue correlation,
+intent/result facts keyed by `project_id + IssueRef`. A model-only provider governance API defines
+the future Hub provider exit: provider requests carry safe project/scope/issue correlation,
 priority, fairness key, replay policy, cancellation boundary, quota/backoff/circuit observations,
 and result classifications. `SymphonyElixir.Hub.PollCoordinator` adds the first Hub poll
 coordination baseline on top of those models: it builds safe poll plans, candidate-scan governance
 requests, eligibility/backoff decisions, recoverable poll facts, and optional sanitized
-observability snapshots. It is still not a provider executor or dispatcher: without explicit Hub
-usage, the existing single-project startup, polling, workspace, provider calls, and agent dispatch
-behavior remains unchanged.
+observability snapshots. `SymphonyElixir.Hub.DispatchBoundary` adds the next #74 baseline from
+candidate issue to active run intent: it model-checks `project_id + IssueRef` claims, attempt ids,
+workspace leases, start intents, worker start acknowledgements, failure states, and safe run context
+snapshots. It is still not a provider executor or full Hub scheduler: without explicit Hub usage,
+the existing single-project startup, polling, workspace, provider calls, and agent dispatch behavior
+remains unchanged.
 
 ---
 

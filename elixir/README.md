@@ -317,24 +317,30 @@ Hub keys include provider scope and never treat a bare GitHub/GitLab number as g
 `SymphonyElixir.Hub.RuntimeLedger` adds the recoverable runtime fact model for the next #74 slice.
 It is a pure model API: `new/1` builds normalized ledgers, `to_snapshot/1` returns a stable
 JSON/YAML-safe structure, `from_snapshot/1` rejects snapshots that contain secret-bearing fields,
-`validate/1` reports unsafe invariants, and `replay/1` produces project-level summaries.
+`validate/1` reports unsafe invariants, `replay/1` produces project-level summaries, and
+`observability_snapshot/1` exposes the same safe replay projection for Dashboard/API snapshots.
 
 Runtime ledger facts are partitioned by project and keyed by `project_id + IssueRef`. They cover:
 
 - issue claim status such as unclaimed, claimed, running, retry queued, blocked, released, or
   terminal
 - run attempts with attempt id/number, timestamps, stage, worker host, workspace path, terminal
-  reason, and compact agent session usage
+  reason, compact agent session usage, and optional safe run context
 - workspace leases with active/released/lost status
+- start intents with requested/acknowledged/failed/unknown/manual-attention status
 - retry/backoff facts tied to a known attempt
 - writeback intent/result facts with a stable logical intent key, replay policy, provider marker,
   external reference, and unknown/manual-attention state for non-idempotent results
 
 The ledger validates that one project/issue has at most one active attempt, one workspace has at
-most one active lease, terminal/released issues do not retain active leases, retry records reference
-known attempts, and logical writeback intent keys stay stable across retry attempts. Ledger
-snapshots must not include token values, API keys, credentials, full prompts, full Codex
-transcripts, or raw secret-bearing provider config.
+most one active lease, active attempts in claimed/running state have a matching workspace lease,
+active start intents point at active attempts and leases, terminal/released issues do not retain
+active leases, retry records reference known attempts, run contexts match their containing
+project/issue/attempt, and logical writeback intent keys stay stable across retry attempts. Replay
+summaries include active attempts, pending start intents, active workspace leases, retry/backoff,
+blocked candidates, conflicts, and manual-attention diagnostics, and can be filtered by
+`project_id`. Ledger snapshots must not include token values, API keys, credentials, cookies, full
+prompts, full Codex transcripts, or raw secret-bearing provider config.
 
 `SymphonyElixir.Hub.ProviderGovernance` adds the provider request governance baseline for the next
 #74 slice. It is also a pure model API. `new_request/1` builds a safe provider request record with a
@@ -381,9 +387,37 @@ the previous safe due time. If an orchestrator or Hub runtime snapshot includes
 `hub_poll_coordination`, the observability presenter exposes the sanitized plan summary in
 `/api/v1/state`; legacy snapshots without that field keep the existing API shape.
 
+`SymphonyElixir.Hub.DispatchBoundary` adds the Hub atomic dispatch / run context baseline for #74.
+It is also a pure model API. `build_context/3` turns a candidate issue into a stable dispatch
+context with project id, configuration fingerprint or snapshot version, provider-neutral
+`IssueRef`, workflow/tracker summary, trigger source (`poll_plan`, `manual_refresh`, `webhook`,
+`running_reconciliation`, or `recovery`), governance/correlation metadata, attempt number/id input,
+workspace path/lease id, start intent id, worker/runtime summary, runner summary, and preflight
+diagnostics. Preflight reports whether the candidate can start or is blocked by an existing active
+attempt, unresolved start intent, workspace conflict, retry/backoff, project pause, config error,
+provider backpressure, or explicit block.
+
+`dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
+claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
+and attaching a safe run context. A repeated candidate for the same `project_id + IssueRef` returns
+an idempotent `:ignored` result instead of adding a second active attempt. A workspace already held
+by another active attempt returns a workspace-conflict preflight error. `acknowledge_start/3`
+connects a start intent to a running attempt and compact agent session summary. `record_start_failure/4`
+can move a half-started attempt to retry queued, blocked, released, or manual attention; unknown
+worker-start results keep an unresolved start intent so recovery can explain the state and avoid a
+blind double start. `release_attempt/3` closes the attempt and releases the workspace lease.
+
+Run context snapshots include project/workflow/tracker snapshot references, issue identity, stage,
+attempt/correlation ids, workspace lease/path, worker host/runtime identity summary, runner/start
+command summary, session/activity timestamps, and exit summary. They intentionally do not include
+provider tokens, API keys, secret env values, cookies, full prompts, complete Codex transcripts, or
+raw secret-bearing config. If a runtime snapshot includes `hub_dispatch_boundary`, the observability
+presenter exposes the sanitized replay summary in `/api/v1/state`; legacy snapshots without that
+field keep the existing API shape.
+
 This remains a #74 Hub model baseline only. It does not start a Hub poll loop, persistent provider
-queue, database-backed store, atomic agent-start transaction, real provider I/O, provider writeback
-executor, or dispatcher. The existing
+queue, database-backed store, cross-process distributed lock, real provider I/O, provider writeback
+executor, full scheduler, or legacy worker lifecycle replacement. The existing
 `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup path remains the legacy
 single-project runtime, and the legacy `Orchestrator` keeps its current in-memory `running`,
 `claimed`, `retry_attempts`, `blocked`, tracker fetch, stage writeback, workpad/PR operation, and
