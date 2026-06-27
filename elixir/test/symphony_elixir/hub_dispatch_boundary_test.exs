@@ -91,6 +91,35 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
     assert length(project.workspace_leases) == 1
   end
 
+  test "workspace lease conflicts are global across projects" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
+
+    second =
+      candidate(
+        project_id: "beta",
+        config_fingerprint: "beta-fingerprint",
+        snapshot_version: "hub-project:beta:1",
+        issue_ref: issue_ref("beta", "github", "github:jhihjian/symphony", "223", "jhihjian/symphony#223"),
+        workspace_path: "/workspaces/alpha/shared",
+        correlation_id: "beta-shared"
+      )
+
+    assert {:error, preflight, _context} = DispatchBoundary.dispatch(ledger, second)
+    assert preflight.status == :workspace_conflict
+    assert preflight.reason == :workspace_already_leased
+
+    conflicting =
+      RuntimeLedger.new(
+        projects: [
+          project_with_active_lease("alpha", "123", "/workspaces/shared"),
+          project_with_active_lease("beta", "223", "/workspaces/shared")
+        ]
+      )
+
+    assert {:error, diagnostics} = RuntimeLedger.validate(conflicting)
+    assert Enum.any?(diagnostics, &(&1.code == :workspace_cross_project_active_lease_conflict))
+  end
+
   test "pending start intent after lost ack is replayed and prevents blind double start" do
     assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
 
@@ -129,12 +158,43 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
 
     summary = RuntimeLedger.replay(failed_ledger)
     [project] = summary.projects
+    assert project.counts.manual_attention == 1
+    assert [%{status: :manual_attention}] = project.active_issues
     assert [%{status: :unknown, manual_attention: true}] = project.pending_start_intents
     assert [%{code: :start_intent_unknown_manual_attention}] = project.manual_attention
 
     assert {:ignored, preflight, _context} = DispatchBoundary.dispatch(failed_ledger, candidate(correlation_id: "after-unknown"))
     assert preflight.status == :already_active
     assert preflight.reason == :start_intent_unresolved
+  end
+
+  test "ack failure and release reject unknown dispatch targets" do
+    assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
+
+    bad_ack = %{
+      project_id: context.project_id,
+      issue_key: context.issue_key,
+      attempt_id: context.attempt_id,
+      start_intent_id: "missing-intent"
+    }
+
+    assert {:error, {:unknown_start_intent, "missing-intent"}} = DispatchBoundary.acknowledge_start(ledger, bad_ack)
+
+    bad_failure =
+      Map.merge(bad_ack, %{
+        start_intent_id: context.start_intent_id,
+        attempt_id: "missing-attempt"
+      })
+
+    assert {:error, {:unknown_attempt, "missing-attempt"}} =
+             DispatchBoundary.record_start_failure(ledger, bad_failure, :blocked)
+
+    assert {:error, {:unknown_issue, "missing-issue"}} =
+             DispatchBoundary.release_attempt(ledger, %{
+               project_id: context.project_id,
+               issue_key: "missing-issue",
+               attempt_id: context.attempt_id
+             })
   end
 
   test "dispatch failure can enter retry blocked and released states" do
@@ -199,6 +259,45 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
     assert released_project.workspace_leases == []
   end
 
+  test "expired retry backoff allows a later dispatch attempt" do
+    assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
+
+    assert {:ok, retry_ledger} =
+             DispatchBoundary.record_start_failure(
+               ledger,
+               %{
+                 project_id: context.project_id,
+                 issue_key: context.issue_key,
+                 attempt_id: context.attempt_id,
+                 start_intent_id: context.start_intent_id,
+                 due_at: "2026-06-27T11:05:00Z",
+                 error_summary: "worker unavailable"
+               },
+               :retry_queued
+             )
+
+    assert {:ok, retry_context} =
+             DispatchBoundary.build_context(
+               candidate(correlation_id: "retry-after-backoff"),
+               retry_ledger,
+               now: "2026-06-27T11:06:00Z"
+             )
+
+    assert retry_context.preflight.status == :allowed
+
+    assert {:ok, dispatched_ledger, retry_context} =
+             DispatchBoundary.dispatch(
+               retry_ledger,
+               candidate(correlation_id: "retry-after-backoff"),
+               now: "2026-06-27T11:06:00Z"
+             )
+
+    [project] = RuntimeLedger.replay(dispatched_ledger).projects
+    assert project.counts.claimed == 1
+    assert [%{attempt_id: attempt_id}] = project.active_attempts
+    assert attempt_id == retry_context.attempt_id
+  end
+
   test "acknowledged start updates run context without leaking secrets" do
     assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
 
@@ -221,6 +320,7 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
     assert attempt.status == :running
     assert issue.claim_status == :running
     assert attempt.agent_session.session_id == "session-alpha"
+    assert attempt.agent_session.usage == %{"input_tokens" => 10}
     assert attempt.run_context.session_id == "session-alpha"
     assert attempt.run_context.status == "running"
 
@@ -234,7 +334,8 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
     safe_text = inspect(snapshot)
     refute safe_text =~ "github_pat_secret"
     refute safe_text =~ "api_key"
-    refute safe_text =~ "token"
+    refute safe_text =~ ":token"
+    refute safe_text =~ "\"token\""
     refute safe_text =~ "credential"
     refute safe_text =~ "cookie"
     refute safe_text =~ "full prompt"
@@ -271,6 +372,20 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
              })
 
     assert Enum.any?(diagnostics, &(&1.code == :sensitive_ledger_snapshot_field))
+  end
+
+  test "map issue refs must include provider scope and issue identity" do
+    assert {:error, :issue_ref_missing_provider_scope} =
+             DispatchBoundary.build_context(
+               candidate(issue_ref: %{project_id: "alpha", provider_issue_id: "123"}),
+               RuntimeLedger.new()
+             )
+
+    assert {:error, :issue_ref_missing_provider_issue_identity} =
+             DispatchBoundary.build_context(
+               candidate(issue_ref: %{project_id: "alpha", provider_scope_key: "github:jhihjian/symphony"}),
+               RuntimeLedger.new()
+             )
   end
 
   test "legacy single project snapshot shape remains compatible when Hub boundary is unused" do
@@ -381,5 +496,37 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
   defp provider_scope("github", "github:" <> owner_repo) do
     [owner, repo] = String.split(owner_repo, "/", parts: 2)
     %{owner: owner, repo: repo}
+  end
+
+  defp project_with_active_lease(project_id, issue_id, workspace_path) do
+    attempt_id = "attempt-#{project_id}-#{issue_id}"
+    issue_ref = issue_ref(project_id, "github", "github:jhihjian/symphony", issue_id, "jhihjian/symphony##{issue_id}")
+    issue_key = RuntimeLedger.issue_key(issue_ref)
+
+    %{
+      project_id: project_id,
+      issues: [
+        %{
+          issue_ref: issue_ref,
+          claim_status: :claimed,
+          attempts: [
+            %{
+              attempt_id: attempt_id,
+              attempt_number: 1,
+              status: :pending,
+              workspace_path: workspace_path
+            }
+          ]
+        }
+      ],
+      workspace_leases: [
+        %{
+          issue_key: issue_key,
+          attempt_id: attempt_id,
+          workspace_path: workspace_path,
+          status: :active
+        }
+      ]
+    }
   end
 end
