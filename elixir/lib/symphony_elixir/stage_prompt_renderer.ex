@@ -3,7 +3,7 @@ defmodule SymphonyElixir.StagePromptRenderer do
   Renders the system-owned prompt wrapper for workflow stage turns.
   """
 
-  alias SymphonyElixir.{Config, PromptBuilder, Workflow}
+  alias SymphonyElixir.{Config, PromptBuilder, TrackerConfig, Workflow}
   alias SymphonyElixir.Workflow.Definition
 
   @type stage_context :: %{
@@ -70,7 +70,7 @@ defmodule SymphonyElixir.StagePromptRenderer do
         {:ok, Map.fetch!(workflow, "start_stage")}
 
       is_map(tracker_config) ->
-        stage_id_from_tracker_state(issue_state, tracker_config)
+        stage_id_from_tracker_state(issue_state, tracker_config, workflow)
         |> case do
           {:ok, stage_id} -> {:ok, stage_id}
           :error -> stage_id_from_workflow_state(issue_state, workflow)
@@ -208,12 +208,8 @@ defmodule SymphonyElixir.StagePromptRenderer do
 
   defp display_list(_values), do: "[]"
 
-  defp stage_id_from_tracker_state(issue_state, tracker_config) do
-    stage_states =
-      tracker_config
-      |> normalize_keys()
-      |> then(&Map.get(&1, "tracker", &1))
-      |> Map.get("stage_states", %{})
+  defp stage_id_from_tracker_state(issue_state, tracker_config, workflow) do
+    stage_states = TrackerConfig.stage_states(tracker_config, workflow)
 
     normalized_issue_state = normalize_state(issue_state)
 

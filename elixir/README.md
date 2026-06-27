@@ -218,6 +218,9 @@ Notes:
 - `tracker.workflow_state` can derive `stage_states` for provider-specific strategies. GitHub
   Project v2 Status uses `workflow_state.state_options`; GitLab scoped labels use
   `workflow_state.strategy: scoped_label` and `workflow_state.label_prefix`.
+- The runner and recovery path use the same derived stage-state mapping, so a retry can resume from a
+  provider-visible status such as GitHub Project v2 `In progress` even when `stage_states` is not
+  written explicitly.
 - The scheduler uses `tracker.stage_states[workflow.start_stage].state` for new candidate discovery.
 - Memory, Linear, GitHub Project v2, and GitLab scoped-label trackers implement the workflow-stage
   dispatch contract. GitHub issues-only mode does not support multi-stage provider-visible workflow

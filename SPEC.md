@@ -665,6 +665,9 @@ Fields:
   - `strategy: scoped_label` for GitLab scoped labels. `label_prefix` defines the scoped-label group,
     `state_name_format` defaults to `kebab_case`, and `close_on_terminal` lists terminal stage ids
     that should close the GitLab issue.
+  - All runtime stage-state consumers, including candidate discovery, stage prompt recovery, and
+    runner issue context rendering, MUST use the derived mapping as if it were explicit
+    `tracker.stage_states`.
 - `provider_states` (list of strings)
   - OPTIONAL.
   - Declares provider-visible state/status/label names that are valid mapping targets.
