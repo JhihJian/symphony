@@ -371,6 +371,35 @@ an issue key or writeback intent. Unknown results for writeback requests whose r
 treated as automatically replayable; this prevents duplicate comments, PRs, statuses, or other
 provider side effects when a timeout leaves the external outcome uncertain.
 
+`SymphonyElixir.Hub.ProviderToolRouting` adds the opt-in provider tool/writeback routing baseline
+for #74. It bridges structured app-server dynamic tools to `ProviderGovernance` without changing
+the default legacy direct-client path. A caller enables it by passing `hub_provider_routing` context
+and, optionally, `hub_provider_executor` into `SymphonyElixir.Codex.DynamicTool.execute/3`; when that
+context is absent, `github_issue`, `github_pr`, and `tracker_issue` keep the existing behavior and
+call the configured provider client functions directly.
+
+The routing boundary currently covers the structured provider tools:
+
+- `github_issue`: `get_issue`, `list_comments`, `upsert_workpad_comment`, `set_status`,
+  `add_labels`
+- `github_pr`: `list_for_head`, `get_pr`, `create_pr`, `list_issue_comments`, `list_reviews`,
+  `list_review_comments`, `get_check_status`
+- `tracker_issue`: `create_comment`, `set_status`
+
+For enabled calls it builds a safe governance request with project id, provider scope, optional
+`IssueRef`, operation kind, priority, replay policy, target summary, and run-context correlation. It
+then executes through an injectable boundary, classifies the result, and appends a
+`providerGovernance` summary to the dynamic tool payload. Workpad upsert uses marker/upsert replay
+semantics keyed by header, status set is idempotent by target state, PR lookup is idempotent by
+branch or PR number, PR create is keyed by branch/head and requires manual attention on unknown
+result, and ordinary append comments are not blindly replayed after unknown results. Comment and PR
+bodies are summarized by size and SHA-256 digest rather than copied into request/result snapshots.
+
+The raw `linear_graphql` escape hatch is intentionally not routed through this baseline yet. It
+accepts arbitrary GraphQL documents and variables, so it needs a separate structured operation and
+scope-validation model before Hub governance can safely infer replay semantics. Its legacy behavior
+therefore remains unchanged.
+
 `SymphonyElixir.Hub.PollCoordinator` adds the Hub poll coordination baseline. It is a pure model
 API: `build_plan/2` combines Hub project snapshots, provider governance queue/scope state, and
 recoverable poll facts into a safe poll plan. Each plan entry reports project identity, workflow and
@@ -416,12 +445,13 @@ presenter exposes the sanitized replay summary in `/api/v1/state`; legacy snapsh
 field keep the existing API shape.
 
 This remains a #74 Hub model baseline only. It does not start a Hub poll loop, persistent provider
-queue, database-backed store, cross-process distributed lock, real provider I/O, provider writeback
-executor, full scheduler, or legacy worker lifecycle replacement. The existing
+queue, database-backed store, cross-process distributed lock, Hub-owned provider queue executor,
+full scheduler, or legacy worker lifecycle replacement. The existing
 `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup path remains the legacy
 single-project runtime, and the legacy `Orchestrator` keeps its current in-memory `running`,
 `claimed`, `retry_attempts`, `blocked`, tracker fetch, stage writeback, workpad/PR operation, and
-dynamic-tool behavior until a later explicit Hub integration.
+dynamic-tool behavior until a later explicit Hub integration. The provider tool routing adapter can
+execute real provider calls only when the dynamic tool caller explicitly opts in to the boundary.
 
 GitHub Project v2 Status `TRACKER.yaml` example:
 

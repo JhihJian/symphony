@@ -76,6 +76,12 @@ workspace leases, start intents, worker start acknowledgements, failure states, 
 snapshots. It is still not a provider executor or full Hub scheduler: without explicit Hub usage,
 the existing single-project startup, polling, workspace, provider calls, and agent dispatch behavior
 remains unchanged.
+The latest Hub provider tool/writeback routing baseline adds an opt-in boundary for structured
+dynamic tool provider calls: GitHub issue, GitHub PR, and provider-neutral tracker issue tools can
+construct safe `ProviderGovernance` requests, execute through an injectable boundary, and return
+sanitized request/result/writeback summaries. This is still a migration seam only; legacy
+single-project provider calls remain direct unless a caller explicitly opts into the Hub routing
+boundary.
 
 ---
 

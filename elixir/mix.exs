@@ -31,6 +31,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.ProjectRegistry,
           SymphonyElixir.Hub.ProviderGovernance,
           SymphonyElixir.Hub.ProviderScope,
+          SymphonyElixir.Hub.ProviderToolRouting,
           SymphonyElixir.Hub.RuntimeLedger,
           SymphonyElixir.HttpServer,
           SymphonyElixir.InstanceRegistry,
