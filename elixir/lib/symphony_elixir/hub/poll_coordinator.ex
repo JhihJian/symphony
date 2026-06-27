@@ -223,7 +223,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       version: normalize_positive_integer(value(plan, :version)) || @version,
       generated_at: iso8601(value(plan, :generated_at)),
       registry: sanitize_map(value(plan, :registry) || %{}),
-      poll_order: list_value(plan, :poll_order) |> Enum.map(&optional_string/1) |> Enum.reject(&is_nil/1),
+      poll_order: list_value(plan, :poll_order) |> Enum.map(&safe_optional_string/1) |> Enum.reject(&is_nil/1),
       projects: plan |> list_value(:projects) |> Enum.map(&entry_snapshot/1),
       provider_queue: sanitize_value(value(plan, :provider_queue) || %{}),
       facts: plan |> list_value(:facts) |> Enum.map(&fact_snapshot/1)
@@ -581,25 +581,30 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   defp normalize_fact(_fact), do: normalize_fact(%{})
 
   defp entry_snapshot(entry) do
+    last_poll = value(entry, :last_poll)
+
     %{
-      project_id: entry.project_id,
-      name: entry.name,
-      project_status: entry.project_status |> normalize_project_status() |> Atom.to_string(),
-      config_fingerprint: entry.config_fingerprint,
-      snapshot_version: entry.snapshot_version,
-      workflow_identity: sanitize_value(entry.workflow_identity),
-      tracker_identity: sanitize_value(entry.tracker_identity),
-      provider_scope: sanitize_value(entry.provider_scope || %{}),
-      provider_scope_key: entry.provider_scope_key,
-      poll_interval_ms: entry.poll_interval_ms,
-      allow_poll: entry.allow_poll,
-      eligibility: eligibility_snapshot(entry.eligibility),
-      next_due_at: iso8601(entry.next_due_at),
-      backoff_until: iso8601(entry.backoff_until),
-      last_poll: entry.last_poll && fact_snapshot(entry.last_poll),
-      governance: sanitize_value(entry.governance)
+      project_id: safe_optional_string(entry, :project_id) || "",
+      name: safe_optional_string(entry, :name),
+      project_status: entry |> value(:project_status) |> normalize_project_status() |> Atom.to_string(),
+      config_fingerprint: safe_optional_string(entry, :config_fingerprint),
+      snapshot_version: safe_optional_string(entry, :snapshot_version),
+      workflow_identity: sanitize_value(value(entry, :workflow_identity) || %{}),
+      tracker_identity: sanitize_value(value(entry, :tracker_identity) || %{}),
+      provider_scope: sanitize_value(value(entry, :provider_scope) || %{}),
+      provider_scope_key: safe_optional_string(entry, :provider_scope_key),
+      poll_interval_ms: normalize_positive_integer(value(entry, :poll_interval_ms)) || @default_poll_interval_ms,
+      allow_poll: value(entry, :allow_poll) == true,
+      eligibility: eligibility_snapshot(value(entry, :eligibility) || %{}),
+      next_due_at: entry |> value(:next_due_at) |> iso8601(),
+      backoff_until: entry |> value(:backoff_until) |> iso8601(),
+      last_poll: last_poll_snapshot(last_poll),
+      governance: sanitize_value(value(entry, :governance))
     }
   end
+
+  defp last_poll_snapshot(last_poll) when is_map(last_poll), do: fact_snapshot(last_poll)
+  defp last_poll_snapshot(_last_poll), do: nil
 
   defp eligibility_snapshot(eligibility) do
     %{
@@ -773,6 +778,8 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     end)
   end
 
+  defp collect_sensitive_paths(%_struct{}, _path), do: []
+
   defp collect_sensitive_paths(%{} = map, path) do
     Enum.flat_map(map, fn {raw_key, value} ->
       key = raw_key |> normalize_key() |> String.downcase()
@@ -868,10 +875,15 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
 
   defp iso8601(_value), do: nil
 
-  defp value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, nil} -> Map.get(map, Atom.to_string(key))
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
 
+  defp value(map, key) when is_map(map), do: Map.get(map, key)
   defp value(_map, _key), do: nil
 
   defp list_value(map, key) do
@@ -883,10 +895,20 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
 
   defp required_string(map, key), do: optional_string(map, key) || ""
   defp optional_string(map, key), do: map |> value(key) |> optional_string()
+  defp optional_string(nil), do: nil
   defp optional_string(value) when is_binary(value), do: value |> String.trim() |> blank_to_nil()
   defp optional_string(value) when is_integer(value), do: Integer.to_string(value)
   defp optional_string(value) when is_atom(value), do: Atom.to_string(value)
   defp optional_string(_value), do: nil
+
+  defp safe_optional_string(map, key), do: map |> value(key) |> safe_optional_string()
+
+  defp safe_optional_string(value) do
+    case optional_string(value) do
+      nil -> nil
+      string -> if sensitive_value?(string), do: nil, else: string
+    end
+  end
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
