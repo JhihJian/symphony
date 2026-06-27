@@ -1029,13 +1029,21 @@ Compatibility boundary:
 - `HUB.yaml` defines a model and validation entrypoint. It does not require the existing
   single-project orchestrator to become a Hub scheduler.
 - Hub runtime ledgers define recoverable claim/attempt/workspace/retry/session/writeback facts for
-  future Hub coordination. They do not by themselves implement a provider poll loop,
-  database/transaction backend, atomic agent-start transaction, or provider writeback execution.
+  future Hub coordination. They also define start-intent and safe run-context facts for the atomic
+  dispatch boundary. They do not by themselves implement a provider poll loop,
+  database/transaction backend, cross-process distributed lock, full Hub scheduler, or provider
+  writeback execution.
 - Hub provider request governance defines the model and in-memory scheduling contract for a shared
   provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
   snapshots from that contract. These model APIs do not perform provider I/O or require existing
   legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated until an explicit
   Hub integration enables that path.
+- Hub atomic dispatch defines the candidate-to-run-intent model boundary. It MUST key active
+  attempts by `project_id + IssueRef`, bind claim, attempt, workspace lease, start intent, and run
+  context in one model transition, and expose replay diagnostics for duplicate candidates, workspace
+  conflicts, pending/unknown start acknowledgements, retry/backoff, blocked candidates, and manual
+  attention. This boundary MAY be model-only until a later persistent transaction store or scheduler
+  integration is introduced.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 
@@ -1194,6 +1202,63 @@ claim state.
 6. `Released`
    - Claim removed because issue is terminal, non-active, missing, or retry path completed without
      re-dispatch.
+
+### 7.1.1 Hub Atomic Dispatch Boundary
+
+The Hub atomic dispatch boundary is a model-level contract for converting a candidate issue into an
+active agent run intent. It is part of the #74 Hub direction and is separate from the legacy
+single-project orchestrator implementation.
+
+Inputs:
+
+- `project_id`
+- configuration fingerprint or snapshot version
+- provider-neutral `IssueRef`
+- workflow and tracker state summary
+- trigger source: poll plan, manual refresh, webhook, running reconciliation, or recovery
+- provider governance or poll coordination request/correlation summary
+- attempt number or stable attempt-id input
+- workspace path/lease input
+- preflight observations
+
+Required preflight observations:
+
+- existing active attempt for the same `project_id + IssueRef`
+- existing active workspace lease for the requested workspace
+- active retry/backoff
+- project pause or configuration error
+- provider governance backpressure
+- explicit blocked/manual-attention state
+
+Invariants:
+
+- At most one active attempt MAY exist for one `project_id + IssueRef`.
+- An active attempt in claimed/running state MUST have one matching active workspace lease.
+- A workspace path MUST NOT have more than one active lease.
+- A start intent MUST reference an active attempt and matching workspace lease while pending,
+  unknown, or manual-attention.
+- Repeated candidates from duplicate ticks, webhooks, or recovery scans MUST be idempotent and MUST
+  NOT create a second active attempt.
+- An unknown worker-start result MUST be represented as pending/unknown/manual attention or another
+  safe retry state; implementations MUST NOT blindly start a second worker.
+
+Failure outcomes:
+
+- `retry_queued`: attempt failed before a durable worker run; retry/backoff records the due time and
+  releases the workspace lease.
+- `blocked`: dispatch cannot safely proceed automatically; replay exposes the blocked candidate and
+  diagnostic.
+- `released`: claim and workspace lease are released because no active run remains necessary.
+- `manual_attention`: start outcome is unknown or unsafe to replay; the unresolved start intent and
+  workspace lease remain observable until an operator or later recovery policy resolves them.
+
+Run context snapshots:
+
+- MUST include safe references to project/workflow/tracker configuration, issue identity, current
+  stage, attempt id/number, correlation id, workspace lease/path, worker host/runtime identity
+  summary, runner/start command summary, session id, start/activity timestamps, and exit summary.
+- MUST NOT include provider tokens, API keys, credentials, cookies, secret env values, full prompts,
+  complete Codex transcripts, or raw secret-bearing config.
 
 Important nuance:
 

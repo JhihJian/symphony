@@ -146,7 +146,11 @@ defmodule SymphonyElixir.Workflow do
 
   defp maybe_reload_store do
     if Process.whereis(WorkflowStore) do
-      _ = WorkflowStore.force_reload()
+      try do
+        _ = WorkflowStore.force_reload()
+      catch
+        :exit, _reason -> :ok
+      end
     end
 
     :ok
