@@ -157,6 +157,90 @@ defmodule SymphonyElixir.HubPollCoordinatorTest do
     refute safe_text =~ "token"
   end
 
+  test "recovers atom-key plan and JSON string-key snapshots through the snapshot boundary" do
+    now = ~U[2026-06-27 10:00:00Z]
+
+    last_poll =
+      PollCoordinator.result_fact(
+        %{
+          project_id: "alpha",
+          provider_kind: "github",
+          provider_scope_key: "github:jhihjian/symphony",
+          request_id: "alpha-request",
+          operation_kind: :candidate_scan
+        },
+        :success,
+        finished_at: ~U[2026-06-27 09:59:00Z],
+        poll_interval_ms: 30_000,
+        result_summary: %{issue_count: 1}
+      )
+
+    plan =
+      registry([ready_project("alpha", github_scope(), poll_interval_ms: 30_000)])
+      |> PollCoordinator.build_plan(now: now, facts: [last_poll])
+
+    assert {:ok, atom_plan_snapshot} = PollCoordinator.from_snapshot(plan)
+    assert [atom_plan_project] = atom_plan_snapshot.projects
+    assert atom_plan_project.project_id == "alpha"
+    assert atom_plan_project.last_poll.status == "success"
+
+    atom_snapshot = PollCoordinator.to_snapshot(plan)
+    string_snapshot = atom_snapshot |> Jason.encode!() |> Jason.decode!()
+
+    assert {:ok, restored_snapshot} = PollCoordinator.from_snapshot(string_snapshot)
+    assert restored_snapshot == atom_snapshot
+    assert [restored_project] = restored_snapshot.projects
+    assert restored_project.allow_poll == true
+    assert restored_project.eligibility == %{"eligible?" => true, reason: "ready", message: nil}
+    assert restored_project.last_poll.status == "success"
+    assert Enum.any?(restored_snapshot.facts, &(&1.result_summary == %{issue_count: 1}))
+  end
+
+  test "observability snapshot accepts string-key snapshots and keeps visible poll fields" do
+    string_snapshot =
+      %{
+        version: 1,
+        generated_at: ~U[2026-06-27 10:00:00Z],
+        registry: %{project_count: 1},
+        poll_order: ["alpha"],
+        projects: [
+          %{
+            project_id: "alpha",
+            name: "Alpha",
+            project_status: :ready,
+            config_fingerprint: "fp",
+            snapshot_version: "sv",
+            workflow_identity: %{start_stage: "ready"},
+            tracker_identity: %{kind: "github", provider_scope_key: "github:o/r", required_labels: ["symphony"]},
+            provider_scope: %{owner: "o", repo: "r"},
+            provider_scope_key: "github:o/r",
+            poll_interval_ms: 30_000,
+            allow_poll: false,
+            eligibility: %{eligible?: false, reason: :not_due, message: nil},
+            next_due_at: ~U[2026-06-27 10:01:00Z],
+            backoff_until: nil,
+            last_poll: nil,
+            governance: %{decision: :not_selected}
+          }
+        ],
+        provider_queue: %{pending_count: 0},
+        facts: [%{fact_type: :poll_plan, recorded_at: ~U[2026-06-27 10:00:00Z]}]
+      }
+      |> PollCoordinator.to_snapshot()
+      |> Jason.encode!()
+      |> Jason.decode!()
+
+    assert observability = PollCoordinator.observability_snapshot(string_snapshot)
+    assert observability.generated_at == "2026-06-27T10:00:00Z"
+    assert observability.provider_queue.pending_count == 0
+    refute Map.has_key?(observability, :facts)
+    assert [project] = observability.projects
+    assert project.project_id == "alpha"
+    assert project.allow_poll == false
+    assert project.eligibility == %{"eligible?" => false, reason: "not_due", message: nil}
+    assert project.governance == %{decision: "not_selected"}
+  end
+
   test "result facts prevent immediate all-project polling when recoverable state is replayed" do
     first_now = ~U[2026-06-27 10:00:00Z]
     restart_now = ~U[2026-06-27 10:00:10Z]
@@ -241,6 +325,63 @@ defmodule SymphonyElixir.HubPollCoordinatorTest do
 
     assert {:error, diagnostics} = PollCoordinator.from_snapshot(snapshot)
     assert Enum.any?(diagnostics, &(&1.code == :sensitive_poll_coordination_snapshot_field))
+  end
+
+  test "rejects sensitive string-key snapshots with diagnostic paths and no secret leakage" do
+    snapshot = %{
+      "version" => 1,
+      "generated_at" => "2026-06-27T10:00:00Z",
+      "registry" => %{"project_count" => 1},
+      "poll_order" => ["alpha"],
+      "projects" => [
+        %{
+          "project_id" => "alpha",
+          "name" => "Alpha",
+          "project_status" => "ready",
+          "config_fingerprint" => "fp",
+          "snapshot_version" => "sv",
+          "workflow_identity" => %{"start_stage" => "ready"},
+          "tracker_identity" => %{"kind" => "github", "provider_scope_key" => "github:o/r", "required_labels" => ["symphony"]},
+          "provider_scope" => %{"owner" => "o", "repo" => "r"},
+          "provider_scope_key" => "github:o/r",
+          "poll_interval_ms" => 30_000,
+          "allow_poll" => true,
+          "eligibility" => %{"eligible?" => true, "reason" => "ready"},
+          "next_due_at" => "2026-06-27T10:00:00Z",
+          "backoff_until" => nil,
+          "raw_config" => %{"tracker" => %{"api_key" => "ghp_supersecret"}},
+          "governance" => %{
+            "request" => %{"request_id" => "r", "operation_kind" => "candidate_scan"},
+            "authorization" => "Bearer supersecret",
+            "transcript" => "codex transcript secret"
+          }
+        }
+      ],
+      "provider_queue" => %{"scope_states" => %{"github:o/r" => %{"cookie" => "session=supersecret"}}},
+      "facts" => [
+        %{
+          "fact_type" => "poll_result",
+          "project_id" => "alpha",
+          "result_summary" => %{"prompt" => "full prompt secret"}
+        }
+      ]
+    }
+
+    assert {:error, diagnostics} = PollCoordinator.from_snapshot(snapshot)
+    messages = Enum.map(diagnostics, & &1.message)
+
+    assert Enum.any?(messages, &String.contains?(&1, "projects.0.raw_config"))
+    assert Enum.any?(messages, &String.contains?(&1, "projects.0.raw_config.tracker.api_key"))
+    assert Enum.any?(messages, &String.contains?(&1, "projects.0.governance.authorization"))
+    assert Enum.any?(messages, &String.contains?(&1, "projects.0.governance.transcript"))
+    assert Enum.any?(messages, &String.contains?(&1, "provider_queue.scope_states.github:o/r.cookie"))
+    assert Enum.any?(messages, &String.contains?(&1, "facts.0.result_summary.prompt"))
+
+    diagnostic_text = inspect(diagnostics)
+    refute diagnostic_text =~ "ghp_supersecret"
+    refute diagnostic_text =~ "Bearer supersecret"
+    refute diagnostic_text =~ "session=supersecret"
+    refute diagnostic_text =~ "full prompt secret"
   end
 
   defp registry(projects), do: %{projects: projects, warnings: [], errors: []}
