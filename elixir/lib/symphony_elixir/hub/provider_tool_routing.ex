@@ -551,9 +551,7 @@ defmodule SymphonyElixir.Hub.ProviderToolRouting do
   defp non_negative_integer(_value), do: nil
 
   defp string_value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, String.to_atom(key))
-  rescue
-    ArgumentError -> nil
+    Map.get(map, key) || Map.get(map, known_atom_key(key))
   end
 
   defp nested_string_value(map, keys) do
@@ -581,7 +579,7 @@ defmodule SymphonyElixir.Hub.ProviderToolRouting do
   defp sanitize_map(value) when is_map(value) do
     value
     |> Enum.reject(fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
-    |> Map.new(fn {key, raw_value} -> {normalize_output_key(key), sanitize_value(raw_value)} end)
+    |> Map.new(fn {key, raw_value} -> {safe_output_key(key), sanitize_value(raw_value)} end)
   end
 
   defp sanitize_map(_value), do: %{}
@@ -619,20 +617,26 @@ defmodule SymphonyElixir.Hub.ProviderToolRouting do
   defp stringify_keys(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify_keys(value), do: value
 
-  defp normalize_output_key(key) when is_atom(key), do: key
-
-  defp normalize_output_key(key) when is_binary(key) do
-    if Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*\z/, key) do
-      String.to_atom(key)
-    else
-      key
-    end
-  end
-
-  defp normalize_output_key(key), do: key
+  defp safe_output_key(key) when is_atom(key), do: key
+  defp safe_output_key(key) when is_binary(key), do: key
+  defp safe_output_key(key), do: to_string(key)
 
   defp value(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
   defp value(_map, _key), do: nil
 
   defp truthy?(value), do: value in [true, "true", "1", 1]
+
+  defp known_atom_key("action"), do: :action
+  defp known_atom_key("comments"), do: :comments
+  defp known_atom_key("comment"), do: :comment
+  defp known_atom_key("id"), do: :id
+  defp known_atom_key("issueId"), do: :issueId
+  defp known_atom_key("number"), do: :number
+  defp known_atom_key("pullRequest"), do: :pullRequest
+  defp known_atom_key("pullRequests"), do: :pullRequests
+  defp known_atom_key("reviews"), do: :reviews
+  defp known_atom_key("state"), do: :state
+  defp known_atom_key("updated"), do: :updated
+  defp known_atom_key("url"), do: :url
+  defp known_atom_key(_key), do: nil
 end
