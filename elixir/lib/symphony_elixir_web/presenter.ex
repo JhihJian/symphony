@@ -12,19 +12,25 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running = list_field(snapshot, :running)
+        retrying = list_field(snapshot, :retrying)
+        blocked = list_field(snapshot, :blocked)
+
         %{
           generated_at: generated_at,
           counts: %{
-            running: length(snapshot.running),
-            retrying: length(snapshot.retrying),
-            blocked: length(Map.get(snapshot, :blocked, []))
+            running: length(running),
+            retrying: length(retrying),
+            blocked: length(blocked)
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
-          codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          running: Enum.map(running, &running_entry_payload/1),
+          retrying: Enum.map(retrying, &retry_entry_payload/1),
+          blocked: Enum.map(blocked, &blocked_entry_payload/1),
+          codex_totals: map_field(snapshot, :codex_totals),
+          rate_limits: field(snapshot, :rate_limits)
         }
+        |> maybe_put_hub_runtime(snapshot)
+        |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
         |> maybe_put_hub_dispatch_boundary(snapshot)
@@ -75,6 +81,28 @@ defmodule SymphonyElixirWeb.Presenter do
     case PollCoordinator.observability_snapshot(hub_poll_coordination) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_poll_coordination, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_runtime(payload, snapshot) do
+    hub_runtime =
+      Map.get(snapshot, :hub_runtime) ||
+        Map.get(snapshot, "hub_runtime")
+
+    case safe_map(hub_runtime) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_runtime, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_project_registry(payload, snapshot) do
+    hub_project_registry =
+      Map.get(snapshot, :hub_project_registry) ||
+        Map.get(snapshot, "hub_project_registry")
+
+    case safe_map(hub_project_registry) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_project_registry, safe_snapshot)
     end
   end
 
@@ -269,6 +297,27 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp safe_map(value) when is_map(value), do: value
+  defp safe_map(_value), do: nil
+
+  defp list_field(snapshot, key) do
+    case field(snapshot, key) do
+      values when is_list(values) -> values
+      _ -> []
+    end
+  end
+
+  defp map_field(snapshot, key) do
+    case field(snapshot, key) do
+      value when is_map(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp field(snapshot, key) when is_map(snapshot) and is_atom(key) do
+    Map.get(snapshot, key) || Map.get(snapshot, Atom.to_string(key))
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

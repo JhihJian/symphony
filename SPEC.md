@@ -1157,6 +1157,25 @@ Loading behavior:
 - Shared Dashboard/API ports SHOULD be treated as an error because two live services cannot safely
   bind the same local port.
 
+Runtime entrypoint:
+
+- Implementations MAY provide an explicit Hub runtime entrypoint such as
+  `--hub-config <path-to-HUB.yaml>`.
+- Hub runtime MUST be opt-in. The presence of `HUB.yaml` alone MUST NOT replace legacy
+  single-project startup.
+- Legacy startup using `--tracker-config <path-to-TRACKER.yaml> <path-to-WORKFLOW.md>` MUST remain
+  compatible.
+- A read-only Hub runtime MAY load the registry, build poll coordination and device observability
+  snapshots, and expose them through the existing observability API.
+- This read-only runtime MUST NOT execute provider I/O, dispatch agents, create workspaces, write
+  provider comments/statuses/PRs, or take ownership of existing legacy poll loops.
+- `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
+  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, and
+  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
+  SHOULD keep the existing API shape.
+- Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
+  env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
+
 Compatibility boundary:
 
 - `HUB.yaml` defines a model and validation entrypoint. It does not require the existing

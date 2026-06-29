@@ -19,21 +19,13 @@ defmodule SymphonyElixir.Application do
 
   use Application
 
+  alias SymphonyElixir.Hub.Runtime, as: HubRuntime
+
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
 
-    children =
-      [
-        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
-        SymphonyElixir.WorkflowStore,
-        SymphonyElixir.Orchestrator,
-        auto_update_child(),
-        SymphonyElixir.HttpServer,
-        SymphonyElixir.StatusDashboard
-      ]
-      |> Enum.reject(&is_nil/1)
+    children = application_children()
 
     Supervisor.start_link(
       children,
@@ -53,6 +45,29 @@ defmodule SymphonyElixir.Application do
 
     if Keyword.get(opts, :enabled?, true) do
       {SymphonyElixir.AutoUpdate, opts}
+    end
+  end
+
+  defp application_children do
+    if HubRuntime.hub_mode?() do
+      [
+        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+        HubRuntime,
+        {SymphonyElixir.HttpServer, orchestrator: HubRuntime},
+        {SymphonyElixir.StatusDashboard, orchestrator: HubRuntime, mode: :hub}
+      ]
+    else
+      [
+        {Phoenix.PubSub, name: SymphonyElixir.PubSub},
+        {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+        SymphonyElixir.WorkflowStore,
+        SymphonyElixir.Orchestrator,
+        auto_update_child(),
+        SymphonyElixir.HttpServer,
+        SymphonyElixir.StatusDashboard
+      ]
+      |> Enum.reject(&is_nil/1)
     end
   end
 end
