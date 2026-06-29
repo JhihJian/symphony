@@ -11,10 +11,11 @@
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
 它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
 `symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
-如果需要试运行只读 Hub runtime，可以手动执行
-`./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口只加载注册表、生成 poll plan
-和设备观测快照，并通过 `/api/v1/state` 暴露安全字段，不执行 provider I/O、不派发 agent、不停止
-各项目自己的 poll loop。本文档的 systemd template 仍使用
+如果需要试运行 Hub runtime poll tick 骨架，可以手动执行
+`./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口会加载注册表、生成 poll plan、
+通过 Hub provider request 边界执行一轮可控的 candidate-scan tick、记录 poll attempt/result fact，
+并通过 `/api/v1/state` 暴露安全字段。默认骨架 executor 不迁移 GitHub/GitLab/Linear legacy adapter、
+不派发 agent、不停止各项目自己的 poll loop。本文档的 systemd template 仍使用
 `--tracker-config <TRACKER.yaml> <WORKFLOW.md>`，不会自动改成 Hub mode。
 
 ## 快速安装

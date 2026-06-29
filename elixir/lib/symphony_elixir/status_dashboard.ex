@@ -440,7 +440,7 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize("#{config_error_count} config errors", hub_error_color(config_error_count)) <>
       colorize(" | ", @ansi_gray) <>
       colorize("#{provider_scope_count} provider scopes", @ansi_cyan) <>
-      colorize(" | read-only", @ansi_gray)
+      colorize(" | poll tick", @ansi_gray)
   end
 
   defp format_hub_runtime_line(_hub_runtime), do: []

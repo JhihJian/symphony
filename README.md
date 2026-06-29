@@ -96,11 +96,13 @@ projection with device counts, per-project status, provider queue/backpressure, 
 state, writeback/manual-attention state, and migration state such as `legacy_only`, `hub_ready`, or
 `hub_managed`. This remains a projection only. It is not a new Dashboard page, does not replace
 `symphony@project.service`, and does not mean Hub has taken over every provider poll loop.
-The Elixir runtime now also has an explicit read-only Hub entrypoint,
+The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
-poll plan snapshot without provider I/O, and exposes safe Hub fields through `/api/v1/state`. This
-entrypoint is opt-in only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and
-per-project services stay unchanged.
+poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
+boundary, records poll attempt/result facts, and exposes safe Hub fields through `/api/v1/state`.
+The default skeleton executor does not migrate GitHub/GitLab/Linear legacy adapters or start
+agents. This entrypoint is opt-in only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md`
+startup path and per-project services stay unchanged.
 
 ---
 

@@ -308,9 +308,9 @@ The registry also reports cross-project validation results. Shared workspace roo
 provider scopes are warnings. Shared Dashboard/API ports are errors because two live services cannot
 bind the same port.
 
-### Hub mode read-only runtime
+### Hub mode poll tick runtime skeleton
 
-Hub mode now has an explicit read-only runtime entrypoint:
+Hub mode now has an explicit runtime entrypoint with a small poll tick execution boundary:
 
 ```bash
 ./bin/symphony --hub-config /path/to/HUB.yaml --port 21000
@@ -324,18 +324,24 @@ present, and the legacy startup path remains:
 ```
 
 In Hub mode the process loads `HUB.yaml`, keeps a safe registry snapshot, builds a poll coordination
-plan without executing provider requests, and projects device-level Hub observability. It does not
-start the legacy single-project orchestrator, poll GitHub/GitLab/Linear, dispatch Codex agents,
-create workspaces, write comments/statuses/PRs, or take ownership of existing
-`symphony@project.service` instances. The existing per-project services and their poll loops keep
-running until a later migration explicitly changes ownership.
+plan, and can execute one controlled candidate-scan tick when `/refresh` or
+`SymphonyElixir.Hub.Runtime.request_refresh/1` is called. Selected due projects are converted into
+`ProviderGovernance` requests, passed through an injectable provider executor, and recorded back as
+poll attempt/result facts that influence the next plan's `allow_poll`, `next_due_at`, and
+backoff/eligibility fields. The default executor is a skeleton boundary and does not migrate the
+legacy GitHub/GitLab/Linear adapters. Hub mode still does not start the legacy single-project
+orchestrator, dispatch Codex agents, create workspaces, write comments/statuses/PRs, or take
+ownership of existing `symphony@project.service` instances. The existing per-project services and
+their poll loops keep running until a later migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_project_registry`, `hub_poll_coordination`, and `hub_device_observability`. These snapshots are
-safe summaries: they omit provider tokens, API keys, authorization/cookie values, secret env values,
-raw provider config, full prompts, full transcripts, and full comment/PR bodies. The terminal
-dashboard only adds a compact Hub mode line with project count, config error count, and provider
-scope count; it is not a complete Hub dashboard page.
+safe summaries: they show tick status, project eligibility, last poll/backoff, and provider
+queue/scope summaries while omitting provider tokens, API keys, authorization/cookie values, secret
+env values, raw provider config, full prompts, full transcripts, provider response bodies, and full
+comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with project count,
+config error count, provider scope count, and poll tick capability; it is not a complete Hub
+dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -460,9 +466,12 @@ boundary as future provider exits.
 
 The coordinator also exposes `attempt_fact/2`, `result_fact/3`, `plan_fact/2`, `to_snapshot/1`,
 `from_snapshot/1`, and `observability_snapshot/1`. Replaying result/backoff facts into
-`build_plan/2` prevents restart from immediately polling every registered project without regard to
-the previous safe due time. If an orchestrator or Hub runtime snapshot includes
-`hub_poll_coordination`, the observability presenter exposes the sanitized plan summary in
+`build_plan/2` prevents restart or repeated refreshes from immediately polling every registered
+project without regard to the previous safe due time. Retryable failures, rate limits, and
+timeouts produce backoff/next-due decisions for the affected project or provider scope; permanent
+poll failures keep the affected project ineligible with a config/error-style reason until the
+configuration or operator action changes the facts. If an orchestrator or Hub runtime snapshot
+includes `hub_poll_coordination`, the observability presenter exposes the sanitized plan summary in
 `/api/v1/state`; legacy snapshots without that field keep the existing API shape.
 
 `SymphonyElixir.Hub.DeviceObservability` adds the #74 device-level observability / migration
@@ -516,9 +525,9 @@ raw secret-bearing config. If a runtime snapshot includes `hub_dispatch_boundary
 presenter exposes the sanitized replay summary in `/api/v1/state`; legacy snapshots without that
 field keep the existing API shape.
 
-This remains a #74 Hub model baseline only. It does not start a Hub poll loop, persistent provider
-queue, database-backed store, cross-process distributed lock, Hub-owned provider queue executor,
-full scheduler, or legacy worker lifecycle replacement. The existing
+This remains a #74 Hub execution skeleton only. It does not start a full Hub scheduler, persistent
+provider queue, database-backed store, cross-process distributed lock, real legacy provider adapter
+migration, or legacy worker lifecycle replacement. The existing
 `./bin/symphony --tracker-config ./TRACKER.yaml ./WORKFLOW.md` startup path remains the legacy
 single-project runtime, and the legacy `Orchestrator` keeps its current in-memory `running`,
 `claimed`, `retry_attempts`, `blocked`, tracker fetch, stage writeback, workpad/PR operation, and
