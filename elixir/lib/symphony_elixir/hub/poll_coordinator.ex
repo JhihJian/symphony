@@ -42,7 +42,10 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
                     "credential",
                     "credentials",
                     "prompt",
+                    "provider_response",
                     "raw_config",
+                    "raw_body",
+                    "response_body",
                     "secret",
                     "token",
                     "transcript"
@@ -887,7 +890,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       |> to_string()
       |> String.downcase()
 
-    MapSet.member?(@sensitive_keys, key) or String.contains?(key, ["token", "secret", "credential", "cookie", "prompt", "transcript"])
+    MapSet.member?(@sensitive_keys, key) or String.contains?(key, ["token", "secret", "credential", "cookie", "prompt", "transcript", "raw_body", "response_body", "provider_response"])
   end
 
   defp sensitive_value?(value) when is_binary(value) do

@@ -57,7 +57,10 @@ defmodule SymphonyElixir.Hub.ProviderGovernance do
                     "credential",
                     "credentials",
                     "prompt",
+                    "provider_response",
                     "raw_config",
+                    "raw_body",
+                    "response_body",
                     "secret",
                     "token",
                     "transcript"
@@ -749,7 +752,7 @@ defmodule SymphonyElixir.Hub.ProviderGovernance do
     key
     |> to_string()
     |> String.downcase()
-    |> then(&(MapSet.member?(@sensitive_keys, &1) or String.contains?(&1, ["token", "secret", "credential", "cookie", "prompt", "transcript"])))
+    |> then(&(MapSet.member?(@sensitive_keys, &1) or String.contains?(&1, ["token", "secret", "credential", "cookie", "prompt", "transcript", "raw_body", "response_body", "provider_response"])))
   end
 
   defp sensitive_value?(value) when is_binary(value) do
