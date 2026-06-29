@@ -1,18 +1,21 @@
 defmodule SymphonyElixir.Hub.Runtime do
   @moduledoc """
-  Read-only Hub runtime skeleton.
+  Hub runtime skeleton.
 
   The runtime loads a `HUB.yaml` project registry, builds safe Hub poll and
-  device-observability snapshots, and exposes them through the same snapshot
-  call shape used by the legacy orchestrator. It does not poll providers,
-  dispatch agents, create workspaces, or write back to trackers.
+  device-observability snapshots, can execute a small governed poll tick through
+  an injectable provider executor, and exposes them through the same snapshot
+  call shape used by the legacy orchestrator. It does not dispatch agents,
+  create workspaces, write back to trackers, or replace the legacy single-project
+  poll loop.
   """
 
   use GenServer
 
-  alias SymphonyElixir.Hub.{DeviceObservability, PollCoordinator, ProjectRegistry}
+  alias SymphonyElixir.Hub.{DeviceObservability, PollCoordinator, ProjectRegistry, ProviderExecutor, ProviderGovernance}
 
   @env_key :hub_config_file_path
+  @poll_fact_limit 200
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -23,6 +26,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   @type state :: %{
           required(:config_path) => Path.t(),
           required(:loaded_at) => DateTime.t(),
+          required(:registry) => ProjectRegistry.registry(),
+          required(:poll_facts) => [PollCoordinator.fact()],
+          required(:provider_queue) => ProviderGovernance.queue(),
+          required(:provider_executor) => module() | function(),
+          required(:tick) => map(),
           required(:snapshot) => map()
         }
 
@@ -104,12 +112,24 @@ defmodule SymphonyElixir.Hub.Runtime do
     with {:ok, config_path} <- normalize_config_path(config_path),
          {:ok, registry} <- load_registry(config_path) do
       loaded_at = DateTime.utc_now()
+      provider_queue = ProviderGovernance.new_queue()
+      tick = idle_tick(loaded_at)
 
       {:ok,
        %{
          config_path: config_path,
          loaded_at: loaded_at,
-         snapshot: build_snapshot(config_path, loaded_at, registry)
+         registry: registry,
+         poll_facts: [],
+         provider_queue: provider_queue,
+         provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
+         tick: tick,
+         snapshot:
+           build_snapshot(config_path, loaded_at, registry,
+             now: loaded_at,
+             provider_queue: provider_queue,
+             tick: tick
+           )
        }}
     else
       {:error, reason} -> {:stop, reason}
@@ -126,14 +146,18 @@ defmodule SymphonyElixir.Hub.Runtime do
 
     case load_registry(state.config_path) do
       {:ok, registry} ->
-        state = %{state | loaded_at: requested_at, snapshot: build_snapshot(state.config_path, requested_at, registry)}
+        {state, tick_summary} =
+          state
+          |> Map.merge(%{loaded_at: requested_at, registry: registry})
+          |> run_poll_tick(requested_at)
 
         {:reply,
          %{
            queued: true,
            coalesced: false,
            requested_at: requested_at,
-           operations: ["hub_registry_load", "hub_poll_plan", "hub_device_observability"]
+           operations: ["hub_registry_load", "hub_poll_plan", "hub_provider_candidate_scan", "hub_device_observability"],
+           poll_tick: tick_summary
          }, state}
 
       {:error, message} ->
@@ -149,10 +173,19 @@ defmodule SymphonyElixir.Hub.Runtime do
   end
 
   @spec build_snapshot(Path.t(), DateTime.t(), ProjectRegistry.registry()) :: map()
-  def build_snapshot(config_path, loaded_at, registry)
-      when is_binary(config_path) and is_map(registry) do
+  def build_snapshot(config_path, loaded_at, registry) when is_binary(config_path) and is_map(registry) do
+    build_snapshot(config_path, loaded_at, registry, [])
+  end
+
+  @spec build_snapshot(Path.t(), DateTime.t(), ProjectRegistry.registry(), keyword()) :: map()
+  def build_snapshot(config_path, loaded_at, registry, opts)
+      when is_binary(config_path) and is_map(registry) and is_list(opts) do
     generated_at = DateTime.utc_now()
-    poll_plan = PollCoordinator.build_plan(registry, now: generated_at)
+    now = Keyword.get(opts, :now, generated_at)
+    provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
+    poll_facts = Keyword.get(opts, :poll_facts, [])
+    tick = normalize_tick(Keyword.get(opts, :tick))
+    poll_plan = PollCoordinator.build_plan(registry, now: now, facts: poll_facts, queue: provider_queue)
 
     device_observability =
       DeviceObservability.build(
@@ -161,7 +194,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           poll_coordination: poll_plan,
           migration_boundary: migration_boundary()
         },
-        now: generated_at
+        now: now
       )
 
     counts = counts(registry, device_observability)
@@ -180,11 +213,13 @@ defmodule SymphonyElixir.Hub.Runtime do
       },
       hub_runtime: %{
         mode: "hub",
-        read_only: true,
+        read_only: Keyword.get(opts, :read_only, false),
+        poll_tick_execution: true,
         config_path: config_path,
         loaded_at: iso8601(loaded_at),
-        generated_at: iso8601(generated_at),
+        generated_at: iso8601(now),
         counts: counts,
+        poll_tick: tick,
         migration_boundary: migration_boundary(),
         registry: registry_summary
       },
@@ -214,6 +249,278 @@ defmodule SymphonyElixir.Hub.Runtime do
       {:error, reason} -> {:error, format_hub_error(reason)}
     end
   end
+
+  defp run_poll_tick(state, requested_at) do
+    started_tick = running_tick(requested_at)
+
+    plan =
+      PollCoordinator.build_plan(state.registry,
+        now: requested_at,
+        facts: state.poll_facts,
+        queue: state.provider_queue
+      )
+
+    executable_entries = Enum.filter(plan.projects, &(&1.allow_poll == true))
+
+    {poll_facts, provider_queue, result_summaries} =
+      Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, []}, fn entry, {facts, queue, summaries} ->
+        attempt = PollCoordinator.attempt_fact(entry, attempted_at: requested_at)
+        request = request_from_entry(entry)
+
+        {result, queue} =
+          request
+          |> execute_provider_request(state.provider_executor, requested_at)
+          |> normalize_provider_result(request, queue)
+
+        finished_at = DateTime.utc_now()
+
+        result_fact =
+          PollCoordinator.result_fact(entry, result,
+            attempt_id: attempt.attempt_id,
+            finished_at: finished_at,
+            poll_interval_ms: entry.poll_interval_ms,
+            retry_after_ms: result.retry_after_ms,
+            backoff_until: result.backoff_until
+          )
+
+        facts = trim_poll_facts([result_fact, attempt | facts])
+        summary = poll_result_summary(result, attempt, result_fact, finished_at)
+
+        {facts, queue, [summary | summaries]}
+      end)
+
+    finished_at = DateTime.utc_now()
+    tick = finished_tick(started_tick, finished_at, length(executable_entries), result_summaries)
+
+    snapshot =
+      build_snapshot(state.config_path, state.loaded_at, state.registry,
+        now: finished_at,
+        poll_facts: poll_facts,
+        provider_queue: provider_queue,
+        tick: tick
+      )
+
+    state = %{state | poll_facts: poll_facts, provider_queue: provider_queue, tick: tick, snapshot: snapshot}
+
+    {state, tick}
+  end
+
+  defp execute_provider_request(nil, _executor, _started_at) do
+    {:error, :missing_provider_request}
+  end
+
+  defp execute_provider_request(request, executor, started_at) when is_function(executor, 2) do
+    executor.(request, started_at: started_at)
+  end
+
+  defp execute_provider_request(request, executor, started_at) when is_atom(executor) do
+    executor.execute(request, started_at: started_at)
+  end
+
+  defp execute_provider_request(_request, _executor, _started_at) do
+    {:error, :invalid_provider_executor}
+  end
+
+  defp normalize_provider_result({:ok, result}, request, queue), do: normalize_provider_result(result, request, queue)
+
+  defp normalize_provider_result({:error, reason}, request, queue) do
+    result =
+      ProviderGovernance.result(request, :retryable_failure,
+        error_class: :unknown,
+        backoff_until: DateTime.utc_now() |> DateTime.add(30_000, :millisecond),
+        result_summary: %{error: safe_error(reason)}
+      )
+
+    queue = record_provider_result(queue, request, result)
+    {result, queue}
+  end
+
+  defp normalize_provider_result(result, request, queue) when is_map(result) do
+    queue = record_provider_result(queue, request, result)
+    {result, queue}
+  end
+
+  defp normalize_provider_result(_result, request, queue) do
+    normalize_provider_result({:error, :invalid_provider_result}, request, queue)
+  end
+
+  defp record_provider_result(queue, request, result) do
+    queue
+    |> ensure_running_request(request)
+    |> ProviderGovernance.record_result(result)
+    |> update_scope_from_result(request, result)
+  end
+
+  defp ensure_running_request(queue, nil), do: queue
+
+  defp ensure_running_request(queue, request) do
+    already_running? = Enum.any?(queue.running, &(&1.request_id == request.request_id))
+
+    if already_running? do
+      queue
+    else
+      Map.update!(queue, :running, &(&1 ++ [request]))
+    end
+  end
+
+  defp update_scope_from_result(queue, request, result) do
+    attrs =
+      %{
+        backoff_until: result.backoff_until,
+        circuit_state: circuit_state_for_result(result.status),
+        last_error_class: result.error_class,
+        updated_at: DateTime.utc_now()
+      }
+      |> maybe_put_quota(result)
+
+    ProviderGovernance.update_scope_state(queue, request, attrs)
+  end
+
+  defp maybe_put_quota(attrs, %{status: :rate_limited}) do
+    Map.put(attrs, :quota, %{remaining: 0})
+  end
+
+  defp maybe_put_quota(attrs, _result), do: attrs
+
+  defp circuit_state_for_result(:circuit_open), do: :open
+  defp circuit_state_for_result(_status), do: :closed
+
+  defp request_from_entry(%{governance: %{request: request}}) when is_map(request) do
+    request_from_snapshot(request)
+  end
+
+  defp request_from_entry(_entry), do: nil
+
+  defp request_from_snapshot(request) do
+    provider_scope =
+      %{
+        kind: value(request, :provider_kind),
+        key: value(request, :provider_scope_key),
+        scope: value(request, :provider_scope) || %{}
+      }
+
+    attrs =
+      %{
+        project_id: value(request, :project_id),
+        provider_scope: provider_scope,
+        config_fingerprint: value(request, :config_fingerprint),
+        snapshot_version: value(request, :snapshot_version),
+        issue_ref: value(request, :issue_ref),
+        operation_kind: value(request, :operation_kind),
+        logical_key: value(request, :logical_key),
+        fairness_key: value(request, :fairness_key),
+        replay_policy: value(request, :replay_policy),
+        timeout_ms: value(request, :timeout_ms),
+        deadline_at: value(request, :deadline_at),
+        correlation: value(request, :correlation) || %{},
+        user_initiated: value(request, :user_initiated),
+        enqueued_at: value(request, :enqueued_at)
+      }
+
+    case ProviderGovernance.new_request(attrs) do
+      {:ok, request} -> request
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp poll_result_summary(result, attempt, result_fact, finished_at) do
+    %{
+      project_id: result.project_id,
+      provider_scope_key: result.provider_scope_key,
+      request_id: result.request_id,
+      logical_key: result.logical_key,
+      attempt_id: attempt.attempt_id,
+      status: status_string(result.status),
+      error_class: status_string(result.error_class),
+      retry_after_ms: result.retry_after_ms,
+      backoff_until: iso8601(result.backoff_until),
+      next_due_at: iso8601(result_fact.next_due_at),
+      finished_at: iso8601(finished_at)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp trim_poll_facts(facts) do
+    Enum.take(facts, @poll_fact_limit)
+  end
+
+  defp idle_tick(now) do
+    %{
+      status: "idle",
+      running?: false,
+      started_at: nil,
+      finished_at: nil,
+      selected_count: 0,
+      result_counts: %{},
+      results: [],
+      updated_at: iso8601(now)
+    }
+  end
+
+  defp running_tick(started_at) do
+    %{
+      status: "running",
+      running?: true,
+      started_at: iso8601(started_at),
+      finished_at: nil,
+      selected_count: 0,
+      result_counts: %{},
+      results: [],
+      updated_at: iso8601(started_at)
+    }
+  end
+
+  defp finished_tick(started_tick, finished_at, selected_count, result_summaries) do
+    results = Enum.reverse(result_summaries)
+
+    %{
+      status: "completed",
+      running?: false,
+      started_at: started_tick.started_at,
+      finished_at: iso8601(finished_at),
+      selected_count: selected_count,
+      result_counts: result_counts(results),
+      results: results,
+      updated_at: iso8601(finished_at)
+    }
+  end
+
+  defp normalize_tick(nil), do: idle_tick(DateTime.utc_now())
+
+  defp normalize_tick(tick) when is_map(tick) do
+    %{
+      status: status_string(Map.get(tick, :status) || Map.get(tick, "status") || "idle"),
+      running?: Map.get(tick, :running?) || Map.get(tick, "running?") || false,
+      started_at: Map.get(tick, :started_at) || Map.get(tick, "started_at"),
+      finished_at: Map.get(tick, :finished_at) || Map.get(tick, "finished_at"),
+      selected_count: Map.get(tick, :selected_count) || Map.get(tick, "selected_count") || 0,
+      result_counts: Map.get(tick, :result_counts) || Map.get(tick, "result_counts") || %{},
+      results: Map.get(tick, :results) || Map.get(tick, "results") || [],
+      updated_at: Map.get(tick, :updated_at) || Map.get(tick, "updated_at")
+    }
+  end
+
+  defp result_counts(results) do
+    Enum.reduce(results, %{}, fn result, counts ->
+      status = Map.get(result, :status) || Map.get(result, "status") || "unknown_result"
+      Map.update(counts, status, 1, &(&1 + 1))
+    end)
+  end
+
+  defp safe_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp safe_error(reason) when is_binary(reason), do: String.slice(reason, 0, 200)
+  defp safe_error(reason), do: inspect(reason, limit: 5, printable_limit: 200)
+
+  defp value(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, nil} -> Map.get(map, Atom.to_string(key))
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp value(map, key) when is_map(map), do: Map.get(map, key)
 
   defp require_projects(%{projects: projects}) when is_list(projects) and projects != [], do: :ok
   defp require_projects(_registry), do: {:error, "Hub config must define at least one project"}
@@ -304,12 +611,13 @@ defmodule SymphonyElixir.Hub.Runtime do
     %{
       legacy_service: "symphony@project.service",
       legacy_default_path: "direct_poll_and_writeback",
-      hub_projection_model_only: true,
-      hub_read_only_runtime_skeleton: true,
+      hub_projection_model_only: false,
+      hub_read_only_runtime_skeleton: false,
+      hub_poll_tick_skeleton: true,
       hub_takes_over_legacy_poll_loop: false,
       hub_routing_requires_opt_in: true,
       direct_path_capabilities: ["legacy_poll_loop", "legacy_direct_writeback", "legacy_agent_dispatch"],
-      opt_in_hub_capabilities: ["project_registry", "poll_plan_snapshot", "device_observability_snapshot"]
+      opt_in_hub_capabilities: ["project_registry", "poll_plan_snapshot", "provider_candidate_scan_request", "poll_result_snapshot", "device_observability_snapshot"]
     }
   end
 

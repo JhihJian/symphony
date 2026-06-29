@@ -1,10 +1,10 @@
 defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.Runtime
+  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, Runtime}
   alias SymphonyElixirWeb.Presenter
 
-  test "builds read-only Hub snapshot with ready paused and project-level config error entries" do
+  test "builds Hub snapshot with ready paused and project-level config error entries" do
     root = tmp_root("hub-runtime")
     hub_path = Path.join(root, "HUB.yaml")
 
@@ -52,7 +52,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.retrying == []
       assert snapshot.blocked == []
       assert snapshot.hub_runtime.mode == "hub"
-      assert snapshot.hub_runtime.read_only == true
+      assert snapshot.hub_runtime.read_only == false
+      assert snapshot.hub_runtime.poll_tick_execution == true
       assert snapshot.hub_runtime.config_path == hub_path
       assert snapshot.hub_runtime.counts.project_count == 3
       assert snapshot.hub_runtime.counts.ready_project_count == 1
@@ -187,7 +188,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert content =~ "2 projects"
       assert content =~ "0 config errors"
       assert content =~ "2 provider scopes"
-      assert content =~ "read-only"
+      assert content =~ "poll tick"
     after
       File.rm_rf(root)
     end
@@ -285,6 +286,223 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "request_refresh executes a governed candidate scan tick and feeds next poll planning" do
+    root = tmp_root("hub-runtime-poll-tick-success")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 60_000
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :PollTickSuccessRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        id: :hub_runtime_poll_tick_success
+      )
+
+      assert %{poll_tick: %{status: "completed", selected_count: 1}} = Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan, request}, 1_000
+      assert request.operation_kind == :candidate_scan
+      assert request.project_id == "alpha"
+      assert request.provider_scope_key == "memory:alpha"
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_runtime.poll_tick.status == "completed"
+      assert snapshot.hub_runtime.poll_tick.result_counts == %{"success" => 1}
+
+      facts_by_type = Enum.group_by(snapshot.hub_poll_coordination.facts, & &1.fact_type)
+      assert [_attempt | _] = Map.fetch!(facts_by_type, :poll_attempt)
+      assert [result | _] = Map.fetch!(facts_by_type, :poll_result)
+      assert result.status == :success
+      assert result.result_summary == %{issue_count: 2}
+
+      [project] = snapshot.hub_poll_coordination.projects
+      assert project.allow_poll == false
+      assert project.eligibility.reason == :not_due
+      assert project.last_poll.status == :success
+      assert project.next_due_at != nil
+
+      assert [device_project] = snapshot.hub_device_observability.projects
+      assert device_project.poll.allow_poll == false
+      assert device_project.poll.last_poll["status"] == "success"
+      assert [%{"status" => "success", "result_summary" => %{"issue_count" => 2}}] = device_project.provider_queue.recent_results
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "rate limited poll result backs off only the matching project scope" do
+    root = tmp_root("hub-runtime-poll-tick-backoff")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+      write_project!(root, "beta", tracker_kind: "gitlab", tracker_project_slug: "platform/beta", workspace_root: Path.join([root, "workspaces", "beta"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :PollTickBackoffRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: backoff_executor(self())},
+        id: :hub_runtime_poll_tick_backoff
+      )
+
+      assert %{poll_tick: %{selected_count: 2, result_counts: %{"rate_limited" => 1, "success" => 1}}} =
+               Runtime.request_refresh(runtime_name)
+
+      assert_receive {:rate_limited_request, "alpha"}, 1_000
+      assert_receive {:successful_request, "beta"}, 1_000
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
+
+      assert projects["alpha"].allow_poll == false
+      assert projects["alpha"].eligibility.reason == :rate_limited
+      assert projects["alpha"].backoff_until != nil
+      assert projects["alpha"].last_poll.status == :rate_limited
+
+      assert projects["beta"].allow_poll == false
+      assert projects["beta"].eligibility.reason == :not_due
+      assert projects["beta"].last_poll.status == :success
+
+      device_projects = Map.new(snapshot.hub_device_observability.projects, &{&1.project_id, &1})
+      assert device_projects["alpha"].status == "backoff"
+      assert "provider_rate_limit" in reason_names(device_projects["alpha"])
+      refute "provider_rate_limit" in reason_names(device_projects["beta"])
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "project configuration errors are not executed and do not block other due projects" do
+    root = tmp_root("hub-runtime-poll-tick-config-error")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "good", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "good"]))
+
+      bad_dir = Path.join(root, "bad")
+      File.mkdir_p!(bad_dir)
+
+      write_workflow_file!(Path.join(bad_dir, "WORKFLOW.md"),
+        tracker_kind: "github",
+        tracker_api_token: "$GITHUB_TOKEN",
+        tracker_owner: "JhihJian",
+        tracker_repo: nil,
+        workspace_root: Path.join([root, "workspaces", "bad"])
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: good
+          workflow_path: good/WORKFLOW.md
+        - project_id: bad
+          workflow_path: bad/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :PollTickConfigErrorRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        id: :hub_runtime_poll_tick_config_error
+      )
+
+      assert %{poll_tick: %{selected_count: 1}} = Runtime.request_refresh(runtime_name)
+      assert_receive {:provider_candidate_scan, %{project_id: "good"}}, 1_000
+      refute_receive {:provider_candidate_scan, %{project_id: "bad"}}, 100
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
+
+      assert projects["good"].last_poll.status == :success
+      assert projects["bad"].allow_poll == false
+      assert projects["bad"].eligibility.reason == :config_error
+      assert snapshot.hub_runtime.counts.config_error_count == 1
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "poll tick snapshot and API payload keep provider executor secrets out" do
+    root = tmp_root("hub-runtime-poll-tick-redaction")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :PollTickRedactionRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: secret_executor()},
+        id: :hub_runtime_poll_tick_redaction
+      )
+
+      Runtime.request_refresh(runtime_name)
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      safe_text = inspect(payload)
+
+      refute safe_text =~ "ghp_supersecret"
+      refute safe_text =~ "Bearer supersecret"
+      refute safe_text =~ "session=secret"
+      refute safe_text =~ "full prompt"
+      refute safe_text =~ "transcript"
+      refute safe_text =~ "raw provider body"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "cookie"
+      refute safe_text =~ "ghp_"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "default provider executor returns a safe skeleton candidate scan result" do
+    request =
+      provider_request!(
+        project_id: "alpha",
+        provider_scope: %{kind: "memory", key: "memory:alpha", scope: %{namespace: "alpha"}},
+        operation_kind: :candidate_scan,
+        logical_key: "hub-poll:alpha:candidate_scan"
+      )
+
+    result = ProviderExecutor.execute(request)
+
+    assert result.status == :success
+    assert result.request_id == request.request_id
+    assert result.operation_kind == :candidate_scan
+
+    assert result.result_summary == %{
+             boundary: "hub_provider_executor",
+             executor: "default_skeleton",
+             provider_io: false,
+             candidate_scan: "accepted"
+           }
+  end
+
   defmodule StaticSnapshot do
     @moduledoc false
     use GenServer
@@ -301,6 +519,60 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
     @impl true
     def handle_call(:snapshot, _from, snapshot), do: {:reply, snapshot, snapshot}
+  end
+
+  defp success_executor(parent) do
+    fn request, _opts ->
+      send(parent, {:provider_candidate_scan, request})
+
+      ProviderGovernance.result(request, :success, result_summary: %{issue_count: 2, token: "ghp_secret_should_not_leak"})
+    end
+  end
+
+  defp backoff_executor(parent) do
+    fn request, _opts ->
+      case request.project_id do
+        "alpha" ->
+          send(parent, {:rate_limited_request, request.project_id})
+
+          ProviderGovernance.result(request, :rate_limited,
+            retry_after_ms: 60_000,
+            error_class: :rate_limited,
+            result_summary: %{message: "rate limited", authorization: "Bearer secret"}
+          )
+
+        project_id ->
+          send(parent, {:successful_request, project_id})
+          ProviderGovernance.result(request, :success, result_summary: %{issue_count: 0})
+      end
+    end
+  end
+
+  defp secret_executor do
+    fn request, _opts ->
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          token: "ghp_supersecret",
+          authorization: "Bearer supersecret",
+          cookie: "session=secret",
+          prompt: "full prompt should not leak",
+          transcript: "complete transcript should not leak",
+          raw_body: "raw provider body should not leak",
+          visible_count: 1
+        }
+      )
+    end
+  end
+
+  defp reason_names(project) do
+    project.backpressure_reasons
+    |> Enum.map(& &1.reason)
+    |> Enum.sort()
+  end
+
+  defp provider_request!(attrs) do
+    assert {:ok, request} = ProviderGovernance.new_request(Map.new(attrs))
+    request
   end
 
   defp write_project!(root, project_id, overrides) do

@@ -191,8 +191,17 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     result = if is_map(status_or_result), do: status_or_result, else: %{}
     status = normalize_result_status(value(result, :status) || status_or_result)
     retry_after_ms = non_negative_integer(value(result, :retry_after_ms) || Keyword.get(opts, :retry_after_ms))
-    backoff_until = normalize_datetime(value(result, :backoff_until) || Keyword.get(opts, :backoff_until))
-    next_due_at = normalize_datetime(Keyword.get(opts, :next_due_at)) || backoff_until || next_due_at_from_result(finished_at, opts)
+
+    backoff_until =
+      normalize_datetime(value(result, :backoff_until) || Keyword.get(opts, :backoff_until)) ||
+        retry_after_backoff_until(status, finished_at, retry_after_ms)
+
+    next_due_at =
+      normalize_datetime(Keyword.get(opts, :next_due_at)) ||
+        backoff_until ||
+        retry_after_due_at(finished_at, retry_after_ms) ||
+        next_due_at_from_result(finished_at, opts)
+
     request = request_source(source)
 
     normalize_fact(%{
@@ -265,7 +274,16 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     backoff_until = normalize_datetime(value(last_poll || %{}, :backoff_until))
 
     eligibility =
-      base_eligibility(project, tracker_summary, runtime_summary, workflow_summary, next_due_at, backoff_until, now)
+      base_eligibility(
+        project,
+        tracker_summary,
+        runtime_summary,
+        workflow_summary,
+        last_poll,
+        next_due_at,
+        backoff_until,
+        now
+      )
 
     %{
       project_id: project_id,
@@ -386,7 +404,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     })
   end
 
-  defp base_eligibility(project, tracker_summary, runtime_summary, workflow_summary, next_due_at, backoff_until, now) do
+  defp base_eligibility(project, tracker_summary, runtime_summary, workflow_summary, last_poll, next_due_at, backoff_until, now) do
     cond do
       normalize_project_status(value(project, :status)) == :error ->
         eligibility(false, :config_error, optional_string(project, :load_error) || "project configuration did not load")
@@ -399,6 +417,18 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
 
       is_nil(optional_string(tracker_summary, :provider_scope_key)) ->
         eligibility(false, :config_error, "project snapshot is missing provider scope key")
+
+      permanent_poll_failure?(last_poll) ->
+        eligibility(false, :config_error, permanent_poll_failure_message(last_poll))
+
+      future?(next_due_at, now) and last_poll_status(last_poll) == :rate_limited ->
+        eligibility(false, :rate_limited, "provider rate limit is active")
+
+      future?(next_due_at, now) and last_poll_status(last_poll) == :circuit_open ->
+        eligibility(false, :circuit_open, "provider circuit is open")
+
+      future?(next_due_at, now) and last_poll_status(last_poll) in [:retryable_failure, :timed_out, :unknown_result] ->
+        eligibility(false, :backoff, "poll retry backoff is active")
 
       future?(backoff_until, now) ->
         eligibility(false, :backoff, "poll backoff is active")
@@ -658,6 +688,30 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       poll_interval_ms -> DateTime.add(finished_at, poll_interval_ms, :millisecond)
     end
   end
+
+  defp retry_after_due_at(_finished_at, nil), do: nil
+  defp retry_after_due_at(finished_at, retry_after_ms), do: DateTime.add(finished_at, retry_after_ms, :millisecond)
+
+  defp retry_after_backoff_until(status, finished_at, retry_after_ms)
+       when status in [:retryable_failure, :rate_limited, :timed_out, :unknown_result] and is_integer(retry_after_ms) do
+    DateTime.add(finished_at, retry_after_ms, :millisecond)
+  end
+
+  defp retry_after_backoff_until(_status, _finished_at, _retry_after_ms), do: nil
+
+  defp permanent_poll_failure?(last_poll) do
+    last_poll_status(last_poll) == :permanent_failure
+  end
+
+  defp permanent_poll_failure_message(last_poll) do
+    case normalize_output_atom(value(last_poll || %{}, :error_class)) do
+      nil -> "last poll failed permanently"
+      error_class -> "last poll failed permanently: #{Atom.to_string(error_class)}"
+    end
+  end
+
+  defp last_poll_status(nil), do: nil
+  defp last_poll_status(last_poll), do: normalize_optional_result_status(value(last_poll, :status))
 
   defp default_attempt_id(project_id, provider_scope_key, request_id, attempted_at) do
     stable = Enum.join([project_id, provider_scope_key, request_id, iso8601(attempted_at)], "|")

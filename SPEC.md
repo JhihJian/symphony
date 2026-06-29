@@ -682,8 +682,11 @@ Observability:
 - API, snapshot, or dashboard output SHOULD expose a sanitized Hub poll coordination summary:
   allowed projects, blocked/not-due/error projects, next due time, backoff/circuit state, recent
   result summary, and provider queue/backpressure summary.
+- Hub runtime summaries SHOULD expose whether a tick is running or recently completed, selected
+  project count, per-project last poll/backoff, and provider scope/queue result summaries.
 - Poll coordination snapshots MUST NOT contain provider tokens, API keys, credentials, cookies, raw
-  secret-bearing config, full prompts, full Codex transcripts, or cancellation token values.
+  secret-bearing config, full prompts, full Codex transcripts, provider response bodies, or
+  cancellation token values.
 
 #### 4.1.14 Hub Device Observability Projection (OPTIONAL)
 
@@ -1165,10 +1168,15 @@ Runtime entrypoint:
   single-project startup.
 - Legacy startup using `--tracker-config <path-to-TRACKER.yaml> <path-to-WORKFLOW.md>` MUST remain
   compatible.
-- A read-only Hub runtime MAY load the registry, build poll coordination and device observability
-  snapshots, and expose them through the existing observability API.
-- This read-only runtime MUST NOT execute provider I/O, dispatch agents, create workspaces, write
-  provider comments/statuses/PRs, or take ownership of existing legacy poll loops.
+- A Hub runtime MAY load the registry, build poll coordination and device observability snapshots,
+  execute a controlled candidate-scan poll tick through a Hub provider request boundary, record poll
+  attempt/result facts, and expose those safe summaries through the existing observability API.
+- A Hub poll tick runtime skeleton MUST route candidate scans through provider governance rather
+  than direct per-project polling. Its default provider executor MAY be a no-legacy-adapter skeleton,
+  but tests SHOULD be able to inject a provider executor that returns governed results.
+- This runtime MUST NOT dispatch agents, create workspaces, write provider comments/statuses/PRs, or
+  take ownership of existing legacy poll loops unless a later explicit Hub scheduler integration
+  documents that ownership change.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
   `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, and
   `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
@@ -1187,9 +1195,10 @@ Compatibility boundary:
   writeback execution.
 - Hub provider request governance defines the model and in-memory scheduling contract for a shared
   provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
-  snapshots from that contract. These model APIs do not perform provider I/O or require existing
-  legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated until an explicit
-  Hub integration enables that path.
+  snapshots from that contract. A Hub poll tick skeleton may execute selected candidate-scan
+  requests through an injectable provider executor and record normalized results, but it MUST NOT
+  require existing legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated
+  until an explicit Hub integration enables that path.
 - Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
   builds `ProviderGovernance` requests for structured provider calls and returns safe result
   summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned
