@@ -79,7 +79,14 @@ project/scope fields are treated as provider input to validate against that poll
 authority to rewrite the Hub project or provider scope. Safe Hub summaries redact full body fields
 such as `body`, `comment_body`, `pull_request_body`, `pr_body`, `raw_provider_body`, and
 `full_prompt` to hash/byte metadata before they reach provider queues, poll coordination, or
-`/api/v1/state`. `SymphonyElixir.Hub.DispatchBoundary` adds the next
+`/api/v1/state`. `SymphonyElixir.Hub.DispatchPlanning` adds the next Hub runtime baseline:
+eligible intake candidates are converted into safe pending dispatch/start-intent summaries with
+stable project/provider-scope/IssueRef identity and poll/intake source correlation. Planning
+reserves only model-level intent slots, explains already-planned, capacity, active-attempt,
+workspace, manual-attention, paused/config-error, and provider-backoff skips, and recovers previous
+pending plans on refresh instead of duplicating them. It still does not start an agent, create a
+real worker workspace, write providers, or replace legacy single-project scheduling.
+`SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
 and safe run context snapshots. It is still not a provider executor or full Hub scheduler: without

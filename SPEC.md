@@ -1185,6 +1185,22 @@ Runtime entrypoint:
   unresolved start intents, workspace lease conflicts, retry/backoff, and project/global capacity.
   This precheck MUST NOT start agents, create workspaces or leases, mutate provider state, or replace
   the final dispatch transaction.
+- A Hub dispatch planning boundary MAY consume candidate intake summaries and produce safe
+  dispatch-plan or pending start-intent summaries for eligible candidates. Planning records SHOULD
+  include stable `project_id`, provider scope, IssueRef-derived issue key, candidate/poll/intake
+  source correlation, minimal attempt/start-intent identity, planning outcome, and explicit safety
+  flags showing that no worker was started and no provider was written.
+- Dispatch planning MUST be idempotent across refresh/replay: an existing active attempt,
+  unresolved start intent, or previous pending dispatch plan for the same project/provider scope and
+  IssueRef MUST be reported as already planned or blocked rather than producing a duplicate plan.
+- Dispatch planning SHOULD reserve project/global capacity across candidates in the same planning
+  pass, so later eligible candidates are reported as capacity unavailable once the in-memory plan has
+  consumed the available slot. It SHOULD also explain paused/config-error projects, provider/project
+  backoff, manual attention, workspace/lease conflicts, retry backoff, invalid candidates, and active
+  attempts as skipped outcomes.
+- Dispatch planning MUST remain model-only until an explicit Hub scheduler integration is
+  specified. It MUST NOT start agents, create real worker workspaces, write provider comments,
+  update provider statuses, or take ownership of legacy single-project scheduling by itself.
 - Candidate identity MUST be bound to the current poll source and registry project. Provider
   candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
   repository, project slug, or equivalent scope identity MAY be present only when they match the poll
@@ -1194,9 +1210,9 @@ Runtime entrypoint:
   take ownership of existing legacy poll loops unless a later explicit Hub scheduler integration
   documents that ownership change.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
-  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, and
-  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
-  SHOULD keep the existing API shape.
+  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
+  `hub_dispatch_planning`, and `hub_device_observability` when a Hub snapshot is present. Legacy
+  snapshots without Hub fields SHOULD keep the existing API shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
@@ -1223,6 +1239,12 @@ Compatibility boundary:
   reasons such as invalid candidate, duplicate active attempt, workspace busy, project paused,
   config error, provider backoff, manual attention, or capacity full. This remains a read/precheck
   boundary and MUST NOT imply a Hub scheduler has taken ownership of dispatch.
+- Hub dispatch planning MAY consume eligible intake candidates and produce safe planned/skipped
+  outcomes plus unresolved pending-intent summaries, including per-project counts, skipped reasons,
+  candidate/poll source correlation, and plan identity. This remains a model-only planning boundary:
+  replayed or refreshed candidates with an existing pending plan/start intent MUST be explainable as
+  already planned rather than duplicated, and capacity/full/backoff/manual-attention/workspace
+  blockers MUST be visible without starting workers or touching providers.
 - Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
   builds `ProviderGovernance` requests for structured provider calls and returns safe result
   summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned

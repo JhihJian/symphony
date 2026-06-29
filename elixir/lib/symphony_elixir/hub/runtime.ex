@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   alias SymphonyElixir.Hub.{
     CandidateIntake,
     DeviceObservability,
+    DispatchPlanning,
     PollCoordinator,
     ProjectRegistry,
     ProviderExecutor,
@@ -40,6 +41,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:provider_executor) => module() | function(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
+          required(:dispatch_planning) => map(),
           required(:tick) => map(),
           required(:snapshot) => map()
         }
@@ -125,6 +127,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       provider_queue = ProviderGovernance.new_queue()
       runtime_ledger = opts |> Keyword.get(:runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
       candidate_intake = CandidateIntake.empty(registry, now: loaded_at, runtime_ledger: runtime_ledger)
+      dispatch_planning = DispatchPlanning.empty(registry, now: loaded_at, runtime_ledger: runtime_ledger, candidate_intake: candidate_intake)
       tick = idle_tick(loaded_at)
 
       {:ok,
@@ -137,6 +140,7 @@ defmodule SymphonyElixir.Hub.Runtime do
          provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
          runtime_ledger: runtime_ledger,
          candidate_intake: candidate_intake,
+         dispatch_planning: dispatch_planning,
          tick: tick,
          snapshot:
            build_snapshot(config_path, loaded_at, registry,
@@ -144,6 +148,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              provider_queue: provider_queue,
              runtime_ledger: runtime_ledger,
              candidate_intake: candidate_intake,
+             dispatch_planning: dispatch_planning,
              tick: tick
            )
        }}
@@ -172,7 +177,14 @@ defmodule SymphonyElixir.Hub.Runtime do
            queued: true,
            coalesced: false,
            requested_at: requested_at,
-           operations: ["hub_registry_load", "hub_poll_plan", "hub_provider_candidate_scan", "hub_candidate_intake", "hub_device_observability"],
+           operations: [
+             "hub_registry_load",
+             "hub_poll_plan",
+             "hub_provider_candidate_scan",
+             "hub_candidate_intake",
+             "hub_dispatch_planning",
+             "hub_device_observability"
+           ],
            poll_tick: tick_summary
          }, state}
 
@@ -203,6 +215,14 @@ defmodule SymphonyElixir.Hub.Runtime do
     tick = normalize_tick(Keyword.get(opts, :tick))
     runtime_ledger = Keyword.get(opts, :runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
     candidate_intake = Keyword.get(opts, :candidate_intake, CandidateIntake.empty(registry, now: now, runtime_ledger: runtime_ledger))
+
+    dispatch_planning =
+      Keyword.get(
+        opts,
+        :dispatch_planning,
+        DispatchPlanning.empty(registry, now: now, runtime_ledger: runtime_ledger, candidate_intake: candidate_intake)
+      )
+
     poll_plan = PollCoordinator.build_plan(registry, now: now, facts: poll_facts, queue: provider_queue)
 
     device_observability =
@@ -240,12 +260,14 @@ defmodule SymphonyElixir.Hub.Runtime do
         counts: counts,
         poll_tick: tick,
         candidate_intake: CandidateIntake.tick_summary(candidate_intake),
+        dispatch_planning: DispatchPlanning.tick_summary(dispatch_planning),
         migration_boundary: migration_boundary(),
         registry: registry_summary
       },
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
+      hub_dispatch_planning: dispatch_planning,
       hub_dispatch_boundary: runtime_ledger,
       hub_device_observability: device_observability
     }
@@ -320,7 +342,22 @@ defmodule SymphonyElixir.Hub.Runtime do
         runtime_ledger: state.runtime_ledger
       )
 
-    tick = finished_tick(started_tick, finished_at, length(executable_entries), result_summaries, candidate_intake)
+    dispatch_planning =
+      DispatchPlanning.build(state.registry, candidate_intake,
+        now: finished_at,
+        runtime_ledger: state.runtime_ledger,
+        previous_plan: state.dispatch_planning
+      )
+
+    tick =
+      finished_tick(
+        started_tick,
+        finished_at,
+        length(executable_entries),
+        result_summaries,
+        candidate_intake,
+        dispatch_planning
+      )
 
     snapshot =
       build_snapshot(state.config_path, state.loaded_at, state.registry,
@@ -329,6 +366,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         provider_queue: provider_queue,
         runtime_ledger: state.runtime_ledger,
         candidate_intake: candidate_intake,
+        dispatch_planning: dispatch_planning,
         tick: tick
       )
 
@@ -337,6 +375,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       | poll_facts: poll_facts,
         provider_queue: provider_queue,
         candidate_intake: candidate_intake,
+        dispatch_planning: dispatch_planning,
         tick: tick,
         snapshot: snapshot
     }
@@ -505,6 +544,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       result_counts: %{},
       results: [],
       candidate_intake: CandidateIntake.tick_summary(%{}),
+      dispatch_planning: DispatchPlanning.tick_summary(%{}),
       updated_at: iso8601(now)
     }
   end
@@ -519,11 +559,12 @@ defmodule SymphonyElixir.Hub.Runtime do
       result_counts: %{},
       results: [],
       candidate_intake: CandidateIntake.tick_summary(%{}),
+      dispatch_planning: DispatchPlanning.tick_summary(%{}),
       updated_at: iso8601(started_at)
     }
   end
 
-  defp finished_tick(started_tick, finished_at, selected_count, result_summaries, candidate_intake) do
+  defp finished_tick(started_tick, finished_at, selected_count, result_summaries, candidate_intake, dispatch_planning) do
     results = Enum.reverse(result_summaries)
 
     %{
@@ -535,6 +576,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       result_counts: result_counts(results),
       results: results,
       candidate_intake: CandidateIntake.tick_summary(candidate_intake),
+      dispatch_planning: DispatchPlanning.tick_summary(dispatch_planning),
       updated_at: iso8601(finished_at)
     }
   end
@@ -551,6 +593,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       result_counts: Map.get(tick, :result_counts) || Map.get(tick, "result_counts") || %{},
       results: Map.get(tick, :results) || Map.get(tick, "results") || [],
       candidate_intake: CandidateIntake.tick_summary(Map.get(tick, :candidate_intake) || Map.get(tick, "candidate_intake") || %{}),
+      dispatch_planning: DispatchPlanning.tick_summary(Map.get(tick, :dispatch_planning) || Map.get(tick, "dispatch_planning") || %{}),
       updated_at: Map.get(tick, :updated_at) || Map.get(tick, "updated_at")
     }
   end
@@ -677,6 +720,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         "provider_candidate_scan_request",
         "poll_result_snapshot",
         "candidate_intake_snapshot",
+        "dispatch_planning_snapshot",
         "device_observability_snapshot"
       ]
     }

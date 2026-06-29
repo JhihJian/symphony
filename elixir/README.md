@@ -333,21 +333,28 @@ backoff/eligibility fields. Candidate-scan result summaries are also normalized 
 scope/IssueRef identity, source poll request/result ids, eligible counts, and skipped reasons such
 as invalid candidate, duplicate active attempt, workspace busy, project paused/config error,
 provider backoff/manual attention, or capacity full. Eligible candidates are only marked
-`ready_for_dispatch_evaluation`; Hub mode still does not start the legacy single-project
-orchestrator, dispatch Codex agents, create workspaces, write comments/statuses/PRs, or take
-ownership of existing `symphony@project.service` instances. The default executor is a skeleton
+`ready_for_dispatch_evaluation`. The same refresh also builds `hub_dispatch_planning`: a safe
+model-only plan that converts eligible candidates into pending dispatch/start-intent summaries with
+stable project/provider-scope/IssueRef identity, source poll correlation, intake candidate ids, and
+minimal attempt/intent identity. Planning recovers previous pending plans on refresh instead of
+duplicating them, reserves project/global capacity across candidates in the same tick, and explains
+already-planned, capacity, active-attempt, workspace, manual-attention, paused/config-error, and
+provider-backoff skips. Hub mode still does not start the legacy single-project orchestrator,
+dispatch Codex agents, create real workspaces, write comments/statuses/PRs, or take ownership of
+existing `symphony@project.service` instances. The default executor is a skeleton
 boundary and does not migrate the legacy GitHub/GitLab/Linear adapters. The existing per-project
 services and their poll loops keep running until a later migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, and
+`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, and
 `hub_device_observability`. These snapshots are safe summaries: they show tick status, project
 eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
-safe poll correlation ids, and skipped reasons while omitting provider tokens, API keys,
-authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
-provider response bodies, and full comment/PR bodies. The terminal dashboard only adds a compact
-Hub mode line with project count, config error count, provider scope count, and poll tick
-capability; it is not a complete Hub dashboard page.
+safe poll correlation ids, planning counts, planned/skipped outcomes, pending intent summaries, and
+skipped reasons while omitting provider tokens, API keys, authorization/cookie values, secret env
+values, raw provider config, full prompts, full transcripts, provider response bodies, and full
+comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with project count,
+config error count, provider scope count, and poll tick capability; it is not a complete Hub
+dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -524,6 +531,19 @@ Candidate identity is source-bound: the poll source and registry project provide
 project/scope fields are accepted only when they match that source; cross-project, cross-provider,
 or cross-repository mismatches are isolated as invalid candidates and never become
 `ready_for_dispatch_evaluation`.
+
+`SymphonyElixir.Hub.DispatchPlanning` is the Hub runtime's eligible-candidate-to-start-intent
+planning baseline. It consumes the safe candidate intake snapshot and emits per-candidate planning
+outcomes plus pending intent summaries. A planned record is keyed by `project_id`, provider scope,
+IssueRef-derived issue key, stable attempt id, and stable start intent id, and it keeps source poll
+and intake correlation. Previous pending plans and unresolved runtime-ledger start intents are
+recovered on refresh as `already_planned` rather than duplicated. The planner also reserves
+project/global capacity across candidates in the same tick, so one eligible candidate can consume a
+project slot and later eligible candidates for that project are reported as capacity unavailable.
+Manual attention, provider/project backoff, paused/config-error projects, active attempts,
+workspace/lease conflicts, retry backoff, and invalid identity remain skipped outcomes. This
+planning boundary is still model-only: it does not call `dispatch/3`, launch Codex, create a real
+workspace, write a provider, or take over the legacy `symphony@project.service` path.
 
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
