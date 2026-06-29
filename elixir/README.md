@@ -308,6 +308,35 @@ The registry also reports cross-project validation results. Shared workspace roo
 provider scopes are warnings. Shared Dashboard/API ports are errors because two live services cannot
 bind the same port.
 
+### Hub mode read-only runtime
+
+Hub mode now has an explicit read-only runtime entrypoint:
+
+```bash
+./bin/symphony --hub-config /path/to/HUB.yaml --port 21000
+```
+
+`--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
+present, and the legacy startup path remains:
+
+```bash
+./bin/symphony --tracker-config /path/to/TRACKER.yaml /path/to/WORKFLOW.md
+```
+
+In Hub mode the process loads `HUB.yaml`, keeps a safe registry snapshot, builds a poll coordination
+plan without executing provider requests, and projects device-level Hub observability. It does not
+start the legacy single-project orchestrator, poll GitHub/GitLab/Linear, dispatch Codex agents,
+create workspaces, write comments/statuses/PRs, or take ownership of existing
+`symphony@project.service` instances. The existing per-project services and their poll loops keep
+running until a later migration explicitly changes ownership.
+
+When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
+`hub_project_registry`, `hub_poll_coordination`, and `hub_device_observability`. These snapshots are
+safe summaries: they omit provider tokens, API keys, authorization/cookie values, secret env values,
+raw provider config, full prompts, full transcripts, and full comment/PR bodies. The terminal
+dashboard only adds a compact Hub mode line with project count, config error count, and provider
+scope count; it is not a complete Hub dashboard page.
+
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
 id or provider-local number/key, identifier, and URL. This is intentionally compatible with the

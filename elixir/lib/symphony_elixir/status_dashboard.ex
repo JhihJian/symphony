@@ -6,7 +6,7 @@ defmodule SymphonyElixir.StatusDashboard do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, HttpServer}
+  alias SymphonyElixir.{Config, HttpServer, Hub.Runtime}
   alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -53,7 +53,9 @@ defmodule SymphonyElixir.StatusDashboard do
     :last_rendered_at_ms,
     :pending_content,
     :flush_timer_ref,
-    :last_snapshot_fingerprint
+    :last_snapshot_fingerprint,
+    :orchestrator,
+    :mode
   ]
 
   @type t :: %__MODULE__{
@@ -71,7 +73,9 @@ defmodule SymphonyElixir.StatusDashboard do
           last_rendered_at_ms: integer() | nil,
           pending_content: String.t() | nil,
           flush_timer_ref: reference() | nil,
-          last_snapshot_fingerprint: term() | nil
+          last_snapshot_fingerprint: term() | nil,
+          orchestrator: GenServer.name(),
+          mode: :legacy | :hub
         }
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -99,7 +103,9 @@ defmodule SymphonyElixir.StatusDashboard do
     refresh_ms_override = keyword_override(opts, :refresh_ms)
     enabled_override = keyword_override(opts, :enabled)
     render_interval_ms_override = keyword_override(opts, :render_interval_ms)
-    observability = Config.settings!().observability
+    mode = Keyword.get(opts, :mode, :legacy)
+    orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
+    observability = observability_settings(mode)
     refresh_ms = refresh_ms_override || observability.refresh_ms
     render_interval_ms = render_interval_ms_override || observability.render_interval_ms
     render_fun = Keyword.get(opts, :render_fun, &render_to_terminal/1)
@@ -122,7 +128,9 @@ defmodule SymphonyElixir.StatusDashboard do
        last_rendered_at_ms: nil,
        pending_content: nil,
        flush_timer_ref: nil,
-       last_snapshot_fingerprint: nil
+       last_snapshot_fingerprint: nil,
+       orchestrator: orchestrator,
+       mode: mode
      }}
   end
 
@@ -177,7 +185,7 @@ defmodule SymphonyElixir.StatusDashboard do
   def handle_info(:tick, state), do: {:noreply, state}
 
   defp refresh_runtime_config(%__MODULE__{} = state) do
-    observability = Config.settings!().observability
+    observability = observability_settings(state.mode)
 
     %{
       state
@@ -192,7 +200,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp maybe_render(state) do
     now_ms = System.monotonic_time(:millisecond)
-    {snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms)
+    {snapshot_data, token_samples} = snapshot_with_samples(state.token_samples, now_ms, state.orchestrator)
     state = Map.put(state, :token_samples, token_samples)
 
     current_tokens = snapshot_total_tokens(snapshot_data)
@@ -305,8 +313,8 @@ defmodule SymphonyElixir.StatusDashboard do
       %{state | pending_content: nil, flush_timer_ref: nil}
   end
 
-  defp snapshot_with_samples(token_samples, now_ms) do
-    case snapshot_payload() do
+  defp snapshot_with_samples(token_samples, now_ms, orchestrator) do
+    case snapshot_payload(orchestrator) do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
@@ -318,7 +326,8 @@ defmodule SymphonyElixir.StatusDashboard do
              blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             hub_runtime: Map.get(snapshot, :hub_runtime)
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -336,6 +345,7 @@ defmodule SymphonyElixir.StatusDashboard do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
         blocked = Map.get(snapshot, :blocked, [])
+        hub_runtime_line = format_hub_runtime_line(Map.get(snapshot, :hub_runtime))
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
@@ -367,6 +377,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           hub_runtime_line,
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -418,6 +429,35 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp format_hub_runtime_line(%{mode: "hub", counts: counts}) when is_map(counts) do
+    project_count = Map.get(counts, :project_count, 0)
+    config_error_count = Map.get(counts, :config_error_count, 0)
+    provider_scope_count = Map.get(counts, :provider_scope_count, 0)
+
+    colorize("│ Hub mode: ", @ansi_bold) <>
+      colorize("#{project_count} projects", @ansi_cyan) <>
+      colorize(" | ", @ansi_gray) <>
+      colorize("#{config_error_count} config errors", hub_error_color(config_error_count)) <>
+      colorize(" | ", @ansi_gray) <>
+      colorize("#{provider_scope_count} provider scopes", @ansi_cyan) <>
+      colorize(" | read-only", @ansi_gray)
+  end
+
+  defp format_hub_runtime_line(_hub_runtime), do: []
+
+  defp hub_error_color(0), do: @ansi_green
+  defp hub_error_color(_count), do: @ansi_red
+
+  defp observability_settings(:hub) do
+    %{
+      dashboard_enabled: true,
+      refresh_ms: 1_000,
+      render_interval_ms: 16
+    }
+  end
+
+  defp observability_settings(_mode), do: Config.settings!().observability
+
   defp format_project_refresh_line(%{checking?: true}) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("checking now…", @ansi_cyan)
   end
@@ -433,6 +473,14 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp project_url do
+    if Runtime.hub_mode?() do
+      nil
+    else
+      legacy_project_url()
+    end
+  end
+
+  defp legacy_project_url do
     tracker = Config.settings!().tracker
 
     case tracker.kind do
@@ -493,7 +541,14 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp dashboard_url do
-    dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
+    {host, port} =
+      if Runtime.hub_mode?() do
+        {"127.0.0.1", Application.get_env(:symphony_elixir, :server_port_override)}
+      else
+        {Config.settings!().server.host, Config.server_port()}
+      end
+
+    dashboard_url(host, port, HttpServer.bound_port())
   end
 
   defp dashboard_url(_host, nil, _bound_port), do: nil
@@ -630,9 +685,9 @@ defmodule SymphonyElixir.StatusDashboard do
   def project_url_for_test(%{"project_slug" => project_slug}), do: linear_project_url(project_slug)
   def project_url_for_test(_tracker), do: nil
 
-  defp snapshot_payload do
-    if Process.whereis(Orchestrator) do
-      case Orchestrator.snapshot() do
+  defp snapshot_payload(orchestrator) do
+    if Process.whereis(orchestrator) do
+      case Orchestrator.snapshot(orchestrator, 15_000) do
         %{
           running: running,
           retrying: retrying,
