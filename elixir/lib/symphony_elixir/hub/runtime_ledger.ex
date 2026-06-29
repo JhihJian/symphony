@@ -1140,6 +1140,8 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
         worker_host: intent.worker_host,
         runner: intent.runner,
         correlation_id: intent.correlation_id,
+        runtime_identity: intent.runtime_identity,
+        start_command_summary: intent.start_command_summary,
         manual_attention: intent.manual_attention
       }
     end)
