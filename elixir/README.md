@@ -343,24 +343,31 @@ provider-backoff skips. The refresh then builds `hub_dispatch_plan_application`:
 summary that applies eligible planned intents through `DispatchBoundary.dispatch/3` to the in-memory
 runtime ledger model, creating claim, attempt, workspace lease, start-intent, and safe run-context
 facts. Repeated refreshes or unresolved runtime-ledger start intents are reported as already
-applied/already planned rather than creating a duplicate active attempt. Hub mode still does not
-start the legacy single-project orchestrator, dispatch Codex agents, create real workspaces, run
-workspace hooks, write comments/statuses/PRs, or take ownership of existing
-`symphony@project.service` instances. The default executor is a skeleton boundary and does not
-migrate the legacy GitHub/GitLab/Linear adapters. The existing per-project services and their poll
-loops keep running until a later migration explicitly changes ownership.
+applied/already planned rather than creating a duplicate active attempt. It then builds
+`hub_worker_start_handoff`: a model-only start handoff summary that reads those pending start intents
+from runtime-ledger replay, builds a safe request summary, and calls an injectable skeleton starter.
+Acknowledged results mark the start intent acknowledged and the attempt running; failures can enter
+retry/backoff, blocked, released, or manual attention; unknown results remain unresolved and are
+reported on later refreshes instead of starting again. Hub mode still does not start the legacy
+single-project orchestrator, dispatch real Codex agents, create real workspaces, run workspace hooks,
+write comments/statuses/PRs, or take ownership of existing `symphony@project.service` instances. The
+default provider executor and default start handoff are skeleton boundaries and do not migrate the
+legacy GitHub/GitLab/Linear adapters. The existing per-project services and their poll loops keep
+running until a later migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`,
-`hub_dispatch_plan_application`, `hub_dispatch_boundary`, and `hub_device_observability`. These
-snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
-provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
-planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
-counts, pending start-intent summaries, runtime-ledger replay summaries, and skipped reasons while
-omitting provider tokens, API keys, authorization/cookie values, secret env values, raw provider
-config, full prompts, full transcripts, provider response bodies, and full comment/PR bodies. The
-terminal dashboard only adds a compact Hub mode line with project count, config error count,
-provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
+`hub_dispatch_plan_application`, `hub_worker_start_handoff`, `hub_dispatch_boundary`, and
+`hub_device_observability`. These snapshots are safe summaries: they show tick status, project
+eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
+safe poll correlation ids, planning counts, planned/skipped outcomes, application
+applied/skipped/blocked/already-applied counts, start handoff selected/acked/failed/unknown/manual
+attention/already-acked/skipped counts, pending or unresolved start-intent summaries, runtime-ledger
+replay summaries, and skipped reasons while omitting provider tokens, API keys, authorization/cookie
+values, secret env values, raw provider config, full prompts, full transcripts, provider response
+bodies, and full comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with
+project count, config error count, provider scope count, and poll tick capability; it is not a
+complete Hub dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -566,6 +573,21 @@ This is still not a scheduler or worker launcher. The application boundary does 
 create a real worker workspace, run workspace hooks, write GitHub/GitLab/Linear provider state,
 comments, or PRs, persist a database/WAL transaction, or migrate the legacy
 `symphony@project.service` path.
+
+`SymphonyElixir.Hub.WorkerStartHandoff` is the Hub runtime's start-intent-to-acknowledgement
+skeleton. It consumes runtime-ledger replay, selects unresolved pending start intents, and builds a
+safe handoff request containing project/provider scope/IssueRef, attempt/start intent/workspace
+lease, runner/start command summary, and source poll/intake/planning correlation. Tests and future
+callers can inject a starter function or module returning `ack`, `failed`, `unknown`, or
+`manual_attention`; the default skeleton does not launch a worker and records an unknown result. Ack
+updates the ledger through `acknowledge_start/3`; failures use `record_start_failure/4`; unknown uses
+`record_start_unknown/3` and remains unresolved so later refreshes report a skipped
+`start_intent_unresolved` reason instead of blindly starting a second attempt.
+
+This is still not real worker integration. The handoff boundary does not start Codex app-server,
+create worker workspaces, execute workspace hooks, write GitHub/GitLab/Linear provider state,
+replace the legacy worker supervisor, persist a durable database/WAL, or provide distributed locks.
+Those pieces remain future Hub scheduler/worker integration work.
 
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,

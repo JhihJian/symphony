@@ -94,6 +94,15 @@ already planned instead of creating a second active attempt. The summary exposes
 blocked, manual-attention, and already-applied counts plus safe pending start-intent correlation.
 This still does not launch Codex, create a real worker workspace, run workspace hooks, write
 providers, or migrate legacy services.
+`SymphonyElixir.Hub.WorkerStartHandoff` adds the next model-only handoff boundary: refresh can now
+read pending start intents from runtime-ledger replay, build a safe start request summary, ask an
+injectable skeleton starter for `ack`, `failed`, `unknown`, or `manual_attention`, and apply the
+result back to the ledger. Acknowledgements link the start intent to a running attempt; failures can
+enter retry/backoff, blocked, released, or manual attention; unknown results remain unresolved so
+refresh does not blindly start a second worker. The summary exposes selected, acked, failed, unknown,
+manual-attention, already-acked, skipped, reason, pending/unresolved intent, and replay counts. It is
+still a skeleton: it does not start Codex app-server, create real worker workspaces, run hooks, write
+providers, or take over `symphony@project.service`.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
@@ -125,10 +134,11 @@ The Elixir runtime now also has an explicit Hub entrypoint,
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
 boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
 exposes safe Hub fields through `/api/v1/state`, including `hub_dispatch_plan_application` and
-runtime-ledger replay summaries after a plan is applied. The default skeleton executor does not
-migrate GitHub/GitLab/Linear legacy adapters, create real workspaces, or start agents. This entrypoint is opt-in
-only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services
-stay unchanged.
+`hub_worker_start_handoff` runtime-ledger replay summaries after a plan is applied. The default
+skeleton executor does not migrate GitHub/GitLab/Linear legacy adapters, create real workspaces, or
+start agents; the default start handoff records an unknown skeleton result instead of launching a
+worker. This entrypoint is opt-in only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md`
+startup path and per-project services stay unchanged.
 
 ---
 

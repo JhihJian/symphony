@@ -1081,7 +1081,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp active_issue_summary(project, issue) do
     attempt = active_attempt(issue) || latest_attempt(issue)
     lease = active_lease_for(project, issue.issue_key, attempt && attempt.attempt_id)
-    start_intent = active_start_intent_for(project, issue.issue_key, attempt && attempt.attempt_id)
+    start_intent = start_intent_for(project, issue.issue_key, attempt && attempt.attempt_id)
     retry = issue.retry_backoff
 
     %{
@@ -1106,7 +1106,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
       |> Enum.filter(&active_attempt?/1)
       |> Enum.map(fn attempt ->
         lease = active_lease_for(project, issue.issue_key, attempt.attempt_id)
-        start_intent = active_start_intent_for(project, issue.issue_key, attempt.attempt_id)
+        start_intent = start_intent_for(project, issue.issue_key, attempt.attempt_id)
 
         %{
           issue_key: issue.issue_key,
@@ -1265,12 +1265,13 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     end)
   end
 
-  defp active_start_intent_for(_project, _issue_key, nil), do: nil
+  defp start_intent_for(_project, _issue_key, nil), do: nil
 
-  defp active_start_intent_for(project, issue_key, attempt_id) do
-    Enum.find(project.start_intents, fn intent ->
-      active_start_intent?(intent) and intent.issue_key == issue_key and intent.attempt_id == attempt_id
-    end)
+  defp start_intent_for(project, issue_key, attempt_id) do
+    project.start_intents
+    |> Enum.filter(fn intent -> intent.issue_key == issue_key and intent.attempt_id == attempt_id end)
+    |> Enum.sort_by(&{&1.acked_at || &1.finished_at || &1.requested_at || "", &1.intent_id}, :desc)
+    |> List.first()
   end
 
   defp active_attempt_exists?(project, issue_key, attempt_id) do

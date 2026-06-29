@@ -11,7 +11,8 @@ defmodule SymphonyElixirWeb.Presenter do
     DispatchPlanApplication,
     DispatchPlanning,
     PollCoordinator,
-    RuntimeLedger
+    RuntimeLedger,
+    WorkerStartHandoff
   }
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
@@ -44,6 +45,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_candidate_intake(snapshot)
         |> maybe_put_hub_dispatch_planning(snapshot)
         |> maybe_put_hub_dispatch_plan_application(snapshot)
+        |> maybe_put_hub_worker_start_handoff(snapshot)
         |> maybe_put_hub_dispatch_boundary(snapshot)
 
       :timeout ->
@@ -125,6 +127,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case DispatchPlanApplication.observability_snapshot(hub_dispatch_plan_application) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_dispatch_plan_application, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_worker_start_handoff(payload, snapshot) do
+    hub_worker_start_handoff =
+      Map.get(snapshot, :hub_worker_start_handoff) ||
+        Map.get(snapshot, "hub_worker_start_handoff")
+
+    case WorkerStartHandoff.observability_snapshot(hub_worker_start_handoff) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_worker_start_handoff, safe_snapshot)
     end
   end
 
