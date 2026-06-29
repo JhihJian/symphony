@@ -338,9 +338,10 @@ active start intents point at active attempts and leases, terminal/released issu
 active leases, retry records reference known attempts, run contexts match their containing
 project/issue/attempt, and logical writeback intent keys stay stable across retry attempts. Replay
 summaries include active attempts, pending start intents, active workspace leases, retry/backoff,
-blocked candidates, conflicts, and manual-attention diagnostics, and can be filtered by
-`project_id`. Ledger snapshots must not include token values, API keys, credentials, cookies, full
-prompts, full Codex transcripts, or raw secret-bearing provider config.
+blocked candidates, writeback pending/succeeded/failed/unknown/manual-attention lists, conflicts,
+and manual-attention diagnostics, and can be filtered by `project_id`. Ledger snapshots must not
+include token values, API keys, credentials, cookies, full prompts, full Codex transcripts, raw
+secret-bearing provider config, or full provider writeback/comment body text.
 
 `SymphonyElixir.Hub.ProviderGovernance` adds the provider request governance baseline for the next
 #74 slice. It is also a pure model API. `new_request/1` builds a safe provider request record with a
@@ -399,6 +400,25 @@ The raw `linear_graphql` escape hatch is intentionally not routed through this b
 accepts arbitrary GraphQL documents and variables, so it needs a separate structured operation and
 scope-validation model before Hub governance can safely infer replay semantics. Its legacy behavior
 therefore remains unchanged.
+
+`SymphonyElixir.Hub.WritebackProcessor` adds the #74 writeback intent/result processing baseline on
+top of provider tool routing and the runtime ledger. It accepts atom-key summaries, string-key
+payloads, or dynamic tool payloads containing `providerGovernance`; normalizes the routed
+writeback intent/result into a safe ledger fact; and can apply that fact to a recoverable ledger
+snapshot. `decide/3` compares a candidate writeback with existing facts in the same
+`project_id + IssueRef` scope and returns whether the Hub should reuse an already completed result,
+retry a policy-safe pending/retryable writeback, require a PR lookup by branch/head before replay,
+enter manual attention, or report a conflict.
+
+The decision model treats status set and workpad upsert as replay-safe when the intent key and
+target remain stable. Unknown PR create and ordinary append-comment results are not blindly
+replayed: PR create returns a provider lookup hint for branch/head, while append comment enters
+manual attention because the provider may already have accepted the side effect. The processor also
+surfaces unstable intent keys and same-intent-key/different-target conflicts through the
+`RuntimeLedger` diagnostics already consumed by replay/observability summaries. This remains a
+model boundary only; it does not implement the final Hub scheduler, provider writeback executor,
+database persistence, or Dashboard page, and the legacy single-project direct provider path remains
+the default unless a caller explicitly opts into Hub routing.
 
 `SymphonyElixir.Hub.PollCoordinator` adds the Hub poll coordination baseline. It is a pure model
 API: `build_plan/2` combines Hub project snapshots, provider governance queue/scope state, and

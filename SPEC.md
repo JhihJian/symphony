@@ -597,6 +597,45 @@ implementation defines a structured GraphQL operation model and scope validator.
 that leave such a tool direct MUST document that decision and keep its legacy response behavior
 unchanged.
 
+#### 4.1.12.2 Hub Writeback Intent/Result Processing (OPTIONAL)
+
+Hub-compatible implementations MAY add a writeback processing boundary that consumes the safe
+`providerGovernance` summary produced by provider tool/writeback routing and turns it into runtime
+ledger writeback facts. This boundary is a recoverability and decision model only; it does not by
+itself require a Hub scheduler loop, provider writeback executor, database/WAL, distributed lock, or
+legacy provider-client migration.
+
+A writeback processor SHOULD:
+
+- Accept atom-key maps, string-key maps, and dynamic tool payloads containing `providerGovernance`.
+- Preserve `project_id + IssueRef` scope and reject summaries that cannot resolve a provider scope
+  and issue identity.
+- Normalize a stable `intent_key`, logical action, operation type, safe target summary, provider
+  marker, external reference, replay policy, result status, attempt id, and safe run-context
+  correlation into a JSON/YAML-safe runtime ledger writeback fact.
+- Summarize large or side-effect-bearing text such as comment or PR bodies with size and digest
+  rather than copying the full body.
+- Strip token, API key, authorization, cookie, secret env, prompt, transcript, raw provider config,
+  and other secret-bearing fields from request/result/correlation/writeback summaries.
+
+Replay/decision behavior SHOULD distinguish:
+
+- A succeeded idempotent, status-set, or workpad-upsert intent as already complete and reusable
+  without repeating provider writes.
+- Pending or retryable failure facts as retryable only when the replay policy allows retry.
+- Unknown PR create results as not blindly replayable. The decision MUST require a provider-side
+  lookup by stable branch/head target, or manual attention if lookup cannot be performed.
+- Unknown ordinary append-comment results as manual attention, because the provider may already
+  have accepted the side effect.
+- The same logical action using different intent keys across retry attempts as an unstable key
+  conflict.
+- The same intent key pointing to different provider operation or target summaries as a conflict.
+
+Runtime ledger replay/observability SHOULD expose writeback pending, succeeded, failed, unknown,
+manual-attention, and conflict summaries with issue scope, intent key, attempt id, reason, and safe
+target summary. These summaries are intended for future Dashboard/API backpressure and recovery
+views and MUST remain safe for logs and UI snapshots.
+
 #### 4.1.13 Hub Poll Coordination (OPTIONAL)
 
 Hub-compatible implementations MAY define a provider-neutral poll coordination model that plans Hub
@@ -1091,6 +1130,10 @@ Compatibility boundary:
   builds `ProviderGovernance` requests for structured provider calls and returns safe result
   summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned
   provider exit migration; legacy direct provider calls stay compatible by default.
+- Hub writeback intent/result processing MAY normalize those routing summaries into runtime ledger
+  writeback facts and produce replay, de-duplication, provider-lookup, manual-attention, and
+  conflict decisions. This processing baseline remains model-only and MUST NOT imply that every
+  legacy provider writeback now goes through Hub.
 - Hub atomic dispatch defines the candidate-to-run-intent model boundary. It MUST key active
   attempts by `project_id + IssueRef`, bind claim, attempt, workspace lease, start intent, and run
   context in one model transition, and expose replay diagnostics for duplicate candidates, workspace

@@ -43,6 +43,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|transcript|full prompt|codex transcript)\b/i,
     ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
   ]
+  @body_keys MapSet.new(["body", "comment_body", "pull_request_body", "pr_body", "raw_body"])
 
   @type ledger :: %{
           required(:version) => pos_integer(),
@@ -164,7 +165,12 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           required(:attempt_id) => String.t() | nil,
           required(:provider_marker) => String.t() | nil,
           required(:external_ref) => String.t() | nil,
-          required(:error_summary) => String.t() | nil
+          required(:error_summary) => String.t() | nil,
+          required(:provider_result_status) => String.t() | nil,
+          required(:provider_replayable) => boolean(),
+          required(:manual_attention) => boolean(),
+          required(:manual_attention_reason) => String.t() | nil,
+          required(:correlation) => map()
         }
 
   @type diagnostic :: %{
@@ -486,13 +492,18 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
       intent_key: required_string(writeback, :intent_key),
       logical_action: optional_string(writeback, :logical_action),
       operation_type: optional_string(writeback, :operation_type),
-      target: stringify_nested_keys(value(writeback, :target) || %{}),
+      target: sanitize_target(value(writeback, :target) || %{}),
       replay_policy: normalize_atom(value(writeback, :replay_policy), :idempotent, @replay_policies),
       result_status: normalize_atom(value(writeback, :result_status), :pending, @writeback_statuses),
       attempt_id: optional_string(writeback, :attempt_id),
       provider_marker: optional_string(writeback, :provider_marker),
       external_ref: optional_string(writeback, :external_ref),
-      error_summary: optional_string(writeback, :error_summary)
+      error_summary: optional_string(writeback, :error_summary),
+      provider_result_status: optional_string(writeback, :provider_result_status),
+      provider_replayable: truthy?(value(writeback, :provider_replayable)),
+      manual_attention: truthy?(value(writeback, :manual_attention)),
+      manual_attention_reason: optional_string(writeback, :manual_attention_reason),
+      correlation: sanitize_value(value(writeback, :correlation) || %{})
     }
   end
 
@@ -982,7 +993,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp writeback_manual_attention(project) do
     Enum.flat_map(project.issues, fn issue ->
       issue.writebacks
-      |> Enum.filter(&(&1.result_status == :unknown and &1.replay_policy == :non_idempotent))
+      |> Enum.filter(&writeback_manual_attention?/1)
       |> Enum.map(fn writeback ->
         diagnostic(
           :warning,
@@ -992,8 +1003,10 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           nil,
           writeback.attempt_id,
           writeback.intent_key,
-          "Non-idempotent writeback result is unknown and requires manual attention"
+          "Writeback requires manual attention: #{writeback_manual_attention_reason(writeback)}"
         )
+        |> Map.put(:reason, writeback_manual_attention_reason(writeback))
+        |> Map.put(:target, writeback.target)
       end)
     end)
   end
@@ -1029,6 +1042,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
       workspace_leases: active_workspace_lease_summaries(project),
       retry_backoff: retry_backoff_summaries(project),
       blocked_candidates: blocked_candidate_summaries(project),
+      writebacks: writeback_observability(project),
       active_issues: active_issue_summaries(project),
       conflicts: project_conflicts,
       manual_attention: project_manual_attention
@@ -1173,6 +1187,68 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     end)
   end
 
+  defp writeback_observability(project) do
+    writebacks =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        Enum.map(issue.writebacks, fn writeback ->
+          %{
+            issue_key: issue.issue_key,
+            intent_key: writeback.intent_key,
+            logical_action: writeback.logical_action,
+            operation_type: writeback.operation_type,
+            target: writeback.target,
+            replay_policy: writeback.replay_policy,
+            result_status: writeback.result_status,
+            attempt_id: writeback.attempt_id,
+            provider_marker: writeback.provider_marker,
+            external_ref: writeback.external_ref,
+            error_summary: writeback.error_summary,
+            provider_result_status: writeback.provider_result_status,
+            provider_replayable: writeback.provider_replayable,
+            manual_attention: writeback_manual_attention?(writeback),
+            manual_attention_reason: writeback_manual_attention_reason(writeback),
+            correlation: writeback.correlation
+          }
+        end)
+      end)
+
+    %{
+      counts: writeback_counts(writebacks),
+      pending: Enum.filter(writebacks, &(&1.result_status == :pending)),
+      succeeded: Enum.filter(writebacks, &(&1.result_status == :succeeded)),
+      failed: Enum.filter(writebacks, &(&1.result_status == :failed)),
+      unknown: Enum.filter(writebacks, &(&1.result_status == :unknown)),
+      manual_attention: Enum.filter(writebacks, & &1.manual_attention)
+    }
+  end
+
+  defp writeback_counts(writebacks) do
+    Enum.reduce(writebacks, %{pending: 0, succeeded: 0, failed: 0, unknown: 0, manual_attention: 0}, fn writeback, counts ->
+      counts
+      |> Map.update!(writeback.result_status, &(&1 + 1))
+      |> then(fn updated ->
+        if writeback.manual_attention do
+          Map.update!(updated, :manual_attention, &(&1 + 1))
+        else
+          updated
+        end
+      end)
+    end)
+  end
+
+  defp writeback_manual_attention?(writeback) do
+    writeback.manual_attention or
+      (writeback.result_status == :unknown and writeback.replay_policy == :non_idempotent)
+  end
+
+  defp writeback_manual_attention_reason(%{manual_attention_reason: reason}) when is_binary(reason) and reason != "", do: reason
+
+  defp writeback_manual_attention_reason(%{result_status: :unknown, logical_action: "pr_create"}), do: "unknown_pr_create_requires_provider_lookup"
+  defp writeback_manual_attention_reason(%{result_status: :unknown, logical_action: "comment_append"}), do: "unknown_append_comment_requires_manual_attention"
+  defp writeback_manual_attention_reason(%{result_status: :unknown, replay_policy: :non_idempotent}), do: "unknown_non_idempotent_writeback"
+  defp writeback_manual_attention_reason(_writeback), do: nil
+
   defp active_attempt(issue), do: Enum.find(issue.attempts, &active_attempt?/1)
 
   defp latest_attempt(issue) do
@@ -1233,6 +1309,9 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp maybe_add_diagnostic(diagnostics, true, diagnostic), do: diagnostics ++ [diagnostic]
   defp maybe_add_diagnostic(diagnostics, false, _diagnostic), do: diagnostics
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp privacy_diagnostics(value) do
     value
@@ -1280,6 +1359,27 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp collect_sensitive_paths(_value, _path), do: []
 
+  defp sanitize_target(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, raw_value}, target ->
+      key = normalize_key(key)
+
+      cond do
+        body_key?(key) ->
+          target
+          |> maybe_put("#{key}_sha256", body_hash(raw_value))
+          |> maybe_put("#{key}_bytes", byte_size_or_nil(raw_value))
+
+        sensitive_key?(key) or sensitive_value?(raw_value) ->
+          target
+
+        true ->
+          Map.put(target, key, sanitize_value(raw_value))
+      end
+    end)
+  end
+
+  defp sanitize_target(_value), do: %{}
+
   defp sanitize_value(%DateTime{} = value), do: normalize_time(value)
   defp sanitize_value(%_struct{} = value), do: value
 
@@ -1319,6 +1419,18 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp sensitive_value?(value) when is_list(value), do: Enum.any?(value, &sensitive_value?/1)
   defp sensitive_value?(_value), do: false
+
+  defp body_key?(key), do: MapSet.member?(@body_keys, key) or String.ends_with?(key, "_body")
+
+  defp body_hash(value) when is_binary(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp body_hash(_value), do: nil
+
+  defp byte_size_or_nil(value) when is_binary(value), do: byte_size(value)
+  defp byte_size_or_nil(_value), do: nil
 
   defp normalize_output_key(key) when is_atom(key), do: key
 
