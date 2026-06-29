@@ -701,7 +701,8 @@ defmodule SymphonyElixir.StatusDashboard do
              blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             hub_runtime: Map.get(snapshot, :hub_runtime)
            }}
 
         _ ->
