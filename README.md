@@ -89,6 +89,13 @@ lookup required, manual attention, or conflict. It is still model-only and does 
 final Hub scheduler, provider writeback executor, persistent database, or Dashboard page; future
 Dashboard/API surfaces can consume the safe writeback observability summary without seeing tokens,
 prompts, transcripts, raw config, or full comment/PR bodies.
+`SymphonyElixir.Hub.DeviceObservability` adds the device-level Hub observability and legacy
+migration boundary baseline: it folds safe project registry, provider governance, poll
+coordination, runtime ledger, dispatch, and writeback summaries into one Dashboard/API-safe
+projection with device counts, per-project status, provider queue/backpressure, workspace/attempt
+state, writeback/manual-attention state, and migration state such as `legacy_only`, `hub_ready`, or
+`hub_managed`. This remains a projection only. It is not a new Dashboard page, does not replace
+`symphony@project.service`, and does not mean Hub has taken over every provider poll loop.
 
 ---
 

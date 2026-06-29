@@ -436,6 +436,29 @@ the previous safe due time. If an orchestrator or Hub runtime snapshot includes
 `hub_poll_coordination`, the observability presenter exposes the sanitized plan summary in
 `/api/v1/state`; legacy snapshots without that field keep the existing API shape.
 
+`SymphonyElixir.Hub.DeviceObservability` adds the #74 device-level observability / migration
+boundary baseline. It is a pure projection API: `build/2` accepts safe Hub model summaries such as
+project registry snapshots, provider governance queue summaries, poll coordination observability,
+runtime ledger replay, dispatch summaries, writeback observability, and optional legacy project
+markers, then returns one Dashboard/API-safe device view. The projection includes device counts
+(`project_count`, active agent count, max agent capacity, provider scope count), per-project status
+(`running`, `idle`, `ready_to_poll`, `backoff`, `paused`, `blocked`, `manual_attention`,
+`legacy_only`, or `config_invalid`), provider queue/quota/backoff/circuit summaries, poll
+eligibility and next due time, active workspace/attempt/start-intent facts, writeback
+unknown/manual-attention/conflict facts, and backpressure reasons such as provider rate limit,
+queue pressure, project pause/backoff, workspace occupied, active attempt exists, writeback unknown,
+and manual attention.
+
+The projection is safe for logs, `/api/v1/state`, and future Dashboard snapshots. It accepts
+atom-key or string-key snapshots without dynamically creating atoms, preserves unknown map keys as
+strings, and redacts provider tokens, API keys, authorization/cookie fields, secret env values, raw
+provider config, full prompts, full transcripts, and full comment/PR body text. When an
+orchestrator snapshot contains `hub_device_observability`, the presenter exposes the sanitized
+projection in `/api/v1/state`; snapshots without that field keep the existing legacy API shape.
+This is not a full Dashboard page, Hub scheduler, provider executor, or service migration. The
+legacy `symphony@project.service` direct poll/writeback path remains the default until a later
+explicit Hub integration opts into routing and ownership.
+
 `SymphonyElixir.Hub.DispatchBoundary` adds the Hub atomic dispatch / run context baseline for #74.
 It is also a pure model API. `build_context/3` turns a candidate issue into a stable dispatch
 context with project id, configuration fingerprint or snapshot version, provider-neutral
