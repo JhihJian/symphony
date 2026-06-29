@@ -39,6 +39,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.Runtime,
           SymphonyElixir.Hub.RuntimeLedger,
           SymphonyElixir.Hub.SafeSummary,
+          SymphonyElixir.Hub.WorkerStartHandoff,
           SymphonyElixir.Hub.WritebackProcessor,
           SymphonyElixir.HttpServer,
           SymphonyElixir.InstanceRegistry,

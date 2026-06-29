@@ -23,10 +23,16 @@ defmodule SymphonyElixir.Hub.SafeSummary do
                     "cookie",
                     "credential",
                     "credentials",
+                    "env_secret",
+                    "env_secrets",
+                    "provider_config",
                     "provider_response",
                     "raw_config",
+                    "raw_provider_config",
                     "response_body",
                     "secret",
+                    "secret_env",
+                    "secret_envs",
                     "token",
                     "transcript"
                   ])
@@ -99,7 +105,7 @@ defmodule SymphonyElixir.Hub.SafeSummary do
       |> String.downcase()
 
     body_key?(key) or MapSet.member?(@sensitive_keys, key) or
-      Regex.match?(~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config|provider_response|response_body)$/, key)
+      Regex.match?(~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config|provider_config|provider_response|response_body)$/, key)
   end
 
   @spec sensitive_value?(term()) :: boolean()

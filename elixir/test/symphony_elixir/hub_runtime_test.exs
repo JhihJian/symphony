@@ -112,6 +112,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_candidate_intake.counts.candidate_count == 0
       assert payload.hub_dispatch_planning.counts.planned_count == 0
       assert payload.hub_dispatch_plan_application.counts.applied_count == 0
+      assert payload.hub_worker_start_handoff.counts.selected_count == 0
       assert payload.hub_device_observability.device.project_count == 1
 
       safe_text = inspect(payload)
@@ -138,6 +139,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)
       refute Map.has_key?(legacy_payload, :hub_dispatch_planning)
       refute Map.has_key?(legacy_payload, :hub_dispatch_plan_application)
+      refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
     after
       File.rm_rf(root)
@@ -330,6 +332,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.poll_tick.candidate_intake.eligible_count == 0
       assert snapshot.hub_runtime.poll_tick.dispatch_planning.already_planned_count == 2
       assert snapshot.hub_runtime.poll_tick.dispatch_plan_application.applied_count == 2
+      assert snapshot.hub_runtime.poll_tick.worker_start_handoff.unknown_count == 2
       assert snapshot.hub_runtime.candidate_intake.candidate_count == 2
       assert snapshot.hub_runtime.candidate_intake.eligible_count == 0
       assert snapshot.hub_runtime.dispatch_planning.planned_count == 0
@@ -337,6 +340,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.dispatch_planning.pending_intent_count == 2
       assert snapshot.hub_runtime.dispatch_plan_application.applied_count == 2
       assert snapshot.hub_runtime.dispatch_plan_application.pending_start_intent_count == 2
+      assert snapshot.hub_runtime.worker_start_handoff.unknown_count == 2
+      assert snapshot.hub_runtime.worker_start_handoff.unresolved_start_intent_count == 2
 
       assert snapshot.hub_candidate_intake.counts == %{
                candidate_count: 2,
@@ -383,6 +388,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_dispatch_plan_application.counts.applied_count == 2
       assert snapshot.hub_dispatch_plan_application.counts.pending_start_intent_count == 2
       assert snapshot.hub_dispatch_plan_application.reason_counts == %{}
+      assert snapshot.hub_worker_start_handoff.counts.selected_count == 2
+      assert snapshot.hub_worker_start_handoff.counts.unknown_count == 2
+      assert snapshot.hub_worker_start_handoff.counts.unresolved_start_intent_count == 2
+      assert snapshot.hub_worker_start_handoff.reason_counts == %{"default_skeleton_no_worker_started" => 2}
 
       assert Enum.map(snapshot.hub_dispatch_plan_application.pending_start_intents, & &1.issue_key) == [
                "alpha:memory:alpha:mem-1",
@@ -401,6 +410,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 2
       assert length(ledger_project.pending_start_intents) == 2
+      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :unknown))
 
       facts_by_type = Enum.group_by(snapshot.hub_poll_coordination.facts, & &1.fact_type)
       assert [_attempt | _] = Map.fetch!(facts_by_type, :poll_attempt)
@@ -423,8 +433,91 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_candidate_intake.counts.candidate_count == 2
       assert payload.hub_dispatch_planning.counts.already_planned_count == 2
       assert payload.hub_dispatch_plan_application.counts.applied_count == 2
+      assert payload.hub_worker_start_handoff.counts.unknown_count == 2
       assert [%{candidates: payload_candidates}] = payload.hub_candidate_intake.projects
       assert Enum.all?(payload_candidates, &(&1.dispatch_evaluation.skipped_reason == "duplicate_active_attempt"))
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "request_refresh applies worker start handoff acknowledgements into runtime ledger and API state" do
+    root = tmp_root("hub-runtime-start-handoff-ack")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 60_000
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      parent = self()
+
+      starter = fn request, _opts ->
+        send(parent, {:worker_start_handoff_request, request})
+
+        %{
+          status: :ack,
+          reason: :worker_ack,
+          session_id: "session-#{request.start_intent_id}",
+          worker_host: "worker-runtime"
+        }
+      end
+
+      runtime_name = Module.concat(__MODULE__, :StartHandoffAckRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: success_executor(self()),
+        worker_start_starter: starter
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_start_handoff_ack
+      )
+
+      assert %{
+               poll_tick: %{
+                 dispatch_plan_application: %{applied_count: 2},
+                 worker_start_handoff: %{selected_count: 2, acked_count: 2, unresolved_start_intent_count: 0}
+               }
+             } = Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
+      assert_receive {:worker_start_handoff_request, first_request}, 1_000
+      assert_receive {:worker_start_handoff_request, second_request}, 1_000
+
+      assert first_request.project_id == "alpha"
+      assert first_request.provider_scope_key == "memory:alpha"
+      assert first_request.issue_ref.provider_issue_id in ["mem-1", "mem-2"]
+      assert first_request.source_poll.request_id != nil
+      assert second_request.issue_ref.provider_issue_id in ["mem-1", "mem-2"]
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_worker_start_handoff.counts.acked_count == 2
+      assert snapshot.hub_worker_start_handoff.pending_start_intents == []
+      assert snapshot.hub_runtime.worker_start_handoff.acked_count == 2
+
+      dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      assert [ledger_project] = dispatch_summary.projects
+      assert ledger_project.counts.running == 2
+      assert ledger_project.pending_start_intents == []
+      assert length(ledger_project.active_attempts) == 2
+      assert Enum.all?(ledger_project.active_attempts, &(&1.start_intent_status == :acknowledged))
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_worker_start_handoff.counts.acked_count == 2
+      assert payload.hub_worker_start_handoff.counts.unresolved_start_intent_count == 0
+      assert payload.hub_dispatch_boundary.projects |> hd() |> Map.get(:counts) |> Map.get(:running) == 2
     after
       File.rm_rf(root)
     end
@@ -719,7 +812,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 3
       assert Enum.any?(ledger_project.active_attempts, &(&1.issue_key =~ "mem-ready"))
-      assert [%{issue_key: ready_key}] = ledger_project.pending_start_intents
+      assert [%{issue_key: ready_key, status: :unknown}] = ledger_project.pending_start_intents
       assert ready_key =~ "mem-ready"
 
       [planning_project] = snapshot.hub_dispatch_planning.projects
@@ -776,7 +869,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert %{
                poll_tick: %{
                  dispatch_planning: %{planned_count: 0, already_planned_count: 2},
-                 dispatch_plan_application: %{already_applied_count: 2}
+                 dispatch_plan_application: %{already_applied_count: 2},
+                 worker_start_handoff: %{skipped_count: 2}
                }
              } = Runtime.request_refresh(runtime_name)
 
@@ -791,6 +885,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 2
       assert length(ledger_project.pending_start_intents) == 2
+      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :unknown))
     after
       File.rm_rf(root)
     end

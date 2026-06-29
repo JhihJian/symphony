@@ -236,6 +236,50 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     end
   end
 
+  @spec record_start_unknown(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def record_start_unknown(ledger, unknown, opts \\ []) when is_map(ledger) and is_map(unknown) and is_list(opts) do
+    now = normalize_time(Keyword.get(opts, :now)) || normalize_time(DateTime.utc_now())
+    project_id = required_string!(unknown, :project_id)
+    issue_key = required_string!(unknown, :issue_key)
+    attempt_id = required_string!(unknown, :attempt_id)
+    start_intent_id = required_string!(unknown, :start_intent_id)
+    error_summary = optional_string(unknown, :error_summary) || "worker start result unknown"
+    ledger = RuntimeLedger.to_snapshot(ledger)
+
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id) do
+      ledger =
+        ledger
+        |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+          existing_context = attempt.run_context || %{}
+
+          run_context =
+            existing_context
+            |> Map.put(:exit_summary, sanitize_value(%{status: "unknown", error_summary: error_summary}))
+            |> Map.put(:last_activity_at, now)
+            |> Map.put(:status, "start_unknown")
+
+          attempt
+          |> Map.put(:status, :pending)
+          |> Map.put(:terminal_reason, error_summary)
+          |> Map.put(:run_context, run_context)
+        end)
+        |> update_start_intent(project_id, start_intent_id, fn intent ->
+          intent
+          |> Map.put(:status, :unknown)
+          |> Map.put(:finished_at, nil)
+          |> Map.put(:error_summary, error_summary)
+          |> Map.put(:manual_attention, false)
+        end)
+        |> update_issue(project_id, issue_key, fn issue ->
+          issue
+          |> Map.put(:claim_status, :claimed)
+          |> Map.put(:terminal_reason, error_summary)
+        end)
+
+      {:ok, RuntimeLedger.to_snapshot(ledger)}
+    end
+  end
+
   @spec release_attempt(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def release_attempt(ledger, release, opts \\ []) when is_map(ledger) and is_map(release) and is_list(opts) do
     now = normalize_time(Keyword.get(opts, :now)) || normalize_time(DateTime.utc_now())

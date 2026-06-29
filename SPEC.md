@@ -1218,6 +1218,27 @@ Runtime entrypoint:
   worker workspace, execute workspace hooks, mutate provider state, write provider comments/statuses
   or PRs, persist a database/WAL transaction, or migrate legacy `symphony@project.service`
   ownership.
+- A Hub worker start handoff boundary MAY consume runtime-ledger replay summaries and select
+  unresolved pending start intents for a model-only start handoff. Each handoff request summary
+  SHOULD retain safe `project_id`, provider scope, IssueRef, attempt id, start intent id, workspace
+  lease/path, runner/start command summary, and source poll/intake/planning correlation.
+- The handoff boundary MAY call an injectable skeleton starter or pure model function that returns
+  `ack`, `failed`, `unknown`, `manual_attention`, `already_acked`, or `skipped`. The default skeleton
+  MUST NOT start a real agent; it MAY record an unknown result so the pending intent becomes
+  unresolved and observable.
+- Handoff acknowledgement MUST be applied through the runtime ledger so the start intent becomes
+  acknowledged and the attempt becomes running with a compact safe agent-session/run-context summary.
+  Start failures MUST be able to enter retry/backoff, blocked, released, or manual attention. Unknown
+  and manual-attention results MUST keep an unresolved start intent visible to replay so refresh does
+  not blindly create a second active attempt or workspace lease.
+- Handoff replay MUST be idempotent. Repeating refresh, replaying an already acknowledged/failed
+  intent, or encountering an existing unknown/manual-attention unresolved intent MUST either leave the
+  ledger unchanged or report an observable already-acked/skipped reason.
+- Handoff summaries SHOULD expose selected, acked, failed, unknown, manual-attention, already-acked,
+  skipped, reason counts, pending/unresolved start-intent summaries, and runtime-ledger replay
+  summaries. They MUST remain model-only and MUST NOT launch Codex app-server, create real worker
+  workspaces, execute workspace hooks, write provider state, persist durable DB/WAL facts, acquire
+  distributed locks, or take ownership of legacy `symphony@project.service`.
 - Candidate identity MUST be bound to the current poll source and registry project. Provider
   candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
   repository, project slug, or equivalent scope identity MAY be present only when they match the poll
@@ -1228,9 +1249,9 @@ Runtime entrypoint:
   documents that ownership change.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
   `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
-  `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_dispatch_boundary`, and
-  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
-  SHOULD keep the existing API shape.
+  `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
+  `hub_dispatch_boundary`, and `hub_device_observability` when a Hub snapshot is present. Legacy
+  snapshots without Hub fields SHOULD keep the existing API shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
