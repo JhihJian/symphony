@@ -467,7 +467,16 @@ defmodule SymphonyElixir.HubRuntimeTest do
           status: :ack,
           reason: :worker_ack,
           session_id: "session-#{request.start_intent_id}",
-          worker_host: "worker-runtime"
+          worker_host: "worker-runtime",
+          workspace_path: request.workspace_path,
+          worker_identity: %{pid: "pid-#{request.start_intent_id}", raw_output: "must not leak"},
+          runtime_context: %{
+            project_id: request.project_id,
+            issue_key: request.issue_key,
+            attempt_id: request.attempt_id,
+            start_intent_id: request.start_intent_id,
+            current_stage: request.current_stage
+          }
         }
       end
 
@@ -500,11 +509,16 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert first_request.provider_scope_key == "memory:alpha"
       assert first_request.issue_ref.provider_issue_id in ["mem-1", "mem-2"]
       assert first_request.source_poll.request_id != nil
+      assert first_request.workflow_file_path == Path.expand(Path.join(root, "alpha/WORKFLOW.md"))
+      assert first_request.tracker_file_path == Path.expand(Path.join(root, "alpha/TRACKER.yaml"))
       assert second_request.issue_ref.provider_issue_id in ["mem-1", "mem-2"]
 
       snapshot = Runtime.snapshot(runtime_name, 100)
       assert snapshot.hub_worker_start_handoff.counts.acked_count == 2
       assert snapshot.hub_worker_start_handoff.pending_start_intents == []
+      assert snapshot.hub_worker_start_handoff.worker_lifecycle.counts.acked_count == 2
+      assert length(snapshot.hub_worker_start_handoff.worker_lifecycle.workers) >= 2
+      assert Enum.all?(snapshot.hub_worker_start_handoff.worker_lifecycle.workers, &(&1.start_intent_status == "acknowledged"))
       assert snapshot.hub_runtime.worker_start_handoff.acked_count == 2
 
       dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
@@ -517,7 +531,13 @@ defmodule SymphonyElixir.HubRuntimeTest do
       payload = Presenter.state_payload(runtime_name, 100)
       assert payload.hub_worker_start_handoff.counts.acked_count == 2
       assert payload.hub_worker_start_handoff.counts.unresolved_start_intent_count == 0
+      assert payload.hub_worker_start_handoff.worker_lifecycle.counts.acked_count == 2
+      assert payload.hub_worker_start_handoff.worker_lifecycle.failure_reason_counts == %{}
       assert payload.hub_dispatch_boundary.projects |> hd() |> Map.get(:counts) |> Map.get(:running) == 2
+
+      safe_text = inspect(payload.hub_worker_start_handoff)
+      refute safe_text =~ "must not leak"
+      refute safe_text =~ "raw_output"
     after
       File.rm_rf(root)
     end

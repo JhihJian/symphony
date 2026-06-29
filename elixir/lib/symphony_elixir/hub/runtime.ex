@@ -26,6 +26,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   }
 
   @env_key :hub_config_file_path
+  @worker_start_starter_env_key :hub_worker_start_starter
   @poll_fact_limit 200
   @empty_codex_totals %{
     input_tokens: 0,
@@ -75,6 +76,23 @@ defmodule SymphonyElixir.Hub.Runtime do
   def clear_config_path do
     Application.delete_env(:symphony_elixir, @env_key)
     :ok
+  end
+
+  @spec set_worker_start_starter(WorkerStartHandoff.starter()) :: :ok
+  def set_worker_start_starter(starter) when is_atom(starter) or is_function(starter, 2) or is_nil(starter) do
+    Application.put_env(:symphony_elixir, @worker_start_starter_env_key, starter)
+    :ok
+  end
+
+  @spec clear_worker_start_starter() :: :ok
+  def clear_worker_start_starter do
+    Application.delete_env(:symphony_elixir, @worker_start_starter_env_key)
+    :ok
+  end
+
+  @spec worker_start_starter() :: WorkerStartHandoff.starter()
+  def worker_start_starter do
+    Application.get_env(:symphony_elixir, @worker_start_starter_env_key)
   end
 
   @spec config_path() :: Path.t() | nil
@@ -157,7 +175,7 @@ defmodule SymphonyElixir.Hub.Runtime do
          poll_facts: [],
          provider_queue: provider_queue,
          provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
-         worker_start_starter: Keyword.get(opts, :worker_start_starter),
+         worker_start_starter: Keyword.get(opts, :worker_start_starter, worker_start_starter()),
          runtime_ledger: runtime_ledger,
          candidate_intake: candidate_intake,
          dispatch_planning: dispatch_planning,

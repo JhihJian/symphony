@@ -164,6 +164,8 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
             |> Map.put(:session_id, session_id || Map.get(existing_context, :session_id))
             |> Map.put(:started_at, normalize_time(value(ack, :started_at)) || now)
             |> Map.put(:last_activity_at, normalize_time(value(ack, :last_activity_at)) || now)
+            |> maybe_merge_runtime_context(value(ack, :runtime_context))
+            |> maybe_put_worker_identity(value(ack, :worker_identity))
             |> Map.put(:status, "running")
 
           attempt
@@ -715,6 +717,18 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
   defp active_attempt?(attempt), do: attempt.status in [:pending, :running] and is_nil(attempt.ended_at)
   defp active_lease?(lease), do: lease.status == :active and is_nil(lease.released_at)
   defp active_start_intent?(intent), do: intent.status in [:pending, :unknown, :manual_attention] and is_nil(intent.acked_at) and is_nil(intent.finished_at)
+
+  defp maybe_merge_runtime_context(run_context, runtime_context) when is_map(runtime_context) do
+    Map.merge(run_context, sanitize_value(runtime_context))
+  end
+
+  defp maybe_merge_runtime_context(run_context, _runtime_context), do: run_context
+
+  defp maybe_put_worker_identity(run_context, worker_identity) when is_map(worker_identity) do
+    Map.put(run_context, :worker_identity, sanitize_value(worker_identity))
+  end
+
+  defp maybe_put_worker_identity(run_context, _worker_identity), do: run_context
 
   defp next_attempt_number(ledger, project_id, issue_key, value) do
     normalize_non_negative_integer(value) ||
