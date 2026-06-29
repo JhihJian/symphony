@@ -70,12 +70,16 @@ priority, fairness key, replay policy, cancellation boundary, quota/backoff/circ
 and result classifications. `SymphonyElixir.Hub.PollCoordinator` adds the first Hub poll
 coordination baseline on top of those models: it builds safe poll plans, candidate-scan governance
 requests, eligibility/backoff decisions, recoverable poll facts, and optional sanitized
-observability snapshots. `SymphonyElixir.Hub.DispatchBoundary` adds the next #74 baseline from
-candidate issue to active run intent: it model-checks `project_id + IssueRef` claims, attempt ids,
-workspace leases, start intents, worker start acknowledgements, failure states, and safe run context
-snapshots. It is still not a provider executor or full Hub scheduler: without explicit Hub usage,
-the existing single-project startup, polling, workspace, provider calls, and agent dispatch behavior
-remains unchanged.
+observability snapshots. `SymphonyElixir.Hub.CandidateIntake` adds the poll-to-dispatch intake
+baseline: governed candidate-scan result summaries are normalized into provider-neutral candidate
+records, tied back to project/provider scope/IssueRef and poll request/result ids, and prechecked
+against paused/config-error projects, provider backoff/manual attention, active attempts, workspace
+leases, and capacity without starting agents. `SymphonyElixir.Hub.DispatchBoundary` adds the next
+#74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
+claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
+and safe run context snapshots. It is still not a provider executor or full Hub scheduler: without
+explicit Hub usage, the existing single-project startup, polling, workspace, provider calls, and
+agent dispatch behavior remains unchanged.
 The latest Hub provider tool/writeback routing baseline adds an opt-in boundary for structured
 dynamic tool provider calls: GitHub issue, GitHub PR, and provider-neutral tracker issue tools can
 construct safe `ProviderGovernance` requests, execute through an injectable boundary, and return
@@ -99,10 +103,11 @@ state, writeback/manual-attention state, and migration state such as `legacy_onl
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
-boundary, records poll attempt/result facts, and exposes safe Hub fields through `/api/v1/state`.
-The default skeleton executor does not migrate GitHub/GitLab/Linear legacy adapters or start
-agents. This entrypoint is opt-in only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md`
-startup path and per-project services stay unchanged.
+boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
+exposes safe Hub fields through `/api/v1/state`. The default skeleton executor does not migrate
+GitHub/GitLab/Linear legacy adapters, create workspaces, or start agents. This entrypoint is opt-in
+only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services
+stay unchanged.
 
 ---
 

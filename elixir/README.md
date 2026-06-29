@@ -328,20 +328,26 @@ plan, and can execute one controlled candidate-scan tick when `/refresh` or
 `SymphonyElixir.Hub.Runtime.request_refresh/1` is called. Selected due projects are converted into
 `ProviderGovernance` requests, passed through an injectable provider executor, and recorded back as
 poll attempt/result facts that influence the next plan's `allow_poll`, `next_due_at`, and
-backoff/eligibility fields. The default executor is a skeleton boundary and does not migrate the
-legacy GitHub/GitLab/Linear adapters. Hub mode still does not start the legacy single-project
+backoff/eligibility fields. Candidate-scan result summaries are also normalized into
+`hub_candidate_intake`: a safe provider-neutral list of candidate records with project/provider
+scope/IssueRef identity, source poll request/result ids, eligible counts, and skipped reasons such
+as invalid candidate, duplicate active attempt, workspace busy, project paused/config error,
+provider backoff/manual attention, or capacity full. Eligible candidates are only marked
+`ready_for_dispatch_evaluation`; Hub mode still does not start the legacy single-project
 orchestrator, dispatch Codex agents, create workspaces, write comments/statuses/PRs, or take
-ownership of existing `symphony@project.service` instances. The existing per-project services and
-their poll loops keep running until a later migration explicitly changes ownership.
+ownership of existing `symphony@project.service` instances. The default executor is a skeleton
+boundary and does not migrate the legacy GitHub/GitLab/Linear adapters. The existing per-project
+services and their poll loops keep running until a later migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_project_registry`, `hub_poll_coordination`, and `hub_device_observability`. These snapshots are
-safe summaries: they show tick status, project eligibility, last poll/backoff, and provider
-queue/scope summaries while omitting provider tokens, API keys, authorization/cookie values, secret
-env values, raw provider config, full prompts, full transcripts, provider response bodies, and full
-comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with project count,
-config error count, provider scope count, and poll tick capability; it is not a complete Hub
-dashboard page.
+`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, and
+`hub_device_observability`. These snapshots are safe summaries: they show tick status, project
+eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
+safe poll correlation ids, and skipped reasons while omitting provider tokens, API keys,
+authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
+provider response bodies, and full comment/PR bodies. The terminal dashboard only adds a compact
+Hub mode line with project count, config error count, provider scope count, and poll tick
+capability; it is not a complete Hub dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -506,6 +512,13 @@ workspace path/lease id, start intent id, worker/runtime summary, runner summary
 diagnostics. Preflight reports whether the candidate can start or is blocked by an existing active
 attempt, unresolved start intent, workspace conflict, retry/backoff, project pause, config error,
 provider backpressure, or explicit block.
+
+`SymphonyElixir.Hub.CandidateIntake` is the preceding poll-to-dispatch boundary. It reads only safe
+candidate summaries from governed provider candidate-scan results, supports atom-key and string-key
+input, isolates malformed candidates instead of failing the whole tick, and produces project-level
+candidate/eligible/skipped counts plus reason counts. Its dispatch eligibility check reuses the
+model-only dispatch preflight and runtime ledger facts, but it does not call `dispatch/3`, start a
+worker, create a workspace lease, or write back to a provider.
 
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
