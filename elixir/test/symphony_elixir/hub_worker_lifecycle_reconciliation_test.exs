@@ -207,6 +207,75 @@ defmodule SymphonyElixir.HubWorkerLifecycleReconciliationTest do
     assert RuntimeLedger.validate(repeat_ledger) == :ok
   end
 
+  test "late running after terminal completion is skipped without reviving attempt" do
+    assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+    assert {:ok, ledger} = DispatchBoundary.acknowledge_start(ledger, ack(context), now: @now)
+
+    assert {succeeded_ledger, succeeded_summary} =
+             WorkerLifecycleReconciliation.run(registry(), ledger,
+               now: DateTime.add(@now, 1, :minute),
+               result_source: one_result(:succeeded, :released, "stage_completed", "session-alpha")
+             )
+
+    assert [%{status: "succeeded", ledger_changed: true}] = succeeded_summary.results
+
+    assert {late_ledger, late_summary} =
+             WorkerLifecycleReconciliation.run(registry(), succeeded_ledger,
+               now: DateTime.add(@now, 2, :minute),
+               result_source: fn _requests, _opts ->
+                 [
+                   %{
+                     status: :running,
+                     reason: :still_running,
+                     project_id: "alpha",
+                     issue_key: context.issue_key,
+                     attempt_id: context.attempt_id,
+                     start_intent_id: context.start_intent_id,
+                     session_id: "session-alpha",
+                     last_activity_at: "2026-06-29T10:02:00Z",
+                     token: "ghp_late_running_should_not_leak",
+                     authorization: "Bearer late-secret",
+                     transcript: "late running transcript should not leak",
+                     raw_output: "late running raw output should not leak"
+                   }
+                 ]
+               end
+             )
+
+    assert late_ledger == succeeded_ledger
+    assert late_summary.counts.selected_count == 1
+    assert late_summary.counts.applied_count == 0
+    assert late_summary.counts.skipped_count == 1
+    assert late_summary.reason_counts == %{"late_running_after_terminal" => 1}
+
+    assert [
+             %{
+               status: "skipped",
+               reason: "late_running_after_terminal",
+               ledger_changed: false,
+               workspace_action: nil
+             }
+           ] = late_summary.results
+
+    [project] = RuntimeLedger.replay(late_ledger).projects
+    assert project.counts.released == 1
+    assert project.active_attempts == []
+    assert project.workspace_leases == []
+    assert project.lifecycle.counts.running == 0
+    assert project.lifecycle.counts.succeeded == 1
+    assert project.lifecycle.running == []
+    assert [%{status: :succeeded, workspace_action: "released"}] = project.lifecycle.terminal
+    assert RuntimeLedger.validate(late_ledger) == :ok
+
+    safe_text = inspect(late_summary)
+    refute safe_text =~ "ghp_late_running_should_not_leak"
+    refute safe_text =~ "Bearer late-secret"
+    refute safe_text =~ "late running transcript"
+    refute safe_text =~ "late running raw output"
+    refute safe_text =~ "authorization"
+    refute safe_text =~ "raw_output"
+  end
+
   test "duplicate terminal late old-session and workspace-mismatch results do not corrupt current ledger" do
     assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
     assert {:ok, ledger} = DispatchBoundary.acknowledge_start(ledger, ack(context), now: @now)

@@ -247,7 +247,7 @@ defmodule SymphonyElixir.Hub.WorkerLifecycleReconciliation do
         skipped =
           result
           |> Map.put(:status, "skipped")
-          |> Map.put(:reason, "ledger_apply_error")
+          |> Map.put(:reason, ledger_apply_skip_reason(reason))
           |> Map.put(:error_summary, safe_error(reason))
           |> Map.put(:ledger_changed, false)
 
@@ -504,6 +504,9 @@ defmodule SymphonyElixir.Hub.WorkerLifecycleReconciliation do
   defp workspace_action(status, _recovery_status) when status in @unresolved_statuses, do: "retained"
   defp workspace_action(status, _recovery_status) when status in @terminal_statuses, do: "released"
   defp workspace_action(_status, _recovery_status), do: nil
+
+  defp ledger_apply_skip_reason({:late_running_after_terminal, _attempt_id, _start_intent_id}), do: "late_running_after_terminal"
+  defp ledger_apply_skip_reason(_reason), do: "ledger_apply_error"
 
   defp default_reason("running"), do: "worker_running"
   defp default_reason("succeeded"), do: "worker_succeeded"

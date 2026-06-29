@@ -994,11 +994,17 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     start_intent = project && Enum.find(project.start_intents, &(&1.intent_id == start_intent_id and &1.issue_key == issue_key and &1.attempt_id == attempt_id))
 
     cond do
-      status == :running ->
-        :ok
-
       is_nil(attempt) or is_nil(start_intent) ->
         {:error, {:unknown_lifecycle_target, attempt_id, start_intent_id}}
+
+      status == :running and terminal_lifecycle_result?(issue, attempt_id, start_intent_id) ->
+        {:error, {:late_running_after_terminal, attempt_id, start_intent_id}}
+
+      status == :running and attempt.status in [:pending, :running] ->
+        :ok
+
+      status == :running ->
+        {:error, {:lifecycle_target_not_active, attempt_id, Atom.to_string(attempt.status)}}
 
       attempt.status in [:pending, :running] ->
         :ok
@@ -1068,6 +1074,15 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
   defp duplicate_terminal_lifecycle?(issue, attempt_id, start_intent_id, status) do
     Enum.any?(issue.lifecycle_results, fn result ->
       result.attempt_id == attempt_id and result.start_intent_id == start_intent_id and result.status == status
+    end)
+  end
+
+  defp terminal_lifecycle_result?(nil, _attempt_id, _start_intent_id), do: false
+
+  defp terminal_lifecycle_result?(issue, attempt_id, start_intent_id) do
+    Enum.any?(issue.lifecycle_results, fn result ->
+      result.attempt_id == attempt_id and result.start_intent_id == start_intent_id and
+        result.status in @terminal_lifecycle_statuses
     end)
   end
 
