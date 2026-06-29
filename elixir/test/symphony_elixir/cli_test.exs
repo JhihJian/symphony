@@ -254,6 +254,10 @@ defmodule SymphonyElixir.CLITest do
           send(parent, {:hub_config_set, path})
           :ok
         end,
+        set_hub_scheduler_enabled: fn enabled? ->
+          send(parent, {:hub_scheduler_set, enabled?})
+          :ok
+        end,
         validate_hub_config: fn path ->
           send(parent, {:hub_config_validated, path})
           :ok
@@ -268,9 +272,42 @@ defmodule SymphonyElixir.CLITest do
     assert_received {:checked, ^expanded_hub_config_path}
     assert_received {:hub_config_validated, ^expanded_hub_config_path}
     assert_received {:hub_config_set, ^expanded_hub_config_path}
+    assert_received {:hub_scheduler_set, false}
     assert_received :started
     refute_received {:workflow_set, _path}
     refute_received {:tracker_config_set, _path}
+  end
+
+  test "accepts explicit hub scheduler opt-in only for hub mode" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end,
+        set_hub_scheduler_enabled: fn enabled? ->
+          send(parent, {:hub_scheduler_set, enabled?})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-scheduler"], deps)
+    assert_received {:hub_scheduler_set, true}
+
+    legacy_deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        set_hub_scheduler_enabled: fn enabled? ->
+          send(parent, {:legacy_scheduler_set, enabled?})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], legacy_deps)
+    refute_received {:legacy_scheduler_set, _enabled?}
   end
 
   test "accepts explicit real hub worker starter opt-in" do
@@ -320,6 +357,7 @@ defmodule SymphonyElixir.CLITest do
         set_workflow_file_path: fn _path -> :ok end,
         set_tracker_config_file_path: fn _path -> :ok end,
         set_hub_config_path: fn _path -> :ok end,
+        set_hub_scheduler_enabled: fn _enabled? -> :ok end,
         validate_hub_config: fn _path -> :ok end,
         set_hub_worker_starter: fn _starter -> :ok end,
         set_logs_root: fn _path -> :ok end,

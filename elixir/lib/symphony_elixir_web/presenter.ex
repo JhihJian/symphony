@@ -40,6 +40,7 @@ defmodule SymphonyElixirWeb.Presenter do
           rate_limits: field(snapshot, :rate_limits)
         }
         |> maybe_put_hub_runtime(snapshot)
+        |> maybe_put_hub_scheduler(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -84,7 +85,18 @@ defmodule SymphonyElixirWeb.Presenter do
         {:error, :unavailable}
 
       payload ->
-        {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+        {:ok, stringify_datetimes(payload)}
+    end
+  end
+
+  defp maybe_put_hub_scheduler(payload, snapshot) do
+    hub_scheduler =
+      Map.get(snapshot, :hub_scheduler) ||
+        Map.get(snapshot, "hub_scheduler")
+
+    case safe_map(hub_scheduler) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_scheduler, safe_snapshot)
     end
   end
 
@@ -370,6 +382,15 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp safe_map(value) when is_map(value), do: value
   defp safe_map(_value), do: nil
+
+  defp stringify_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp stringify_datetimes(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {key, stringify_datetimes(nested_value)} end)
+  end
+
+  defp stringify_datetimes(value) when is_list(value), do: Enum.map(value, &stringify_datetimes/1)
+  defp stringify_datetimes(value), do: value
 
   defp list_field(snapshot, key) do
     case field(snapshot, key) do

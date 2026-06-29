@@ -1172,6 +1172,26 @@ Runtime entrypoint:
   execute a controlled candidate-scan poll tick through a Hub provider request boundary, record poll
   attempt/result facts, build a candidate intake summary from governed result summaries, and expose
   those safe summaries through the existing observability API.
+- A Hub runtime MAY provide an explicit opt-in scheduler flag such as `--hub-scheduler`. When
+  enabled, the Hub runtime owns a single in-process tick loop that schedules an initial Hub tick and
+  schedules the next tick after each completed tick from safe Hub summaries: poll-plan
+  `allow_poll`/`next_due_at`, provider backoff/quota/circuit state, and unresolved runtime-ledger
+  state such as pending or unknown start intents, running attempts, retry/backoff, and manual
+  attention.
+- The Hub scheduler MUST be non-reentrant. A manual `/refresh` or equivalent
+  `request_refresh/1` call that arrives while an automatic tick is running or already queued MUST
+  either coalesce with that tick or return another explicit non-concurrent state. The returned
+  summary SHOULD include `queued`, `coalesced`, `requested_at`, `next_tick_at`, current scheduler
+  status, counts, and last/next tick reason fields.
+- Scheduler-triggered ticks MUST reuse the same registry load, poll coordination, provider
+  governance, candidate intake, dispatch planning/application, worker start handoff, worker
+  lifecycle reconciliation, runtime-ledger replay, and device observability boundaries used by
+  manual refresh. Repeated manual or automatic ticks MUST rely on the same ledger/replay
+  idempotency and MUST NOT create duplicate active attempts, workspace leases, or start intents.
+- Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
+  `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
+  status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,
+  coalesced/skipped/error counts, unresolved runtime counts, and per-project due/backoff summaries.
 - A Hub poll tick runtime skeleton MUST route candidate scans through provider governance rather
   than direct per-project polling. Its default provider executor MAY be a no-legacy-adapter skeleton,
   but tests SHOULD be able to inject a provider executor that returns governed results.
@@ -1279,10 +1299,11 @@ Runtime entrypoint:
   source; mismatches MUST be treated as invalid/skipped candidates and MUST NOT become
   ready-for-dispatch-evaluation.
 - This runtime MUST NOT dispatch agents, create workspaces, write provider comments/statuses/PRs, or
-  take ownership of existing legacy poll loops unless a later explicit Hub scheduler integration
-  documents that ownership change.
+  take ownership of existing legacy poll loops unless an explicit Hub scheduler/migration
+  integration documents that ownership change. The baseline opt-in in-process scheduler loop MUST
+  NOT imply migration of existing `symphony@project.service` instances.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
-  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
+  `hub_runtime`, `hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
   `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
   `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`
   when a Hub snapshot is present. Legacy snapshots without Hub fields SHOULD keep the existing API
