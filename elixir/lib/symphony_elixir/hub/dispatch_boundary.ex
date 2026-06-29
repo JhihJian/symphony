@@ -13,6 +13,20 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
 
   @trigger_sources [:poll_plan, :manual_refresh, :webhook, :running_reconciliation, :recovery]
   @failure_statuses [:retry_queued, :blocked, :released, :manual_attention]
+  @lifecycle_statuses [
+    :running,
+    :succeeded,
+    :failed,
+    :cancelled,
+    :timeout,
+    :stopped,
+    :lost,
+    :unknown,
+    :manual_attention
+  ]
+  @terminal_lifecycle_statuses [:succeeded, :failed, :cancelled, :timeout, :stopped]
+  @unresolved_lifecycle_statuses [:lost, :unknown, :manual_attention]
+  @lifecycle_recovery_statuses [:retry_queued, :blocked, :released, :manual_attention]
 
   @type dispatch_context :: %{
           required(:project_id) => String.t(),
@@ -327,6 +341,58 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
         end)
 
       {:ok, RuntimeLedger.to_snapshot(ledger)}
+    end
+  end
+
+  @spec record_worker_lifecycle(map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def record_worker_lifecycle(ledger, result, opts \\ []) when is_map(ledger) and is_map(result) and is_list(opts) do
+    now = normalize_time(Keyword.get(opts, :now)) || normalize_time(DateTime.utc_now())
+    project_id = required_string!(result, :project_id)
+    issue_key = required_string!(result, :issue_key)
+    attempt_id = required_string!(result, :attempt_id)
+    start_intent_id = required_string!(result, :start_intent_id)
+    ledger = RuntimeLedger.to_snapshot(ledger)
+    status = lifecycle_status(result)
+    recovery_status = lifecycle_recovery_status(result, status)
+
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id),
+         :ok <-
+           require_lifecycle_not_conflicting(
+             ledger,
+             project_id,
+             issue_key,
+             attempt_id,
+             start_intent_id,
+             status
+           ),
+         :ok <- require_lifecycle_target_active(ledger, project_id, issue_key, attempt_id, start_intent_id, status),
+         :ok <- require_lifecycle_session_match(ledger, project_id, issue_key, attempt_id, result),
+         :ok <- require_lifecycle_workspace_match(ledger, project_id, issue_key, attempt_id, result) do
+      if duplicate_terminal_lifecycle?(
+           find_issue(ledger, project_id, issue_key),
+           attempt_id,
+           start_intent_id,
+           status
+         ) do
+        {:ok, ledger}
+      else
+        ledger =
+          ledger
+          |> append_lifecycle_result(project_id, issue_key, result, status, recovery_status, now)
+          |> apply_lifecycle_status(
+            project_id,
+            issue_key,
+            attempt_id,
+            start_intent_id,
+            result,
+            status,
+            recovery_status,
+            now
+          )
+          |> RuntimeLedger.to_snapshot()
+
+        {:ok, ledger}
+      end
     end
   end
 
@@ -648,6 +714,221 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     end)
   end
 
+  defp append_lifecycle_result(ledger, project_id, issue_key, result, status, recovery_status, now) do
+    lifecycle = lifecycle_result_record(result, status, recovery_status, now)
+
+    update_issue(ledger, project_id, issue_key, fn issue ->
+      Map.update!(issue, :lifecycle_results, fn results ->
+        existing_index =
+          Enum.find_index(results, fn existing ->
+            existing.result_id == lifecycle.result_id or
+              (existing.attempt_id == lifecycle.attempt_id and
+                 existing.start_intent_id == lifecycle.start_intent_id and
+                 existing.status == lifecycle.status and
+                 existing.finished_at == lifecycle.finished_at and
+                 existing.reason == lifecycle.reason)
+          end)
+
+        if is_nil(existing_index) do
+          results ++ [lifecycle]
+        else
+          results
+        end
+      end)
+    end)
+  end
+
+  defp lifecycle_result_record(result, status, recovery_status, now) do
+    %{
+      result_id: optional_string(result, :result_id) || lifecycle_result_id(result, status, now),
+      attempt_id: required_string!(result, :attempt_id),
+      start_intent_id: required_string!(result, :start_intent_id),
+      workspace_lease_id: optional_string(result, :workspace_lease_id) || optional_string(result, :lease_id),
+      workspace_path: optional_string(result, :workspace_path),
+      session_id: optional_string(result, :session_id),
+      worker_host: optional_string(result, :worker_host),
+      worker_identity: sanitize_value(value(result, :worker_identity) || %{}),
+      status: status,
+      recovery_status: recovery_status,
+      reason: optional_string(result, :reason) || optional_string(result, :compact_reason) || Atom.to_string(status),
+      source: optional_string(result, :source),
+      source_correlation: sanitize_value(value(result, :source_correlation) || value(result, :correlation) || %{}),
+      started_at: normalize_time(value(result, :started_at)),
+      last_activity_at: normalize_time(value(result, :last_activity_at)),
+      finished_at: normalize_time(value(result, :finished_at)) || lifecycle_finished_at(status, now),
+      exit_status: optional_string(result, :exit_status),
+      exit_category: optional_string(result, :exit_category),
+      terminal: status in @terminal_lifecycle_statuses,
+      manual_attention:
+        status == :manual_attention or recovery_status == :manual_attention or
+          truthy?(value(result, :manual_attention)),
+      workspace_action: lifecycle_workspace_action(status, recovery_status),
+      workspace_retained_reason: lifecycle_workspace_retained_reason(result, status, recovery_status),
+      recorded_at: now
+    }
+  end
+
+  defp apply_lifecycle_status(
+         ledger,
+         project_id,
+         issue_key,
+         attempt_id,
+         start_intent_id,
+         result,
+         status,
+         recovery_status,
+         now
+       ) do
+    cond do
+      status == :running ->
+        apply_lifecycle_running(ledger, project_id, issue_key, attempt_id, result, now)
+
+      status == :succeeded ->
+        apply_lifecycle_terminal(
+          ledger,
+          project_id,
+          issue_key,
+          attempt_id,
+          start_intent_id,
+          result,
+          status,
+          :released,
+          now
+        )
+
+      status in [:cancelled, :timeout, :stopped] ->
+        apply_lifecycle_terminal(
+          ledger,
+          project_id,
+          issue_key,
+          attempt_id,
+          start_intent_id,
+          result,
+          status,
+          recovery_status || :released,
+          now
+        )
+
+      status == :failed ->
+        apply_lifecycle_terminal(
+          ledger,
+          project_id,
+          issue_key,
+          attempt_id,
+          start_intent_id,
+          result,
+          status,
+          recovery_status || :retry_queued,
+          now
+        )
+
+      status in @unresolved_lifecycle_statuses ->
+        apply_lifecycle_unresolved(ledger, project_id, issue_key, attempt_id, start_intent_id, result, status, now)
+    end
+  end
+
+  defp apply_lifecycle_running(ledger, project_id, issue_key, attempt_id, result, now) do
+    ledger
+    |> update_issue(project_id, issue_key, fn issue ->
+      issue
+      |> Map.put(:claim_status, :running)
+      |> Map.put(:terminal_reason, nil)
+    end)
+    |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+      session_id = optional_string(result, :session_id)
+      last_activity_at = normalize_time(value(result, :last_activity_at)) || now
+      existing_context = attempt.run_context || %{}
+
+      run_context =
+        existing_context
+        |> Map.put(:status, "running")
+        |> Map.put(:session_id, session_id || Map.get(existing_context, :session_id))
+        |> Map.put(:last_activity_at, last_activity_at)
+        |> maybe_put_worker_identity(value(result, :worker_identity))
+
+      attempt
+      |> Map.put(:status, :running)
+      |> Map.put(:ended_at, nil)
+      |> Map.put(:terminal_reason, nil)
+      |> Map.put(:agent_session, %{
+        session_id: session_id || get_in(attempt.agent_session || %{}, [:session_id]),
+        last_activity_at: last_activity_at,
+        usage: sanitize_value(value(result, :usage) || get_in(attempt.agent_session || %{}, [:usage]) || %{})
+      })
+      |> Map.put(:run_context, run_context)
+    end)
+  end
+
+  defp apply_lifecycle_terminal(ledger, project_id, issue_key, attempt_id, start_intent_id, result, status, recovery_status, now) do
+    reason = lifecycle_reason(result, status)
+    retry_failure = lifecycle_retry_failure(result, reason)
+    retry_opts = [due_at: value(result, :due_at) || now]
+
+    ledger
+    |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+      existing_context = attempt.run_context || %{}
+
+      run_context =
+        existing_context
+        |> Map.put(:exit_summary, lifecycle_exit_summary(result, status, recovery_status, reason))
+        |> Map.put(:status, Atom.to_string(status))
+        |> Map.put(:last_activity_at, normalize_time(value(result, :last_activity_at)) || Map.get(existing_context, :last_activity_at))
+
+      attempt
+      |> Map.put(:status, lifecycle_attempt_status(status))
+      |> Map.put(:ended_at, normalize_time(value(result, :finished_at)) || now)
+      |> Map.put(:terminal_reason, reason)
+      |> Map.put(:run_context, run_context)
+    end)
+    |> update_issue(project_id, issue_key, fn issue ->
+      issue
+      |> Map.put(:claim_status, recovery_status)
+      |> maybe_put_retry_backoff(recovery_status, attempt_id, retry_failure, retry_opts)
+      |> maybe_put_released_at(recovery_status, now)
+      |> Map.put(:terminal_reason, reason)
+    end)
+    |> update_start_intent(project_id, start_intent_id, fn intent ->
+      intent
+      |> Map.put(:status, :acknowledged)
+      |> Map.put(:finished_at, normalize_time(value(result, :finished_at)) || now)
+      |> Map.put(:error_summary, if(status == :succeeded, do: nil, else: reason))
+      |> Map.put(:manual_attention, recovery_status == :manual_attention)
+    end)
+    |> maybe_release_workspace_on_lifecycle(project_id, issue_key, attempt_id, recovery_status, now)
+  end
+
+  defp apply_lifecycle_unresolved(ledger, project_id, issue_key, attempt_id, start_intent_id, result, status, now) do
+    reason = lifecycle_reason(result, status)
+
+    ledger
+    |> update_issue(project_id, issue_key, fn issue ->
+      issue
+      |> Map.put(:claim_status, :manual_attention)
+      |> Map.put(:terminal_reason, reason)
+    end)
+    |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
+      existing_context = attempt.run_context || %{}
+
+      run_context =
+        existing_context
+        |> Map.put(:exit_summary, lifecycle_exit_summary(result, status, :manual_attention, reason))
+        |> Map.put(:last_activity_at, normalize_time(value(result, :last_activity_at)) || now)
+        |> Map.put(:status, "lifecycle_#{Atom.to_string(status)}")
+
+      attempt
+      |> Map.put(:status, :running)
+      |> Map.put(:terminal_reason, reason)
+      |> Map.put(:run_context, run_context)
+    end)
+    |> update_start_intent(project_id, start_intent_id, fn intent ->
+      intent
+      |> Map.put(:status, :acknowledged)
+      |> Map.put(:finished_at, nil)
+      |> Map.put(:error_summary, reason)
+      |> Map.put(:manual_attention, true)
+    end)
+  end
+
   defp update_workspace_leases(ledger, project_id, issue_key, attempt_id, fun) do
     update_project(ledger, project_id, fn project ->
       Map.update!(project, :workspace_leases, fn leases ->
@@ -680,6 +961,116 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     end
   end
 
+  defp require_lifecycle_not_conflicting(ledger, project_id, issue_key, attempt_id, start_intent_id, status) do
+    existing =
+      ledger
+      |> find_issue(project_id, issue_key)
+      |> case do
+        nil -> []
+        issue -> Enum.filter(issue.lifecycle_results, &(&1.attempt_id == attempt_id and &1.start_intent_id == start_intent_id))
+      end
+
+    terminal_existing = Enum.filter(existing, &(&1.status in @terminal_lifecycle_statuses))
+
+    cond do
+      status in @terminal_lifecycle_statuses and terminal_existing == [] ->
+        :ok
+
+      status in @terminal_lifecycle_statuses and Enum.all?(terminal_existing, &(&1.status == status)) ->
+        :ok
+
+      status in @terminal_lifecycle_statuses ->
+        {:error, {:conflicting_terminal_lifecycle_result, attempt_id, start_intent_id}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp require_lifecycle_target_active(ledger, project_id, issue_key, attempt_id, start_intent_id, status) do
+    project = Enum.find(ledger.projects, &(&1.project_id == project_id))
+    issue = project && Enum.find(project.issues, &(&1.issue_key == issue_key))
+    attempt = issue && Enum.find(issue.attempts, &(&1.attempt_id == attempt_id))
+    start_intent = project && Enum.find(project.start_intents, &(&1.intent_id == start_intent_id and &1.issue_key == issue_key and &1.attempt_id == attempt_id))
+
+    cond do
+      status == :running ->
+        :ok
+
+      is_nil(attempt) or is_nil(start_intent) ->
+        {:error, {:unknown_lifecycle_target, attempt_id, start_intent_id}}
+
+      attempt.status in [:pending, :running] ->
+        :ok
+
+      duplicate_terminal_lifecycle?(issue, attempt_id, start_intent_id, status) ->
+        :ok
+
+      true ->
+        {:error, {:lifecycle_target_not_active, attempt_id, Atom.to_string(attempt.status)}}
+    end
+  end
+
+  defp require_lifecycle_session_match(ledger, project_id, issue_key, attempt_id, result) do
+    session_id = optional_string(result, :session_id)
+    issue = find_issue(ledger, project_id, issue_key)
+    attempt = issue && Enum.find(issue.attempts, &(&1.attempt_id == attempt_id))
+
+    known_session_id =
+      attempt &&
+        (get_in(attempt.run_context || %{}, [:session_id]) ||
+           get_in(attempt.agent_session || %{}, [:session_id]))
+
+    if is_nil(session_id) or is_nil(known_session_id) or session_id == known_session_id do
+      :ok
+    else
+      {:error, {:session_mismatch, session_id, known_session_id}}
+    end
+  end
+
+  defp require_lifecycle_workspace_match(ledger, project_id, issue_key, attempt_id, result) do
+    workspace_lease_id = optional_string(result, :workspace_lease_id) || optional_string(result, :lease_id)
+    workspace_path = optional_string(result, :workspace_path)
+    project = Enum.find(ledger.projects, &(&1.project_id == project_id))
+
+    lease =
+      project &&
+        Enum.find(project.workspace_leases, fn lease ->
+          lease.issue_key == issue_key and lease.attempt_id == attempt_id
+        end)
+
+    cond do
+      is_nil(lease) ->
+        :ok
+
+      not is_nil(workspace_lease_id) and workspace_lease_id != lease.lease_id ->
+        {:error, {:workspace_lease_mismatch, workspace_lease_id, lease.lease_id}}
+
+      not is_nil(workspace_path) and workspace_path != lease.workspace_path ->
+        {:error, {:workspace_path_mismatch, workspace_path, lease.workspace_path}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp find_issue(ledger, project_id, issue_key) do
+    ledger.projects
+    |> Enum.find(&(&1.project_id == project_id))
+    |> case do
+      nil -> nil
+      project -> Enum.find(project.issues, &(&1.issue_key == issue_key))
+    end
+  end
+
+  defp duplicate_terminal_lifecycle?(nil, _attempt_id, _start_intent_id, _status), do: false
+
+  defp duplicate_terminal_lifecycle?(issue, attempt_id, start_intent_id, status) do
+    Enum.any?(issue.lifecycle_results, fn result ->
+      result.attempt_id == attempt_id and result.start_intent_id == start_intent_id and result.status == status
+    end)
+  end
+
   defp maybe_put_retry_backoff(issue, :retry_queued, attempt_id, failure, opts) do
     due_at = normalize_time(value(failure, :due_at) || Keyword.get(opts, :due_at))
 
@@ -707,12 +1098,186 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     end)
   end
 
+  defp maybe_release_workspace_on_lifecycle(ledger, _project_id, _issue_key, _attempt_id, :manual_attention, _now), do: ledger
+
+  defp maybe_release_workspace_on_lifecycle(ledger, project_id, issue_key, attempt_id, _recovery_status, now) do
+    update_workspace_leases(ledger, project_id, issue_key, attempt_id, fn lease ->
+      lease
+      |> Map.put(:status, :released)
+      |> Map.put(:released_at, now)
+    end)
+  end
+
   defp failure_attempt_status(:manual_attention), do: :pending
   defp failure_attempt_status(_status), do: :failed
   defp failure_attempt_ended_at(:manual_attention, _now), do: nil
   defp failure_attempt_ended_at(_status, now), do: now
   defp failure_start_intent_status(:manual_attention), do: :unknown
   defp failure_start_intent_status(_status), do: :failed
+
+  defp lifecycle_status(result) do
+    status = value(result, :status) || value(result, :result_status) || value(result, :outcome)
+
+    status
+    |> normalize_status()
+    |> case do
+      "completed" ->
+        :succeeded
+
+      "complete" ->
+        :succeeded
+
+      "success" ->
+        :succeeded
+
+      "succeeded" ->
+        :succeeded
+
+      "failed" ->
+        :failed
+
+      "failure" ->
+        :failed
+
+      "cancelled" ->
+        :cancelled
+
+      "canceled" ->
+        :cancelled
+
+      "timeout" ->
+        :timeout
+
+      "timed_out" ->
+        :timeout
+
+      "stopped" ->
+        :stopped
+
+      "lost" ->
+        :lost
+
+      "heartbeat_lost" ->
+        :lost
+
+      "unknown" ->
+        :unknown
+
+      "manual_attention" ->
+        :manual_attention
+
+      "running" ->
+        :running
+
+      "still_running" ->
+        :running
+
+      status ->
+        Enum.find(@lifecycle_statuses, :unknown, &(Atom.to_string(&1) == status))
+    end
+  end
+
+  defp lifecycle_recovery_status(result, status) do
+    raw = value(result, :recovery_status) || value(result, :failure_status) || value(result, :next_status)
+
+    normalized =
+      raw
+      |> normalize_status()
+      |> case do
+        "retry" -> :retry_queued
+        "retry_queued" -> :retry_queued
+        "backoff" -> :retry_queued
+        "blocked" -> :blocked
+        "released" -> :released
+        "manual_attention" -> :manual_attention
+        _status -> nil
+      end
+
+    cond do
+      normalized in @lifecycle_recovery_statuses -> normalized
+      status == :succeeded -> :released
+      status == :failed -> :retry_queued
+      status in [:cancelled, :timeout, :stopped] -> :released
+      status in @unresolved_lifecycle_statuses -> :manual_attention
+      true -> nil
+    end
+  end
+
+  defp lifecycle_finished_at(:running, _now), do: nil
+  defp lifecycle_finished_at(status, now) when status in @terminal_lifecycle_statuses, do: now
+  defp lifecycle_finished_at(status, _now) when status in @unresolved_lifecycle_statuses, do: nil
+
+  defp lifecycle_workspace_action(status, recovery_status) do
+    cond do
+      status == :running -> nil
+      recovery_status == :manual_attention -> "retained"
+      status in @unresolved_lifecycle_statuses -> "retained"
+      status in @terminal_lifecycle_statuses -> "released"
+      true -> nil
+    end
+  end
+
+  defp lifecycle_workspace_retained_reason(result, status, recovery_status) do
+    if lifecycle_workspace_action(status, recovery_status) == "retained" do
+      optional_string(result, :workspace_retained_reason) ||
+        optional_string(result, :reason) ||
+        "worker_lifecycle_unresolved"
+    else
+      nil
+    end
+  end
+
+  defp lifecycle_attempt_status(:succeeded), do: :succeeded
+  defp lifecycle_attempt_status(:failed), do: :failed
+  defp lifecycle_attempt_status(:cancelled), do: :cancelled
+  defp lifecycle_attempt_status(:timeout), do: :timeout
+  defp lifecycle_attempt_status(:stopped), do: :stopped
+  defp lifecycle_attempt_status(:lost), do: :lost
+  defp lifecycle_attempt_status(_status), do: :failed
+
+  defp lifecycle_reason(result, status) do
+    optional_string(result, :reason) ||
+      optional_string(result, :compact_reason) ||
+      optional_string(result, :error_summary) ||
+      Atom.to_string(status)
+  end
+
+  defp lifecycle_exit_summary(result, status, recovery_status, reason) do
+    sanitize_value(%{
+      status: Atom.to_string(status),
+      recovery_status: recovery_status && Atom.to_string(recovery_status),
+      reason: reason,
+      exit_status: optional_string(result, :exit_status),
+      exit_category: optional_string(result, :exit_category),
+      source: optional_string(result, :source),
+      source_correlation: value(result, :source_correlation) || value(result, :correlation) || %{}
+    })
+  end
+
+  defp lifecycle_retry_failure(result, reason) do
+    %{
+      due_at: value(result, :due_at),
+      error_summary: reason,
+      worker_host: optional_string(result, :worker_host),
+      workspace_path: optional_string(result, :workspace_path)
+    }
+  end
+
+  defp lifecycle_result_id(result, status, now) do
+    seed =
+      [
+        required_string!(result, :attempt_id),
+        required_string!(result, :start_intent_id),
+        optional_string(result, :session_id),
+        normalize_time(value(result, :finished_at)) || now,
+        Atom.to_string(status),
+        optional_string(result, :reason) || optional_string(result, :compact_reason)
+      ]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("|")
+
+    "hub-worker-lifecycle:" <> Base.encode16(:crypto.hash(:sha256, seed), case: :lower)
+  end
 
   defp active_attempt?(attempt), do: attempt.status in [:pending, :running] and is_nil(attempt.ended_at)
   defp active_lease?(lease), do: lease.status == :active and is_nil(lease.released_at)
@@ -864,6 +1429,17 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
   defp optional_string(value) when is_integer(value), do: Integer.to_string(value)
   defp optional_string(value) when is_atom(value), do: Atom.to_string(value)
   defp optional_string(_value), do: nil
+
+  defp normalize_status(nil), do: nil
+
+  defp normalize_status(value) do
+    value
+    |> optional_string()
+    |> case do
+      nil -> nil
+      string -> string |> String.trim() |> String.downcase() |> String.replace("-", "_") |> String.replace(~r/[^a-z0-9_.:]+/, "_")
+    end
+  end
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value

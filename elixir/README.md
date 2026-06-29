@@ -352,24 +352,32 @@ reported on later refreshes instead of starting again. By default this is still 
 it does not start a worker and records an unknown result. Passing `--hub-worker-starter real`
 explicitly opts into the first real worker adapter, which hands the safe request to the existing
 AgentRunner/Workspace/Codex app-server boundary and acknowledges only after a worker reports a session
-start. Hub mode still does not start the legacy single-project orchestrator, write
-comments/statuses/PRs, run a full Hub scheduler, or take ownership of existing
-`symphony@project.service` instances. The default provider executor and default start handoff are
-skeleton boundaries and do not migrate the legacy GitHub/GitLab/Linear adapters. The existing
-per-project services and their poll loops keep running until a later migration explicitly changes
-ownership.
+start. After acknowledgement the refresh also builds `hub_worker_lifecycle_reconciliation`: a safe
+post-ack reconciliation summary that can consume injectable worker/session lifecycle results for
+still-running activity, succeeded completion, failed, cancelled, timeout/stopped, heartbeat lost,
+unknown, or manual-attention outcomes. Confirmed terminal outcomes release the matching
+workspace/capacity or enter retry/backoff, blocked, or released states; lost/unknown/manual-attention
+outcomes retain the active attempt/workspace as observable evidence and do not blindly redispatch.
+Hub mode still does not start the legacy single-project orchestrator, write comments/statuses/PRs,
+run a full Hub scheduler, or take ownership of existing `symphony@project.service` instances. The
+default provider executor and default start handoff are skeleton boundaries and do not migrate the
+legacy GitHub/GitLab/Linear adapters. The lifecycle reconciliation source is likewise injectable and
+safe-summary based. The existing per-project services and their poll loops keep running until a later
+migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`,
-`hub_dispatch_plan_application`, `hub_worker_start_handoff`, `hub_dispatch_boundary`, and
-`hub_device_observability`. These snapshots are safe summaries: they show tick status, project
-eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
-safe poll correlation ids, planning counts, planned/skipped outcomes, application
-applied/skipped/blocked/already-applied counts, start handoff selected/acked/failed/unknown/manual
-attention/already-acked/skipped counts, worker lifecycle summaries, pending or unresolved
-start-intent summaries, runtime-ledger replay summaries, and skipped reasons while omitting provider
-tokens, API keys, authorization/cookie values, secret env values, raw provider config, full prompts,
-full transcripts, provider response bodies, full comment/PR bodies, and raw hook/app-server output.
+`hub_dispatch_plan_application`, `hub_worker_start_handoff`,
+`hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`.
+These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
+provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
+planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
+counts, start handoff selected/acked/failed/unknown/manual-attention/already-acked/skipped counts,
+post-ack lifecycle succeeded/failed/cancelled/timeout/stopped/lost/unknown/manual-attention counts,
+reason counts, workspace released/retained counts, pending or unresolved start-intent summaries,
+runtime-ledger replay summaries, and skipped reasons while omitting provider tokens, API keys,
+authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
+provider response bodies, full comment/PR bodies, and raw hook/app-server output.
 The terminal dashboard only adds a compact Hub mode line with project count, config error count,
 provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
 
@@ -593,6 +601,26 @@ create worker workspaces, execute workspace hooks, write GitHub/GitLab/Linear pr
 replace the legacy worker supervisor, persist a durable database/WAL, or provide distributed locks.
 Those pieces remain future Hub scheduler/worker integration work.
 
+`SymphonyElixir.Hub.WorkerLifecycleReconciliation` is the Hub runtime's first post-ack lifecycle
+reconciliation baseline. It runs after a start intent has been acknowledged and consumes only
+controlled worker/session lifecycle summaries, not raw provider payloads. Test callers and future
+supervisors can inject a result source returning `running`, `succeeded`, `failed`, `cancelled`,
+`timeout`, `stopped`, `lost`, `unknown`, or `manual_attention` summaries with safe attempt/start
+intent/session/workspace/source correlation. Reconciliation applies those summaries through the
+runtime ledger: succeeded/cancelled/timeout/stopped outcomes release the matching workspace unless a
+retained reason is explicitly recorded, retryable failures enter retry/backoff, blocked outcomes are
+observable, and lost/unknown/manual-attention outcomes retain the active attempt/workspace so Hub
+does not silently release evidence and immediately start a second worker.
+
+The summary is exposed as `hub_worker_lifecycle_reconciliation` and in `hub_runtime` tick summaries.
+It reports selected/applied counts, running attempt count, terminal and unresolved status counts,
+reason counts, and workspace released/retained counts. The replayed dispatch boundary also exposes
+per-project lifecycle summaries. All fields are sanitized; transcripts, prompts, provider bodies,
+provider tokens, authorization/cookie values, secret env, raw config, and raw hook/app-server output
+are omitted. This remains a model/runtime reconciliation boundary only: it is not a full Hub
+scheduler loop, cross-process worker supervisor, provider writeback executor, durable store, or
+legacy service migration.
+
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
 and attaching a safe run context. A repeated candidate for the same `project_id + IssueRef` returns
@@ -601,7 +629,10 @@ by another active attempt returns a workspace-conflict preflight error. `acknowl
 connects a start intent to a running attempt and compact agent session summary. `record_start_failure/4`
 can move a half-started attempt to retry queued, blocked, released, or manual attention; unknown
 worker-start results keep an unresolved start intent so recovery can explain the state and avoid a
-blind double start. `release_attempt/3` closes the attempt and releases the workspace lease.
+blind double start. `record_worker_lifecycle/3` applies post-ack lifecycle results with idempotent
+attempt/start-intent/session/workspace matching. Duplicate terminal results are ignored, conflicting
+late terminal results are skipped, and mismatched workspace leases cannot release the wrong
+workspace. `release_attempt/3` closes the attempt and releases the workspace lease.
 
 Run context snapshots include project/workflow/tracker snapshot references, issue identity, stage,
 attempt/correlation ids, workspace lease/path, worker host/runtime identity summary, runner/start

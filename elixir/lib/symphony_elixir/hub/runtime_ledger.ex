@@ -12,11 +12,24 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   @version 1
   @issue_statuses [:unclaimed, :claimed, :running, :retry_queued, :blocked, :manual_attention, :released, :terminal]
-  @attempt_statuses [:pending, :running, :succeeded, :failed, :cancelled, :lost]
+  @attempt_statuses [:pending, :running, :succeeded, :failed, :cancelled, :timeout, :stopped, :lost]
   @lease_statuses [:active, :released, :lost]
   @start_intent_statuses [:pending, :acknowledged, :failed, :cancelled, :unknown, :manual_attention]
   @replay_policies [:idempotent, :non_idempotent]
   @writeback_statuses [:pending, :succeeded, :failed, :unknown]
+  @lifecycle_statuses [
+    :running,
+    :succeeded,
+    :failed,
+    :cancelled,
+    :timeout,
+    :stopped,
+    :lost,
+    :unknown,
+    :manual_attention
+  ]
+  @terminal_lifecycle_statuses [:succeeded, :failed, :cancelled, :timeout, :stopped]
+  @unresolved_lifecycle_statuses [:lost, :unknown, :manual_attention]
   @active_attempt_statuses [:pending, :running]
   @terminal_issue_statuses [:released, :terminal]
   @active_start_intent_statuses [:pending, :unknown, :manual_attention]
@@ -36,14 +49,21 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
                     "full_prompt",
                     "transcript",
                     "codex_transcript",
-                    "raw_config"
+                    "raw_config",
+                    "raw_output",
+                    "raw_provider_config",
+                    "raw_provider_output",
+                    "provider_config",
+                    "provider_response",
+                    "response_body",
+                    "token"
                   ])
   @sensitive_value_patterns [
     ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
-    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|transcript|full prompt|codex transcript)\b/i,
+    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|raw output|raw provider|transcript|full prompt|codex transcript)\b/i,
     ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
   ]
-  @body_keys MapSet.new(["body", "comment_body", "pull_request_body", "pr_body", "raw_body"])
+  @body_keys MapSet.new(["body", "comment_body", "pull_request_body", "pr_body", "raw_body", "raw_provider_body"])
 
   @type ledger :: %{
           required(:version) => pos_integer(),
@@ -71,6 +91,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           required(:terminal_reason) => String.t() | nil,
           required(:attempts) => [attempt()],
           required(:retry_backoff) => retry_backoff() | nil,
+          required(:lifecycle_results) => [lifecycle_result()],
           required(:writebacks) => [writeback()]
         }
 
@@ -154,6 +175,32 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           required(:last_activity_at) => String.t() | nil,
           required(:exit_summary) => map(),
           required(:status) => String.t() | nil
+        }
+
+  @type lifecycle_result :: %{
+          required(:result_id) => String.t(),
+          required(:attempt_id) => String.t(),
+          required(:start_intent_id) => String.t(),
+          required(:workspace_lease_id) => String.t() | nil,
+          required(:workspace_path) => String.t() | nil,
+          required(:session_id) => String.t() | nil,
+          required(:worker_host) => String.t() | nil,
+          required(:worker_identity) => map(),
+          required(:status) => atom(),
+          required(:recovery_status) => atom() | nil,
+          required(:reason) => String.t() | nil,
+          required(:source) => String.t() | nil,
+          required(:source_correlation) => map(),
+          required(:started_at) => String.t() | nil,
+          required(:last_activity_at) => String.t() | nil,
+          required(:finished_at) => String.t() | nil,
+          required(:exit_status) => String.t() | nil,
+          required(:exit_category) => String.t() | nil,
+          required(:terminal) => boolean(),
+          required(:manual_attention) => boolean(),
+          required(:workspace_action) => String.t() | nil,
+          required(:workspace_retained_reason) => String.t() | nil,
+          required(:recorded_at) => String.t() | nil
         }
 
   @type writeback :: %{
@@ -339,6 +386,11 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
         |> Enum.map(&normalize_attempt/1)
         |> Enum.sort_by(&{&1.attempt_number || 0, &1.attempt_id}),
       retry_backoff: normalize_retry_backoff(value(issue, :retry_backoff)),
+      lifecycle_results:
+        issue
+        |> list_value(:lifecycle_results)
+        |> Enum.map(&normalize_lifecycle_result/1)
+        |> Enum.sort_by(&{&1.attempt_id, &1.start_intent_id, &1.recorded_at || "", &1.result_id}),
       writebacks:
         issue
         |> list_value(:writebacks)
@@ -489,6 +541,38 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp normalize_run_context(_context), do: nil
 
+  defp normalize_lifecycle_result(result) when is_map(result) do
+    status = normalize_atom(value(result, :status) || value(result, :result_status), :unknown, @lifecycle_statuses)
+
+    %{
+      result_id: optional_string(result, :result_id) || lifecycle_result_id(result),
+      attempt_id: required_string(result, :attempt_id),
+      start_intent_id: required_string(result, :start_intent_id),
+      workspace_lease_id: optional_string(result, :workspace_lease_id) || optional_string(result, :lease_id),
+      workspace_path: optional_string(result, :workspace_path),
+      session_id: optional_string(result, :session_id),
+      worker_host: optional_string(result, :worker_host),
+      worker_identity: sanitize_value(value(result, :worker_identity) || %{}),
+      status: status,
+      recovery_status: normalize_lifecycle_recovery_status(value(result, :recovery_status)),
+      reason: optional_string(result, :reason) || optional_string(result, :compact_reason),
+      source: optional_string(result, :source),
+      source_correlation: sanitize_value(value(result, :source_correlation) || value(result, :correlation) || %{}),
+      started_at: normalize_time(value(result, :started_at)),
+      last_activity_at: normalize_time(value(result, :last_activity_at)),
+      finished_at: normalize_time(value(result, :finished_at)),
+      exit_status: optional_string(result, :exit_status),
+      exit_category: optional_string(result, :exit_category),
+      terminal: terminal_lifecycle_status?(status) or truthy?(value(result, :terminal)),
+      manual_attention: status == :manual_attention or truthy?(value(result, :manual_attention)),
+      workspace_action: optional_string(result, :workspace_action),
+      workspace_retained_reason: optional_string(result, :workspace_retained_reason),
+      recorded_at: normalize_time(value(result, :recorded_at))
+    }
+  end
+
+  defp normalize_lifecycle_result(_result), do: normalize_lifecycle_result(%{})
+
   defp normalize_writeback(writeback) when is_map(writeback) do
     %{
       intent_key: required_string(writeback, :intent_key),
@@ -534,6 +618,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
           start_intent_conflicts(project) ++
           run_context_conflicts(project) ++
           retry_backoff_conflicts(project) ++
+          lifecycle_conflicts(project) ++
           writeback_conflicts(project)
       end)
 
@@ -691,7 +776,8 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp orphan_workspace_lease_conflicts(project) do
     Enum.flat_map(project.workspace_leases, fn lease ->
-      if active_lease?(lease) and not active_attempt_exists?(project, lease.issue_key, lease.attempt_id) do
+      if active_lease?(lease) and not active_attempt_exists?(project, lease.issue_key, lease.attempt_id) and
+           not active_lease_retained_by_lifecycle?(project, lease) do
         [
           diagnostic(
             :error,
@@ -707,6 +793,22 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
         []
       end
     end)
+  end
+
+  defp active_lease_retained_by_lifecycle?(project, lease) do
+    project.issues
+    |> Enum.find(&(&1.issue_key == lease.issue_key))
+    |> case do
+      nil ->
+        false
+
+      issue ->
+        Enum.any?(issue.lifecycle_results, fn result ->
+          result.attempt_id == lease.attempt_id and
+            (is_nil(result.workspace_lease_id) or result.workspace_lease_id == lease.lease_id) and
+            result.workspace_action == "retained"
+        end)
+    end
   end
 
   defp active_attempt_missing_workspace_lease_conflicts(project) do
@@ -918,6 +1020,80 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     end)
   end
 
+  defp lifecycle_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      unknown_lifecycle_attempt_conflicts(project, issue) ++ duplicate_terminal_lifecycle_conflicts(project, issue)
+    end)
+  end
+
+  defp unknown_lifecycle_attempt_conflicts(project, issue) do
+    Enum.flat_map(issue.lifecycle_results, fn result ->
+      attempt = Enum.find(issue.attempts, &(&1.attempt_id == result.attempt_id))
+      start_intent = start_intent_for(project, issue.issue_key, result.attempt_id)
+
+      []
+      |> maybe_add_diagnostic(
+        is_nil(attempt),
+        diagnostic(
+          :error,
+          :worker_lifecycle_unknown_attempt,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          "Worker lifecycle result references an unknown attempt"
+        )
+      )
+      |> maybe_add_diagnostic(
+        not blank?(result.start_intent_id) and
+          (is_nil(start_intent) or start_intent.intent_id != result.start_intent_id),
+        diagnostic(
+          :error,
+          :worker_lifecycle_start_intent_mismatch,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          result.start_intent_id,
+          "Worker lifecycle result does not match the attempt start intent"
+        )
+      )
+    end)
+  end
+
+  defp duplicate_terminal_lifecycle_conflicts(project, issue) do
+    issue.lifecycle_results
+    |> Enum.filter(&(&1.status in @terminal_lifecycle_statuses))
+    |> Enum.group_by(&{&1.attempt_id, &1.start_intent_id})
+    |> Enum.flat_map(fn
+      {_key, []} ->
+        []
+
+      {_key, [_single]} ->
+        []
+
+      {{attempt_id, start_intent_id}, results} ->
+        statuses = results |> Enum.map(& &1.status) |> Enum.uniq()
+
+        if length(statuses) > 1 do
+          [
+            diagnostic(
+              :error,
+              :worker_lifecycle_terminal_conflict,
+              project.project_id,
+              issue.issue_key,
+              nil,
+              attempt_id,
+              start_intent_id,
+              "Worker lifecycle terminal results conflict for the same attempt/start intent"
+            )
+          ]
+        else
+          []
+        end
+    end)
+  end
+
   defp writeback_conflicts(project) do
     Enum.flat_map(project.issues, fn issue ->
       duplicate_writeback_conflicts(project, issue) ++ unstable_writeback_key_conflicts(project, issue)
@@ -988,7 +1164,8 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
 
   defp manual_attention_diagnostics(ledger) do
     Enum.flat_map(ledger.projects, fn project ->
-      writeback_manual_attention(project) ++ start_intent_manual_attention(project)
+      writeback_manual_attention(project) ++
+        start_intent_manual_attention(project) ++ lifecycle_manual_attention(project)
     end)
   end
 
@@ -1030,6 +1207,26 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
     end)
   end
 
+  defp lifecycle_manual_attention(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      issue.lifecycle_results
+      |> Enum.filter(&(&1.manual_attention or &1.status in @unresolved_lifecycle_statuses))
+      |> Enum.map(fn result ->
+        diagnostic(
+          :warning,
+          :worker_lifecycle_unresolved_manual_attention,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          result.start_intent_id,
+          "Worker lifecycle result is unresolved and requires reconciliation before redispatch"
+        )
+        |> Map.put(:reason, result.reason || Atom.to_string(result.status))
+      end)
+    end)
+  end
+
   defp project_summary(project, conflicts, manual_attention) do
     project_conflicts = Enum.filter(conflicts, &(&1.project_id == project.project_id))
     project_manual_attention = Enum.filter(manual_attention, &(&1.project_id == project.project_id))
@@ -1044,6 +1241,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
       workspace_leases: active_workspace_lease_summaries(project),
       retry_backoff: retry_backoff_summaries(project),
       blocked_candidates: blocked_candidate_summaries(project),
+      lifecycle: lifecycle_observability(project),
       writebacks: writeback_observability(project),
       active_issues: active_issue_summaries(project),
       conflicts: project_conflicts,
@@ -1225,6 +1423,165 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
       unknown: Enum.filter(writebacks, &(&1.result_status == :unknown)),
       manual_attention: Enum.filter(writebacks, & &1.manual_attention)
     }
+  end
+
+  defp lifecycle_observability(project) do
+    running =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        issue.attempts
+        |> Enum.filter(&active_attempt?/1)
+        |> Enum.map(fn attempt ->
+          lease = active_lease_for(project, issue.issue_key, attempt.attempt_id)
+          intent = start_intent_for(project, issue.issue_key, attempt.attempt_id)
+
+          lifecycle_running_summary(issue, attempt, intent, lease)
+        end)
+      end)
+
+    results =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        Enum.map(issue.lifecycle_results, &lifecycle_result_summary(issue.issue_key, &1))
+      end)
+      |> Enum.sort_by(&{&1.issue_key || "", &1.attempt_id || "", &1.start_intent_id || "", &1.recorded_at || ""})
+
+    terminal = Enum.filter(results, &(&1.status in @terminal_lifecycle_statuses))
+    unresolved = Enum.filter(results, &(&1.status in @unresolved_lifecycle_statuses))
+
+    %{
+      counts: lifecycle_counts(running, results),
+      reason_counts: lifecycle_reason_counts(results),
+      workspace_action_counts: lifecycle_workspace_action_counts(results),
+      running: running,
+      terminal: terminal,
+      unresolved: unresolved,
+      retry_backoff: retry_backoff_summaries(project),
+      blocked: blocked_candidate_summaries(project),
+      released: released_lifecycle_summaries(project),
+      retained_workspace: Enum.filter(results, &(&1.workspace_action == "retained")),
+      manual_attention: Enum.filter(results, &(&1.manual_attention == true))
+    }
+  end
+
+  defp lifecycle_running_summary(issue, attempt, intent, lease) do
+    run_context = attempt.run_context || %{}
+
+    %{
+      issue_key: issue.issue_key,
+      attempt_id: attempt.attempt_id,
+      attempt_number: attempt.attempt_number,
+      status: :running,
+      start_intent_id: intent && intent.intent_id,
+      start_intent_status: intent && intent.status,
+      workspace_lease_id: lease && lease.lease_id,
+      workspace_path: (lease && lease.workspace_path) || attempt.workspace_path,
+      worker_host: (lease && lease.worker_host) || attempt.worker_host,
+      session_id:
+        get_in(run_context, [:session_id]) ||
+          get_in(attempt.agent_session || %{}, [:session_id]),
+      started_at: attempt.started_at,
+      last_activity_at:
+        get_in(run_context, [:last_activity_at]) ||
+          get_in(attempt.agent_session || %{}, [:last_activity_at])
+    }
+  end
+
+  defp lifecycle_result_summary(issue_key, result) do
+    %{
+      issue_key: issue_key,
+      result_id: result.result_id,
+      attempt_id: result.attempt_id,
+      start_intent_id: result.start_intent_id,
+      workspace_lease_id: result.workspace_lease_id,
+      workspace_path: result.workspace_path,
+      session_id: result.session_id,
+      worker_host: result.worker_host,
+      worker_identity: result.worker_identity,
+      status: result.status,
+      recovery_status: result.recovery_status,
+      reason: result.reason,
+      source: result.source,
+      source_correlation: result.source_correlation,
+      started_at: result.started_at,
+      last_activity_at: result.last_activity_at,
+      finished_at: result.finished_at,
+      exit_status: result.exit_status,
+      exit_category: result.exit_category,
+      terminal: result.terminal,
+      manual_attention: result.manual_attention,
+      workspace_action: result.workspace_action,
+      workspace_retained_reason: result.workspace_retained_reason,
+      recorded_at: result.recorded_at
+    }
+  end
+
+  defp lifecycle_counts(running, results) do
+    base = %{
+      running: length(running),
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      timeout: 0,
+      stopped: 0,
+      lost: 0,
+      unknown: 0,
+      manual_attention: 0,
+      retry: 0,
+      blocked: 0,
+      released: 0,
+      retained_workspace: 0
+    }
+
+    Enum.reduce(results, base, fn result, counts ->
+      counts
+      |> update_lifecycle_status_count(result.status)
+      |> update_lifecycle_recovery_count(result.recovery_status)
+      |> update_lifecycle_retained_count(result.workspace_action)
+    end)
+  end
+
+  defp update_lifecycle_status_count(counts, status) when status in @lifecycle_statuses do
+    Map.update!(counts, status, &(&1 + 1))
+  end
+
+  defp update_lifecycle_status_count(counts, _status), do: counts
+
+  defp update_lifecycle_recovery_count(counts, :retry_queued), do: Map.update!(counts, :retry, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :blocked), do: Map.update!(counts, :blocked, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :released), do: Map.update!(counts, :released, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :manual_attention), do: Map.update!(counts, :manual_attention, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, _recovery_status), do: counts
+
+  defp update_lifecycle_retained_count(counts, "retained"), do: Map.update!(counts, :retained_workspace, &(&1 + 1))
+  defp update_lifecycle_retained_count(counts, _workspace_action), do: counts
+
+  defp lifecycle_reason_counts(results) do
+    results
+    |> Enum.map(&(&1.reason || Atom.to_string(&1.status)))
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {reason, _count} -> reason end)
+    |> Map.new()
+  end
+
+  defp lifecycle_workspace_action_counts(results) do
+    results
+    |> Enum.map(& &1.workspace_action)
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {action, _count} -> action end)
+    |> Map.new()
+  end
+
+  defp released_lifecycle_summaries(project) do
+    project.issues
+    |> Enum.filter(&(&1.claim_status == :released))
+    |> Enum.flat_map(fn issue ->
+      issue.lifecycle_results
+      |> Enum.filter(&(&1.recovery_status == :released or &1.workspace_action == "released"))
+      |> Enum.map(&lifecycle_result_summary(issue.issue_key, &1))
+    end)
   end
 
   defp writeback_counts(writebacks) do
@@ -1570,6 +1927,36 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   end
 
   defp normalize_atom(_value, default, _allowed), do: default
+
+  defp normalize_lifecycle_recovery_status(value) do
+    status = normalize_atom(value, nil, [:retry_queued, :blocked, :released, :manual_attention])
+
+    case status do
+      nil -> nil
+      status -> status
+    end
+  end
+
+  defp terminal_lifecycle_status?(status), do: status in @terminal_lifecycle_statuses
+
+  defp lifecycle_result_id(result) when is_map(result) do
+    seed =
+      [
+        optional_string(result, :attempt_id),
+        optional_string(result, :start_intent_id),
+        normalize_time(value(result, :finished_at)),
+        normalize_time(value(result, :recorded_at)),
+        normalize_optional_string(value(result, :status) || value(result, :result_status))
+      ]
+      |> Enum.reject(&blank?/1)
+      |> Enum.join("|")
+
+    if seed == "" do
+      ""
+    else
+      "hub-worker-lifecycle:" <> Base.encode16(:crypto.hash(:sha256, seed), case: :lower)
+    end
+  end
 
   defp stringify_nested_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

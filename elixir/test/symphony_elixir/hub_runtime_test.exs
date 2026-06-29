@@ -140,6 +140,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_dispatch_planning)
       refute Map.has_key?(legacy_payload, :hub_dispatch_plan_application)
       refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
+      refute Map.has_key?(legacy_payload, :hub_worker_lifecycle_reconciliation)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
     after
       File.rm_rf(root)
@@ -520,6 +521,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert length(snapshot.hub_worker_start_handoff.worker_lifecycle.workers) >= 2
       assert Enum.all?(snapshot.hub_worker_start_handoff.worker_lifecycle.workers, &(&1.start_intent_status == "acknowledged"))
       assert snapshot.hub_runtime.worker_start_handoff.acked_count == 2
+      assert snapshot.hub_runtime.worker_lifecycle_reconciliation.running_count == 2
+      assert snapshot.hub_worker_lifecycle_reconciliation.counts.running_count == 2
 
       dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
       assert [ledger_project] = dispatch_summary.projects
@@ -533,11 +536,151 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_worker_start_handoff.counts.unresolved_start_intent_count == 0
       assert payload.hub_worker_start_handoff.worker_lifecycle.counts.acked_count == 2
       assert payload.hub_worker_start_handoff.worker_lifecycle.failure_reason_counts == %{}
+      assert payload.hub_worker_lifecycle_reconciliation.counts.running_count == 2
       assert payload.hub_dispatch_boundary.projects |> hd() |> Map.get(:counts) |> Map.get(:running) == 2
 
       safe_text = inspect(payload.hub_worker_start_handoff)
       refute safe_text =~ "must not leak"
       refute safe_text =~ "raw_output"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "request_refresh reconciles acknowledged worker lifecycle results into API state" do
+    root = tmp_root("hub-runtime-worker-lifecycle")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 60_000
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      starter = fn request, _opts ->
+        %{
+          status: :ack,
+          reason: :worker_ack,
+          session_id: "session-#{request.issue_ref.provider_issue_id}",
+          worker_host: "worker-runtime",
+          workspace_path: request.workspace_path
+        }
+      end
+
+      lifecycle_source = fn requests, _opts ->
+        Enum.map(requests, fn request ->
+          if request.issue_key =~ "mem-1" do
+            %{
+              status: :succeeded,
+              recovery_status: :released,
+              reason: :stage_completed,
+              project_id: request.project_id,
+              issue_key: request.issue_key,
+              attempt_id: request.attempt_id,
+              start_intent_id: request.start_intent_id,
+              workspace_lease_id: request.workspace_lease_id,
+              workspace_path: request.workspace_path,
+              session_id: "session-mem-1",
+              worker_host: "worker-runtime",
+              finished_at: "2026-06-29T10:30:00Z",
+              token: "ghp_should_not_leak",
+              authorization: "Bearer secret",
+              raw_config: %{api_key: "sk-secret"},
+              full_prompt: "full prompt should not leak",
+              transcript: "complete transcript should not leak",
+              comment_body: "complete comment body should not leak"
+            }
+          else
+            %{
+              status: :lost,
+              reason: :heartbeat_lost,
+              project_id: request.project_id,
+              issue_key: request.issue_key,
+              attempt_id: request.attempt_id,
+              start_intent_id: request.start_intent_id,
+              workspace_lease_id: request.workspace_lease_id,
+              workspace_path: request.workspace_path,
+              session_id: "session-mem-2",
+              worker_host: "worker-runtime",
+              last_activity_at: "2026-06-29T10:20:00Z",
+              workspace_retained_reason: :heartbeat_lost
+            }
+          end
+        end)
+      end
+
+      runtime_name = Module.concat(__MODULE__, :WorkerLifecycleRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: success_executor(self()),
+        worker_start_starter: starter,
+        worker_lifecycle_result_source: lifecycle_source
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_worker_lifecycle
+      )
+
+      assert %{
+               poll_tick: %{
+                 worker_start_handoff: %{acked_count: 2},
+                 worker_lifecycle_reconciliation: %{
+                   selected_count: 2,
+                   applied_count: 2,
+                   succeeded_count: 1,
+                   lost_count: 1,
+                   retained_workspace_count: 1,
+                   released_workspace_count: 1
+                 }
+               }
+             } = Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_runtime.worker_lifecycle_reconciliation.succeeded_count == 1
+      assert snapshot.hub_runtime.worker_lifecycle_reconciliation.lost_count == 1
+      assert snapshot.hub_worker_lifecycle_reconciliation.reason_counts == %{"heartbeat_lost" => 1, "stage_completed" => 1}
+
+      dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      [ledger_project] = dispatch_summary.projects
+      assert ledger_project.counts.released == 1
+      assert ledger_project.counts.manual_attention == 1
+      assert length(ledger_project.active_attempts) == 1
+      assert length(ledger_project.workspace_leases) == 1
+      assert ledger_project.lifecycle.counts.succeeded == 1
+      assert ledger_project.lifecycle.counts.lost == 1
+      assert ledger_project.lifecycle.workspace_action_counts == %{"released" => 1, "retained" => 1}
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_worker_lifecycle_reconciliation.counts.succeeded_count == 1
+      assert payload.hub_worker_lifecycle_reconciliation.counts.lost_count == 1
+      assert payload.hub_dispatch_boundary.projects |> hd() |> Map.get(:lifecycle) |> get_in([:counts, :lost]) == 1
+
+      [device_project] = payload.hub_device_observability.projects
+      assert device_project.runtime.lifecycle.counts.lost == 1
+      assert "worker_lifecycle_lost" in reason_names(device_project)
+      assert "workspace_retained" in reason_names(device_project)
+
+      safe_text = inspect(payload)
+      refute safe_text =~ "ghp_should_not_leak"
+      refute safe_text =~ "Bearer secret"
+      refute safe_text =~ "sk-secret"
+      refute safe_text =~ "full prompt"
+      refute safe_text =~ "complete transcript"
+      refute safe_text =~ "complete comment body"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "raw_config"
     after
       File.rm_rf(root)
     end
