@@ -344,16 +344,20 @@ summary that applies eligible planned intents through `DispatchBoundary.dispatch
 runtime ledger model, creating claim, attempt, workspace lease, start-intent, and safe run-context
 facts. Repeated refreshes or unresolved runtime-ledger start intents are reported as already
 applied/already planned rather than creating a duplicate active attempt. It then builds
-`hub_worker_start_handoff`: a model-only start handoff summary that reads those pending start intents
-from runtime-ledger replay, builds a safe request summary, and calls an injectable skeleton starter.
-Acknowledged results mark the start intent acknowledged and the attempt running; failures can enter
+`hub_worker_start_handoff`: a start handoff summary that reads those pending start intents from
+runtime-ledger replay, builds a safe request summary, and calls an injectable starter. Acknowledged
+results mark the start intent acknowledged and the attempt running; failures can enter
 retry/backoff, blocked, released, or manual attention; unknown results remain unresolved and are
-reported on later refreshes instead of starting again. Hub mode still does not start the legacy
-single-project orchestrator, dispatch real Codex agents, create real workspaces, run workspace hooks,
-write comments/statuses/PRs, or take ownership of existing `symphony@project.service` instances. The
-default provider executor and default start handoff are skeleton boundaries and do not migrate the
-legacy GitHub/GitLab/Linear adapters. The existing per-project services and their poll loops keep
-running until a later migration explicitly changes ownership.
+reported on later refreshes instead of starting again. By default this is still the skeleton starter:
+it does not start a worker and records an unknown result. Passing `--hub-worker-starter real`
+explicitly opts into the first real worker adapter, which hands the safe request to the existing
+AgentRunner/Workspace/Codex app-server boundary and acknowledges only after a worker reports a session
+start. Hub mode still does not start the legacy single-project orchestrator, write
+comments/statuses/PRs, run a full Hub scheduler, or take ownership of existing
+`symphony@project.service` instances. The default provider executor and default start handoff are
+skeleton boundaries and do not migrate the legacy GitHub/GitLab/Linear adapters. The existing
+per-project services and their poll loops keep running until a later migration explicitly changes
+ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`,
@@ -362,12 +366,12 @@ When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runti
 eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
 safe poll correlation ids, planning counts, planned/skipped outcomes, application
 applied/skipped/blocked/already-applied counts, start handoff selected/acked/failed/unknown/manual
-attention/already-acked/skipped counts, pending or unresolved start-intent summaries, runtime-ledger
-replay summaries, and skipped reasons while omitting provider tokens, API keys, authorization/cookie
-values, secret env values, raw provider config, full prompts, full transcripts, provider response
-bodies, and full comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with
-project count, config error count, provider scope count, and poll tick capability; it is not a
-complete Hub dashboard page.
+attention/already-acked/skipped counts, worker lifecycle summaries, pending or unresolved
+start-intent summaries, runtime-ledger replay summaries, and skipped reasons while omitting provider
+tokens, API keys, authorization/cookie values, secret env values, raw provider config, full prompts,
+full transcripts, provider response bodies, full comment/PR bodies, and raw hook/app-server output.
+The terminal dashboard only adds a compact Hub mode line with project count, config error count,
+provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue

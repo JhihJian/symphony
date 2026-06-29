@@ -359,7 +359,9 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
         starts_agent: false,
         creates_workspace: false,
         creates_workspace_lease: true,
-        writes_provider: false
+        writes_provider: false,
+        workflow_file_path: optional_string(registry_project, :workflow_path),
+        tracker_file_path: optional_string(registry_project, :tracker_config_path)
       }
     }
     |> maybe_put_project_blockers(registry_project)

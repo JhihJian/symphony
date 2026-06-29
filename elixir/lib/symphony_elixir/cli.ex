@@ -11,6 +11,7 @@ defmodule SymphonyElixir.CLI do
   @switches [
     {@acknowledgement_switch, :boolean},
     hub_config: :string,
+    hub_worker_starter: :string,
     logs_root: :string,
     port: :integer,
     tracker_config: :string
@@ -23,6 +24,7 @@ defmodule SymphonyElixir.CLI do
           set_tracker_config_file_path: (String.t() -> :ok | {:error, term()}),
           set_hub_config_path: (String.t() -> :ok | {:error, term()}),
           validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
+          set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
           ensure_all_started: (-> ensure_started_result())
@@ -81,6 +83,7 @@ defmodule SymphonyElixir.CLI do
     with :ok <- require_guardrails_acknowledgement(opts),
          :ok <- maybe_set_logs_root(opts, deps),
          :ok <- maybe_set_server_port(opts, deps),
+         :ok <- maybe_set_hub_worker_starter(opts, deps),
          {:ok, hub_config_path} <- hub_config_path(opts),
          :ok <- require_regular_file(deps, hub_config_path, "Hub config file not found"),
          :ok <- deps.validate_hub_config.(hub_config_path) do
@@ -125,6 +128,7 @@ defmodule SymphonyElixir.CLI do
       set_tracker_config_file_path: &TrackerConfig.set_tracker_file_path/1,
       set_hub_config_path: &HubRuntime.set_config_path/1,
       validate_hub_config: &HubRuntime.validate_config/1,
+      set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
@@ -209,10 +213,44 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp maybe_set_hub_worker_starter(opts, deps) do
+    case Keyword.get_values(opts, :hub_worker_starter) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_worker_starter_module()
+        |> case do
+          {:ok, module} -> deps.set_hub_worker_starter.(module)
+          {:error, message} -> {:error, message}
+        end
+    end
+  end
+
   defp set_server_port_override(port) when is_integer(port) and port >= 0 do
     Application.put_env(:symphony_elixir, :server_port_override, port)
     :ok
   end
+
+  defp hub_worker_starter_module(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "real" ->
+        {:ok, SymphonyElixir.Hub.RealWorkerStarter}
+
+      "skeleton" ->
+        {:ok, nil}
+
+      other ->
+        {:error, "Unsupported --hub-worker-starter #{inspect(other)}. Use `real` or omit the option for the default skeleton."}
+    end
+  end
+
+  defp hub_worker_starter_module(_value), do: {:error, usage_message()}
 
   defp hub_config_path(opts) do
     case Keyword.get_values(opts, :hub_config) do

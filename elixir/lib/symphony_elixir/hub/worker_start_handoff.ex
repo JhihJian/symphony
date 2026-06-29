@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       status: "idle",
       counts: counts([], replay),
       reason_counts: %{},
+      worker_lifecycle: worker_lifecycle([], replay),
       results: [],
       pending_start_intents: pending_start_intents(replay),
       unresolved_start_intents: pending_start_intents(replay),
@@ -71,6 +72,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
         status: "completed",
         counts: counts(results, replay),
         reason_counts: reason_counts(results),
+        worker_lifecycle: worker_lifecycle(results, replay),
         results: Enum.reverse(results),
         pending_start_intents: pending_start_intents(replay),
         unresolved_start_intents: pending_start_intents(replay),
@@ -110,6 +112,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       status: safe_status(value(summary, :status)) || "idle",
       counts: count_snapshot(value(summary, :counts), results, unresolved_start_intents, replay),
       reason_counts: reason_count_snapshot(value(summary, :reason_counts)),
+      worker_lifecycle: worker_lifecycle_snapshot(value(summary, :worker_lifecycle), results, replay),
       results: results,
       pending_start_intents: pending_start_intents,
       unresolved_start_intents: unresolved_start_intents,
@@ -141,7 +144,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       already_acked_count: snapshot.counts.already_acked_count,
       skipped_count: snapshot.counts.skipped_count,
       unresolved_start_intent_count: snapshot.counts.unresolved_start_intent_count,
-      reason_counts: snapshot.reason_counts
+      reason_counts: snapshot.reason_counts,
+      worker_lifecycle: snapshot.worker_lifecycle
     }
   end
 
@@ -157,7 +161,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       already_acked_count: non_negative_integer(value(summary, :already_acked_count)) || 0,
       skipped_count: non_negative_integer(value(summary, :skipped_count)) || 0,
       unresolved_start_intent_count: non_negative_integer(value(summary, :unresolved_start_intent_count)) || 0,
-      reason_counts: reason_count_snapshot(value(summary, :reason_counts))
+      reason_counts: reason_count_snapshot(value(summary, :reason_counts)),
+      worker_lifecycle: worker_lifecycle_snapshot(value(summary, :worker_lifecycle), [], RuntimeLedger.replay(RuntimeLedger.new()))
     }
   end
 
@@ -230,6 +235,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
         start_intent_id: request.start_intent_id,
         session_id: optional_string(result, :session_id),
         worker_host: optional_string(result, :worker_host),
+        worker_identity: safe_preserved_map(value(result, :worker_identity) || %{}),
+        runtime_context: safe_preserved_map(value(result, :runtime_context) || %{}),
         usage: value(result, :usage) || %{},
         acked_at: iso8601(value(result, :acked_at)) || iso8601(now),
         started_at: iso8601(value(result, :started_at)) || iso8601(now),
@@ -350,6 +357,11 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       safe_status(value(result, :failure_status)) || safe_status(value(result, :start_failure_status))
     )
     |> maybe_put(:usage, safe_preserved_map(value(result, :usage) || %{}))
+    |> maybe_put(:worker_identity, safe_preserved_map(value(result, :worker_identity) || %{}))
+    |> maybe_put(:runtime_context, safe_preserved_map(value(result, :runtime_context) || %{}))
+    |> maybe_put(:workspace_path, optional_string(result, :workspace_path))
+    |> maybe_put(:started_at, iso8601(value(result, :started_at)))
+    |> maybe_put(:last_activity_at, iso8601(value(result, :last_activity_at)))
   end
 
   defp normalize_starter_result(result) when is_atom(result), do: normalize_starter_result(%{status: result})
@@ -367,6 +379,15 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     issue_ref = map_value(issue, :issue_ref) || map_value(active_issue, :issue_ref) || %{}
     runtime_identity = safe_preserved_map(value(intent, :runtime_identity) || %{})
     start_command_summary = safe_preserved_map(value(intent, :start_command_summary) || %{})
+
+    workflow_file_path =
+      optional_string(start_command_summary, :workflow_file_path) ||
+        optional_string(registry_project, :workflow_path)
+
+    tracker_file_path =
+      optional_string(start_command_summary, :tracker_file_path) ||
+        optional_string(registry_project, :tracker_config_path)
+
     source_poll = value(runtime_identity, :source_poll) || value(start_command_summary, :source_poll) || %{}
     source_intake = value(runtime_identity, :source_intake) || value(start_command_summary, :source_intake) || %{}
     planning = value(runtime_identity, :planning) || value(start_command_summary, :planning) || %{}
@@ -400,6 +421,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
           optional_string(lease, :worker_host) ||
           optional_string(attempt, :worker_host),
       runner: optional_string(intent, :runner),
+      workflow_file_path: workflow_file_path,
+      tracker_file_path: tracker_file_path,
       requested_at: iso8601(value(intent, :requested_at)),
       correlation_id: optional_string(intent, :correlation_id),
       runtime_identity: runtime_identity,
@@ -435,6 +458,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       workspace_lease_id: request.workspace_lease_id,
       workspace_path: request.workspace_path,
       runner: request.runner,
+      workflow_file_path: request.workflow_file_path,
+      tracker_file_path: request.tracker_file_path,
       correlation_id: request.correlation_id,
       request: request,
       starter_result: safe_preserved_map(result),
@@ -474,6 +499,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       workspace_lease_id: optional_string(result, :workspace_lease_id),
       workspace_path: optional_string(result, :workspace_path),
       runner: optional_string(result, :runner),
+      workflow_file_path: optional_string(result, :workflow_file_path),
+      tracker_file_path: optional_string(result, :tracker_file_path),
       correlation_id: optional_string(result, :correlation_id),
       request: maybe_request_snapshot(value(result, :request)),
       starter_result: safe_preserved_map(value(result, :starter_result) || %{}),
@@ -503,6 +530,8 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       workspace_lease_status: safe_status(value(request, :workspace_lease_status)),
       worker_host: optional_string(request, :worker_host),
       runner: optional_string(request, :runner),
+      workflow_file_path: optional_string(request, :workflow_file_path),
+      tracker_file_path: optional_string(request, :tracker_file_path),
       requested_at: iso8601(value(request, :requested_at)),
       correlation_id: optional_string(request, :correlation_id),
       runtime_identity: safe_preserved_map(value(request, :runtime_identity) || %{}),
@@ -631,6 +660,211 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       unresolved_start_intent_count: length(pending_start_intents(replay)),
       project_count: length(list_value(replay, :projects))
     }
+  end
+
+  defp worker_lifecycle(results, replay) do
+    results = Enum.map(results, &result_snapshot/1)
+    replay = runtime_ledger_replay_snapshot(replay)
+    active_attempts = replay_active_attempts(replay)
+
+    %{
+      counts: %{
+        selected_count: length(results),
+        acked_count: Enum.count(results, &(&1.status == "ack")),
+        failed_count: Enum.count(results, &(&1.status == "failed")),
+        manual_attention_count: Enum.count(results, &(&1.status == "manual_attention")),
+        unknown_count: Enum.count(results, &(&1.status == "unknown")),
+        skipped_count: Enum.count(results, &(&1.status == "skipped")),
+        already_acked_count: Enum.count(results, &(&1.status == "already_acked")),
+        running_attempt_count: length(active_attempts)
+      },
+      workers: worker_lifecycle_workers(results, active_attempts),
+      failure_reason_counts: failure_reason_counts(results),
+      active_attempt_start_intents: active_attempt_start_intents(active_attempts)
+    }
+  end
+
+  defp worker_lifecycle_snapshot(lifecycle, results, replay) when is_map(lifecycle) do
+    %{
+      counts: lifecycle_count_snapshot(value(lifecycle, :counts), results, replay),
+      workers:
+        lifecycle
+        |> list_value(:workers)
+        |> Enum.map(&worker_snapshot/1)
+        |> Enum.sort_by(&{&1.project_id || "", &1.issue_key || "", &1.attempt_id || ""}),
+      failure_reason_counts: reason_count_snapshot(value(lifecycle, :failure_reason_counts)),
+      active_attempt_start_intents:
+        lifecycle
+        |> list_value(:active_attempt_start_intents)
+        |> Enum.map(&active_attempt_start_intent_snapshot/1)
+        |> Enum.sort_by(&{&1.project_id || "", &1.issue_key || "", &1.attempt_id || ""})
+    }
+  end
+
+  defp worker_lifecycle_snapshot(_lifecycle, results, replay), do: worker_lifecycle(results, replay)
+
+  defp lifecycle_count_snapshot(counts, results, replay) when is_map(counts) do
+    replay_active_attempt_count = replay |> runtime_ledger_replay_snapshot() |> replay_active_attempts() |> length()
+
+    %{
+      selected_count: non_negative_integer(value(counts, :selected_count)) || length(results),
+      acked_count: non_negative_integer(value(counts, :acked_count)) || Enum.count(results, &(&1.status == "ack")),
+      failed_count: non_negative_integer(value(counts, :failed_count)) || Enum.count(results, &(&1.status == "failed")),
+      manual_attention_count: non_negative_integer(value(counts, :manual_attention_count)) || Enum.count(results, &(&1.status == "manual_attention")),
+      unknown_count: non_negative_integer(value(counts, :unknown_count)) || Enum.count(results, &(&1.status == "unknown")),
+      skipped_count: non_negative_integer(value(counts, :skipped_count)) || Enum.count(results, &(&1.status == "skipped")),
+      already_acked_count: non_negative_integer(value(counts, :already_acked_count)) || Enum.count(results, &(&1.status == "already_acked")),
+      running_attempt_count: non_negative_integer(value(counts, :running_attempt_count)) || replay_active_attempt_count
+    }
+  end
+
+  defp lifecycle_count_snapshot(_counts, results, replay), do: worker_lifecycle(results, replay).counts
+
+  defp worker_lifecycle_workers(results, active_attempts) do
+    ack_workers =
+      results
+      |> Enum.filter(&(&1.status == "ack"))
+      |> Enum.map(fn result ->
+        starter_result = safe_preserved_map(value(result, :starter_result) || %{})
+        identity = safe_preserved_map(value(starter_result, :worker_identity) || %{})
+        runtime_context = safe_preserved_map(value(starter_result, :runtime_context) || %{})
+
+        worker_snapshot(%{
+          source: "starter_ack",
+          project_id: result.project_id,
+          issue_key: result.issue_key,
+          attempt_id: result.attempt_id,
+          start_intent_id: result.start_intent_id,
+          start_intent_status: "acknowledged",
+          session_id: optional_string(starter_result, :session_id),
+          worker_host: optional_string(starter_result, :worker_host) || (result.request && result.request.worker_host),
+          workspace_path: optional_string(starter_result, :workspace_path) || result.workspace_path,
+          started_at: iso8601(value(starter_result, :started_at)),
+          last_activity_at: iso8601(value(starter_result, :last_activity_at)),
+          worker_identity: identity,
+          runtime_context: runtime_context
+        })
+      end)
+
+    replay_workers =
+      active_attempts
+      |> Enum.filter(&(safe_status(value(&1, :start_intent_status)) == "acknowledged"))
+      |> Enum.map(fn attempt ->
+        run_context = safe_preserved_map(value(attempt, :run_context) || %{})
+
+        worker_snapshot(%{
+          source: "runtime_ledger_replay",
+          project_id: optional_string(attempt, :project_id),
+          issue_key: optional_string(attempt, :issue_key),
+          attempt_id: optional_string(attempt, :attempt_id),
+          start_intent_id: optional_string(attempt, :start_intent_id),
+          start_intent_status: safe_status(value(attempt, :start_intent_status)),
+          session_id: optional_string(run_context, :session_id),
+          worker_host: optional_string(attempt, :worker_host),
+          workspace_path: optional_string(attempt, :workspace_path),
+          started_at: iso8601(value(run_context, :started_at)),
+          last_activity_at: iso8601(value(run_context, :last_activity_at)),
+          worker_identity: safe_preserved_map(value(run_context, :worker_identity) || %{}),
+          runtime_context: run_context
+        })
+      end)
+
+    (ack_workers ++ replay_workers)
+    |> Enum.reject(&(is_nil(&1.attempt_id) and is_nil(&1.start_intent_id)))
+    |> Enum.uniq_by(&{&1.project_id, &1.issue_key, &1.attempt_id, &1.start_intent_id, &1.source})
+  end
+
+  defp worker_snapshot(worker) when is_map(worker) do
+    %{
+      source: safe_status(value(worker, :source)) || "unknown",
+      project_id: optional_string(worker, :project_id),
+      issue_key: optional_string(worker, :issue_key),
+      attempt_id: optional_string(worker, :attempt_id),
+      start_intent_id: optional_string(worker, :start_intent_id),
+      start_intent_status: safe_status(value(worker, :start_intent_status)),
+      session_id: optional_string(worker, :session_id),
+      worker_host: optional_string(worker, :worker_host),
+      workspace_path: optional_string(worker, :workspace_path),
+      started_at: iso8601(value(worker, :started_at)),
+      last_activity_at: iso8601(value(worker, :last_activity_at)),
+      worker_identity: safe_preserved_map(value(worker, :worker_identity) || %{}),
+      runtime_context: compact_runtime_context(value(worker, :runtime_context) || %{})
+    }
+  end
+
+  defp worker_snapshot(_worker), do: worker_snapshot(%{})
+
+  defp compact_runtime_context(context) when is_map(context) do
+    context
+    |> safe_preserved_map()
+    |> Map.take([
+      :project_id,
+      :issue_key,
+      :attempt_id,
+      :start_intent_id,
+      :current_stage,
+      :workspace_path,
+      :workspace_lease_id,
+      :worker_host,
+      :session_id,
+      :started_at,
+      :last_activity_at,
+      :status,
+      "project_id",
+      "issue_key",
+      "attempt_id",
+      "start_intent_id",
+      "current_stage",
+      "workspace_path",
+      "workspace_lease_id",
+      "worker_host",
+      "session_id",
+      "started_at",
+      "last_activity_at",
+      "status"
+    ])
+  end
+
+  defp failure_reason_counts(results) do
+    results
+    |> Enum.filter(&(&1.status in ["failed", "manual_attention"]))
+    |> Enum.map(&(safe_status(value(&1, :reason)) || safe_status(value(&1, :failure_status)) || &1.status))
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {reason, _count} -> reason end)
+    |> Map.new()
+  end
+
+  defp active_attempt_start_intents(active_attempts) do
+    Enum.map(active_attempts, &active_attempt_start_intent_snapshot/1)
+  end
+
+  defp active_attempt_start_intent_snapshot(attempt) when is_map(attempt) do
+    %{
+      project_id: optional_string(attempt, :project_id),
+      issue_key: optional_string(attempt, :issue_key),
+      attempt_id: optional_string(attempt, :attempt_id),
+      status: safe_status(value(attempt, :status)),
+      start_intent_id: optional_string(attempt, :start_intent_id),
+      start_intent_status: safe_status(value(attempt, :start_intent_status)),
+      workspace_path: optional_string(attempt, :workspace_path),
+      workspace_lease_id: optional_string(attempt, :workspace_lease_id),
+      worker_host: optional_string(attempt, :worker_host)
+    }
+  end
+
+  defp active_attempt_start_intent_snapshot(_attempt), do: active_attempt_start_intent_snapshot(%{})
+
+  defp replay_active_attempts(replay) do
+    replay
+    |> list_value(:projects)
+    |> Enum.flat_map(fn project ->
+      project_id = optional_string(project, :project_id)
+
+      project
+      |> list_value(:active_attempts)
+      |> Enum.map(&Map.put(&1, :project_id, project_id))
+    end)
   end
 
   defp reason_counts(results) do

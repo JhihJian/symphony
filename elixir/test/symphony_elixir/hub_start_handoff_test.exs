@@ -1,9 +1,53 @@
 defmodule SymphonyElixir.HubStartHandoffTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, IssueRef, RuntimeLedger, WorkerStartHandoff}
+  alias SymphonyElixir.Hub.{DispatchBoundary, IssueRef, RealWorkerStarter, RuntimeLedger, WorkerStartHandoff}
 
   @now ~U[2026-06-29 09:00:00Z]
+
+  setup do
+    previous_runner = Application.get_env(:symphony_elixir, :hub_worker_start_runner)
+    previous_timeout = Application.get_env(:symphony_elixir, :hub_worker_start_timeout_ms)
+
+    on_exit(fn ->
+      restore_app_env(:hub_worker_start_runner, previous_runner)
+      restore_app_env(:hub_worker_start_timeout_ms, previous_timeout)
+    end)
+
+    :ok
+  end
+
+  defmodule ModuleAckRunner do
+    @moduledoc false
+
+    def run(issue, request, runtime, recipient) do
+      if parent = Map.get(request, :test_recipient) do
+        send(parent, {:module_ack_runner, issue, request, runtime})
+      end
+
+      send(recipient, {
+        :worker_runtime_info,
+        issue.id,
+        %{
+          workspace_path: runtime.workspace_path,
+          worker_host: runtime.worker_host
+        }
+      })
+
+      send(recipient, {
+        :codex_worker_update,
+        issue.id,
+        %{
+          event: :session_started,
+          codex_app_server_pid: 12_345,
+          timestamp: "not-a-datetime"
+        }
+      })
+
+      Process.sleep(20)
+      :ok
+    end
+  end
 
   test "acknowledges a pending start intent and links the running attempt in replay" do
     assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
@@ -35,6 +79,9 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     assert handoff.counts.acked_count == 1
     assert handoff.counts.unresolved_start_intent_count == 0
     assert handoff.reason_counts == %{"starter_acknowledged" => 1}
+    assert handoff.worker_lifecycle.counts.acked_count == 1
+    assert [%{start_intent_status: "acknowledged", session_id: "session-alpha"} | _] = handoff.worker_lifecycle.workers
+    assert [%{start_intent_status: "acknowledged"}] = handoff.worker_lifecycle.active_attempt_start_intents
     assert [%{status: "ack", request: request}] = handoff.results
     assert request.project_id == "alpha"
     assert request.source_poll.request_id == "provider-request-alpha"
@@ -81,6 +128,235 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     assert [%{attempt_id: attempt_id, due_at: "2026-06-29T09:05:00Z", error_summary: "worker unavailable"}] = project.retry_backoff
     assert attempt_id == context.attempt_id
     assert project.workspace_leases == []
+  end
+
+  test "real worker starter opt-in launches through injectable runner and returns safe ack" do
+    parent = self()
+    previous_runner = Application.get_env(:symphony_elixir, :hub_worker_start_runner)
+    previous_timeout = Application.get_env(:symphony_elixir, :hub_worker_start_timeout_ms)
+
+    on_exit(fn ->
+      restore_app_env(:hub_worker_start_runner, previous_runner)
+      restore_app_env(:hub_worker_start_timeout_ms, previous_timeout)
+    end)
+
+    RealWorkerStarter.set_runner(fn issue, request, runtime, recipient, _opts ->
+      send(parent, {:real_worker_runner, issue, request, runtime})
+      send(recipient, {:worker_runtime_info, issue.id, %{workspace_path: runtime.workspace_path, worker_host: runtime.worker_host}})
+
+      send(recipient, {
+        :codex_worker_update,
+        issue.id,
+        %{
+          event: :session_started,
+          session_id: "session-real",
+          codex_app_server_pid: "12345",
+          timestamp: ~U[2026-06-29 09:00:05Z]
+        }
+      })
+
+      Process.sleep(:infinity)
+    end)
+
+    Application.put_env(:symphony_elixir, :hub_worker_start_timeout_ms, 1_000)
+
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+    assert {acked_ledger, handoff} = WorkerStartHandoff.run(registry(), ledger, now: @now, starter: RealWorkerStarter)
+
+    assert_receive {:real_worker_runner, issue, request, runtime}, 1_000
+    assert issue.id == "123"
+    assert issue.identifier == "jhihjian/symphony#123"
+    assert request.workflow_file_path == "/tmp/symphony-alpha/WORKFLOW.md"
+    assert request.tracker_file_path == "/tmp/symphony-alpha/TRACKER.yaml"
+    assert runtime.workspace_path == "/workspaces/alpha/123"
+
+    assert handoff.counts.acked_count == 1
+    assert [%{status: "ack", starter_result: starter_result}] = handoff.results
+    assert starter_result.session_id == "session-real"
+    assert starter_result.worker_identity.codex_app_server_pid == "12345"
+    assert handoff.worker_lifecycle.counts.acked_count == 1
+    assert [%{session_id: "session-real", worker_identity: %{codex_app_server_pid: "12345"}} | _] = handoff.worker_lifecycle.workers
+
+    [project] = RuntimeLedger.replay(acked_ledger).projects
+    assert [%{status: :running, start_intent_status: :acknowledged, run_context: run_context}] = project.active_attempts
+    assert run_context.session_id == "session-real"
+    assert run_context.worker_identity.codex_app_server_pid == "12345"
+
+    safe_text = inspect(handoff)
+    refute safe_text =~ "Authorization"
+    refute safe_text =~ "cookie"
+  end
+
+  test "real worker starter controls runner env and rejects invalid handoff requests" do
+    runner = fn _issue, _request, _runtime, _recipient, _opts -> :ok end
+
+    assert :ok = RealWorkerStarter.set_runner(runner)
+    assert Application.get_env(:symphony_elixir, :hub_worker_start_runner) == runner
+
+    assert :ok = RealWorkerStarter.set_runner(nil)
+    assert Application.get_env(:symphony_elixir, :hub_worker_start_runner) == nil
+
+    assert :ok = RealWorkerStarter.clear_runner()
+    assert Application.get_env(:symphony_elixir, :hub_worker_start_runner) == nil
+
+    assert %{
+             status: "manual_attention",
+             reason: "invalid_handoff_request",
+             failure_status: "manual_attention"
+           } = RealWorkerStarter.start(:not_a_request)
+  end
+
+  test "real worker starter supports module runners and restores project runtime paths" do
+    previous_workflow_path = Workflow.workflow_file_path()
+    previous_tracker_path = TrackerConfig.tracker_file_path()
+
+    RealWorkerStarter.set_runner(ModuleAckRunner)
+    Application.put_env(:symphony_elixir, :hub_worker_start_timeout_ms, :invalid_timeout)
+
+    request =
+      real_worker_request(%{
+        :test_recipient => self(),
+        :start_intent_id => %{opaque: "not a scalar"},
+        :worker_host => nil,
+        "worker_host" => "worker-module"
+      })
+
+    assert %{
+             status: "ack",
+             reason: "real_worker_started",
+             worker_host: "worker-module",
+             session_id: session_id,
+             worker_identity: %{codex_app_server_pid: "12345", worker_host: "worker-module"},
+             runtime_context: %{start_intent_id: nil}
+           } = RealWorkerStarter.start(request, now: @now)
+
+    assert session_id =~ "hub-worker:none:"
+
+    assert_receive {:module_ack_runner, issue, runner_request, runtime}, 1_000
+    assert issue.id == "123"
+    assert runner_request.project_id == "alpha"
+    assert runtime.workflow_path == request.workflow_file_path
+    assert runtime.tracker_config_path == request.tracker_file_path
+
+    Process.sleep(50)
+    assert Workflow.workflow_file_path() == previous_workflow_path
+    assert TrackerConfig.tracker_file_path() == previous_tracker_path
+  end
+
+  test "real worker starter reports manual attention when handoff request lacks project runtime paths" do
+    result =
+      RealWorkerStarter.start(%{
+        project_id: "alpha",
+        issue_ref: issue_ref("alpha", "123", "jhihjian/symphony#123"),
+        current_stage: "ready",
+        workspace_path: "/workspaces/alpha/123",
+        start_intent_id: "start-intent-alpha-123"
+      })
+
+    assert result.status == "manual_attention"
+    assert result.reason == "missing_workflow_file_path"
+    assert result.failure_status == "manual_attention"
+
+    assert %{
+             status: "manual_attention",
+             reason: "missing_tracker_file_path",
+             failure_status: "manual_attention"
+           } = RealWorkerStarter.start(real_worker_request(%{tracker_file_path: nil}))
+
+    assert %{
+             status: "manual_attention",
+             reason: "missing_workspace_path",
+             failure_status: "manual_attention"
+           } = RealWorkerStarter.start(real_worker_request(%{workspace_path: nil}))
+  end
+
+  test "real worker starter reports workspace lease mismatch as manual attention" do
+    RealWorkerStarter.set_runner(fn issue, _request, _runtime, recipient, _opts ->
+      send(recipient, {
+        :worker_runtime_info,
+        issue.id,
+        %{workspace_path: "/tmp/symphony-wrong-workspace", worker_host: "worker-mismatch"}
+      })
+
+      Process.sleep(:infinity)
+    end)
+
+    assert %{
+             status: "manual_attention",
+             reason: "workspace_lease_mismatch",
+             failure_status: "manual_attention",
+             error_summary: "worker workspace did not match the ledger workspace lease"
+           } = RealWorkerStarter.start(real_worker_request())
+  end
+
+  test "real worker starter reports startup failures as retryable facts" do
+    for {field, value} <- [payload: "app server failed", details: {:codex, :crashed}] do
+      RealWorkerStarter.set_runner(fn issue, _request, _runtime, recipient, _opts ->
+        send(recipient, {
+          :codex_worker_update,
+          issue.id,
+          Map.put(%{event: :startup_failed}, field, value)
+        })
+
+        Process.sleep(:infinity)
+      end)
+
+      assert %{
+               status: "failed",
+               reason: "worker_start_failed",
+               failure_status: "retry_queued",
+               error_summary: "worker start failed before acknowledgement: worker_runtime_error"
+             } = RealWorkerStarter.start(real_worker_request())
+    end
+  end
+
+  test "real worker starter reports worker exits before acknowledgement without raw error details" do
+    for {exit_reason, allowed_summaries} <- [
+          {:return_ok,
+           [
+             "worker exited before start acknowledgement: normal_exit",
+             "worker exited before start acknowledgement: worker_runtime_error"
+           ]},
+          {:normal,
+           [
+             "worker exited before start acknowledgement: normal_exit",
+             "worker exited before start acknowledgement: worker_runtime_error"
+           ]},
+          {{:shutdown, :stopping}, ["worker exited before start acknowledgement: shutdown"]},
+          {:boom, ["worker exited before start acknowledgement: worker_runtime_error"]}
+        ] do
+      RealWorkerStarter.set_runner(fn _issue, _request, _runtime, _recipient, _opts ->
+        case exit_reason do
+          :return_ok -> :ok
+          :normal -> exit(:normal)
+          other -> exit(other)
+        end
+      end)
+
+      assert %{
+               status: "failed",
+               reason: "worker_exited_before_ack",
+               failure_status: "retry_queued",
+               error_summary: error_summary
+             } = RealWorkerStarter.start(real_worker_request())
+
+      assert error_summary in allowed_summaries
+    end
+  end
+
+  test "real worker starter times out workers that never acknowledge start" do
+    Application.put_env(:symphony_elixir, :hub_worker_start_timeout_ms, 10)
+
+    RealWorkerStarter.set_runner(fn _issue, _request, _runtime, _recipient, _opts ->
+      Process.sleep(:infinity)
+    end)
+
+    assert %{
+             status: "failed",
+             reason: "worker_start_timeout",
+             failure_status: "retry_queued",
+             error_summary: "worker did not acknowledge start within 10ms"
+           } = RealWorkerStarter.start(real_worker_request())
   end
 
   test "records manual attention while preserving unresolved start intent" do
@@ -244,6 +520,8 @@ defmodule SymphonyElixir.HubStartHandoffTest do
             polling_interval_ms: 30_000,
             server_port: nil
           },
+          workflow_path: "/tmp/symphony-alpha/WORKFLOW.md",
+          tracker_config_path: "/tmp/symphony-alpha/TRACKER.yaml",
           fingerprint: "alpha-fingerprint",
           snapshot_version: "hub-project:alpha:1",
           loaded_at: @now
@@ -293,6 +571,8 @@ defmodule SymphonyElixir.HubStartHandoffTest do
         starts_agent: false,
         creates_workspace: false,
         writes_provider: false,
+        workflow_file_path: "/tmp/symphony-alpha/WORKFLOW.md",
+        tracker_file_path: "/tmp/symphony-alpha/TRACKER.yaml",
         planning: %{intent_id: start_intent_id},
         source_intake: %{candidate_key: issue_key}
       }
@@ -312,4 +592,31 @@ defmodule SymphonyElixir.HubStartHandoffTest do
       url: "https://example.test/#{provider_issue_id}"
     }
   end
+
+  defp real_worker_request(overrides \\ %{}) do
+    workflow_file_path = Workflow.workflow_file_path()
+    tracker_file_path = TrackerConfig.tracker_file_path() || TrackerConfig.default_tracker_file_path(workflow_file_path)
+
+    base = %{
+      project_id: "alpha",
+      issue_key: "alpha:github:jhihjian/symphony:123",
+      attempt_id: "attempt-alpha-123",
+      start_intent_id: "start-intent-alpha-123",
+      issue_ref: %{
+        provider_issue_id: "123",
+        identifier: "jhihjian/symphony#123",
+        url: "https://example.test/123"
+      },
+      current_stage: "ready",
+      workflow_file_path: workflow_file_path,
+      tracker_file_path: tracker_file_path,
+      workspace_path: "/workspaces/alpha/123",
+      worker_host: "worker-1"
+    }
+
+    Map.merge(base, overrides)
+  end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end

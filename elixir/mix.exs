@@ -36,6 +36,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.ProviderGovernance,
           SymphonyElixir.Hub.ProviderScope,
           SymphonyElixir.Hub.ProviderToolRouting,
+          SymphonyElixir.Hub.RealWorkerStarter,
           SymphonyElixir.Hub.Runtime,
           SymphonyElixir.Hub.RuntimeLedger,
           SymphonyElixir.Hub.SafeSummary,
