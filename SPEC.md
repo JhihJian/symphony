@@ -1170,15 +1170,26 @@ Runtime entrypoint:
   compatible.
 - A Hub runtime MAY load the registry, build poll coordination and device observability snapshots,
   execute a controlled candidate-scan poll tick through a Hub provider request boundary, record poll
-  attempt/result facts, and expose those safe summaries through the existing observability API.
+  attempt/result facts, build a candidate intake summary from governed result summaries, and expose
+  those safe summaries through the existing observability API.
 - A Hub poll tick runtime skeleton MUST route candidate scans through provider governance rather
   than direct per-project polling. Its default provider executor MAY be a no-legacy-adapter skeleton,
   but tests SHOULD be able to inject a provider executor that returns governed results.
+- A Hub candidate intake boundary SHOULD normalize provider candidate-scan summaries into
+  provider-neutral records keyed by `project_id`, provider scope, IssueRef or equivalent issue key,
+  and source poll request/result correlation. It SHOULD accept atom-key and string-key input, isolate
+  malformed candidates, and avoid exposing raw provider response bodies, provider tokens,
+  authorization/cookie values, full prompts, transcripts, or full comment/PR bodies.
+- Candidate intake MAY perform a lightweight dispatch eligibility precheck against project
+  paused/config-error state, provider backoff/manual attention, runtime-ledger active attempts,
+  unresolved start intents, workspace lease conflicts, retry/backoff, and project/global capacity.
+  This precheck MUST NOT start agents, create workspaces or leases, mutate provider state, or replace
+  the final dispatch transaction.
 - This runtime MUST NOT dispatch agents, create workspaces, write provider comments/statuses/PRs, or
   take ownership of existing legacy poll loops unless a later explicit Hub scheduler integration
   documents that ownership change.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
-  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, and
+  `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, and
   `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
   SHOULD keep the existing API shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
@@ -1199,6 +1210,11 @@ Compatibility boundary:
   requests through an injectable provider executor and record normalized results, but it MUST NOT
   require existing legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated
   until an explicit Hub integration enables that path.
+- Hub candidate intake MAY consume safe candidate-scan result summaries and produce
+  ready-for-dispatch-evaluation or skipped-candidate summaries, including project-level counts and
+  reasons such as invalid candidate, duplicate active attempt, workspace busy, project paused,
+  config error, provider backoff, manual attention, or capacity full. This remains a read/precheck
+  boundary and MUST NOT imply a Hub scheduler has taken ownership of dispatch.
 - Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
   builds `ProviderGovernance` requests for structured provider calls and returns safe result
   summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned

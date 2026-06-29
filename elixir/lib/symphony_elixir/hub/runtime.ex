@@ -12,7 +12,15 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   use GenServer
 
-  alias SymphonyElixir.Hub.{DeviceObservability, PollCoordinator, ProjectRegistry, ProviderExecutor, ProviderGovernance}
+  alias SymphonyElixir.Hub.{
+    CandidateIntake,
+    DeviceObservability,
+    PollCoordinator,
+    ProjectRegistry,
+    ProviderExecutor,
+    ProviderGovernance,
+    RuntimeLedger
+  }
 
   @env_key :hub_config_file_path
   @poll_fact_limit 200
@@ -30,6 +38,8 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:poll_facts) => [PollCoordinator.fact()],
           required(:provider_queue) => ProviderGovernance.queue(),
           required(:provider_executor) => module() | function(),
+          required(:runtime_ledger) => RuntimeLedger.ledger(),
+          required(:candidate_intake) => map(),
           required(:tick) => map(),
           required(:snapshot) => map()
         }
@@ -113,6 +123,8 @@ defmodule SymphonyElixir.Hub.Runtime do
          {:ok, registry} <- load_registry(config_path) do
       loaded_at = DateTime.utc_now()
       provider_queue = ProviderGovernance.new_queue()
+      runtime_ledger = opts |> Keyword.get(:runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
+      candidate_intake = CandidateIntake.empty(registry, now: loaded_at, runtime_ledger: runtime_ledger)
       tick = idle_tick(loaded_at)
 
       {:ok,
@@ -123,11 +135,15 @@ defmodule SymphonyElixir.Hub.Runtime do
          poll_facts: [],
          provider_queue: provider_queue,
          provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
+         runtime_ledger: runtime_ledger,
+         candidate_intake: candidate_intake,
          tick: tick,
          snapshot:
            build_snapshot(config_path, loaded_at, registry,
              now: loaded_at,
              provider_queue: provider_queue,
+             runtime_ledger: runtime_ledger,
+             candidate_intake: candidate_intake,
              tick: tick
            )
        }}
@@ -156,7 +172,7 @@ defmodule SymphonyElixir.Hub.Runtime do
            queued: true,
            coalesced: false,
            requested_at: requested_at,
-           operations: ["hub_registry_load", "hub_poll_plan", "hub_provider_candidate_scan", "hub_device_observability"],
+           operations: ["hub_registry_load", "hub_poll_plan", "hub_provider_candidate_scan", "hub_candidate_intake", "hub_device_observability"],
            poll_tick: tick_summary
          }, state}
 
@@ -185,6 +201,8 @@ defmodule SymphonyElixir.Hub.Runtime do
     provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
     poll_facts = Keyword.get(opts, :poll_facts, [])
     tick = normalize_tick(Keyword.get(opts, :tick))
+    runtime_ledger = Keyword.get(opts, :runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
+    candidate_intake = Keyword.get(opts, :candidate_intake, CandidateIntake.empty(registry, now: now, runtime_ledger: runtime_ledger))
     poll_plan = PollCoordinator.build_plan(registry, now: now, facts: poll_facts, queue: provider_queue)
 
     device_observability =
@@ -192,6 +210,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         %{
           registry: registry,
           poll_coordination: poll_plan,
+          runtime_ledger: runtime_ledger,
           migration_boundary: migration_boundary()
         },
         now: now
@@ -220,11 +239,14 @@ defmodule SymphonyElixir.Hub.Runtime do
         generated_at: iso8601(now),
         counts: counts,
         poll_tick: tick,
+        candidate_intake: CandidateIntake.tick_summary(candidate_intake),
         migration_boundary: migration_boundary(),
         registry: registry_summary
       },
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
+      hub_candidate_intake: candidate_intake,
+      hub_dispatch_boundary: runtime_ledger,
       hub_device_observability: device_observability
     }
   end
@@ -262,8 +284,8 @@ defmodule SymphonyElixir.Hub.Runtime do
 
     executable_entries = Enum.filter(plan.projects, &(&1.allow_poll == true))
 
-    {poll_facts, provider_queue, result_summaries} =
-      Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, []}, fn entry, {facts, queue, summaries} ->
+    {poll_facts, provider_queue, result_summaries, intake_sources} =
+      Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, [], []}, fn entry, {facts, queue, summaries, intake_sources} ->
         attempt = PollCoordinator.attempt_fact(entry, attempted_at: requested_at)
         request = request_from_entry(entry)
 
@@ -285,22 +307,39 @@ defmodule SymphonyElixir.Hub.Runtime do
 
         facts = trim_poll_facts([result_fact, attempt | facts])
         summary = poll_result_summary(result, attempt, result_fact, finished_at)
+        intake_source = poll_intake_source(entry, request, result, attempt, result_fact, finished_at)
 
-        {facts, queue, [summary | summaries]}
+        {facts, queue, [summary | summaries], [intake_source | intake_sources]}
       end)
 
     finished_at = DateTime.utc_now()
-    tick = finished_tick(started_tick, finished_at, length(executable_entries), result_summaries)
+
+    candidate_intake =
+      CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
+        now: finished_at,
+        runtime_ledger: state.runtime_ledger
+      )
+
+    tick = finished_tick(started_tick, finished_at, length(executable_entries), result_summaries, candidate_intake)
 
     snapshot =
       build_snapshot(state.config_path, state.loaded_at, state.registry,
         now: finished_at,
         poll_facts: poll_facts,
         provider_queue: provider_queue,
+        runtime_ledger: state.runtime_ledger,
+        candidate_intake: candidate_intake,
         tick: tick
       )
 
-    state = %{state | poll_facts: poll_facts, provider_queue: provider_queue, tick: tick, snapshot: snapshot}
+    state = %{
+      state
+      | poll_facts: poll_facts,
+        provider_queue: provider_queue,
+        candidate_intake: candidate_intake,
+        tick: tick,
+        snapshot: snapshot
+    }
 
     {state, tick}
   end
@@ -441,6 +480,17 @@ defmodule SymphonyElixir.Hub.Runtime do
     |> Map.new()
   end
 
+  defp poll_intake_source(entry, request, result, attempt, result_fact, finished_at) do
+    %{
+      entry: entry,
+      request: request,
+      result: result,
+      attempt: attempt,
+      result_fact: result_fact,
+      finished_at: finished_at
+    }
+  end
+
   defp trim_poll_facts(facts) do
     Enum.take(facts, @poll_fact_limit)
   end
@@ -454,6 +504,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       selected_count: 0,
       result_counts: %{},
       results: [],
+      candidate_intake: CandidateIntake.tick_summary(%{}),
       updated_at: iso8601(now)
     }
   end
@@ -467,11 +518,12 @@ defmodule SymphonyElixir.Hub.Runtime do
       selected_count: 0,
       result_counts: %{},
       results: [],
+      candidate_intake: CandidateIntake.tick_summary(%{}),
       updated_at: iso8601(started_at)
     }
   end
 
-  defp finished_tick(started_tick, finished_at, selected_count, result_summaries) do
+  defp finished_tick(started_tick, finished_at, selected_count, result_summaries, candidate_intake) do
     results = Enum.reverse(result_summaries)
 
     %{
@@ -482,6 +534,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       selected_count: selected_count,
       result_counts: result_counts(results),
       results: results,
+      candidate_intake: CandidateIntake.tick_summary(candidate_intake),
       updated_at: iso8601(finished_at)
     }
   end
@@ -497,6 +550,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       selected_count: Map.get(tick, :selected_count) || Map.get(tick, "selected_count") || 0,
       result_counts: Map.get(tick, :result_counts) || Map.get(tick, "result_counts") || %{},
       results: Map.get(tick, :results) || Map.get(tick, "results") || [],
+      candidate_intake: CandidateIntake.tick_summary(Map.get(tick, :candidate_intake) || Map.get(tick, "candidate_intake") || %{}),
       updated_at: Map.get(tick, :updated_at) || Map.get(tick, "updated_at")
     }
   end
@@ -617,7 +671,14 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_takes_over_legacy_poll_loop: false,
       hub_routing_requires_opt_in: true,
       direct_path_capabilities: ["legacy_poll_loop", "legacy_direct_writeback", "legacy_agent_dispatch"],
-      opt_in_hub_capabilities: ["project_registry", "poll_plan_snapshot", "provider_candidate_scan_request", "poll_result_snapshot", "device_observability_snapshot"]
+      opt_in_hub_capabilities: [
+        "project_registry",
+        "poll_plan_snapshot",
+        "provider_candidate_scan_request",
+        "poll_result_snapshot",
+        "candidate_intake_snapshot",
+        "device_observability_snapshot"
+      ]
     }
   end
 

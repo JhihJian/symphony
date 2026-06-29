@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, Runtime}
+  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, Runtime, RuntimeLedger}
   alias SymphonyElixirWeb.Presenter
 
   test "builds Hub snapshot with ready paused and project-level config error entries" do
@@ -109,6 +109,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_runtime.mode == "hub"
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
+      assert payload.hub_candidate_intake.counts.candidate_count == 0
       assert payload.hub_device_observability.device.project_count == 1
 
       safe_text = inspect(payload)
@@ -132,6 +133,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_runtime)
       refute Map.has_key?(legacy_payload, :hub_project_registry)
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
+      refute Map.has_key?(legacy_payload, :hub_candidate_intake)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
     after
       File.rm_rf(root)
@@ -320,12 +322,38 @@ defmodule SymphonyElixir.HubRuntimeTest do
       snapshot = Runtime.snapshot(runtime_name, 100)
       assert snapshot.hub_runtime.poll_tick.status == "completed"
       assert snapshot.hub_runtime.poll_tick.result_counts == %{"success" => 1}
+      assert snapshot.hub_runtime.poll_tick.candidate_intake.candidate_count == 2
+      assert snapshot.hub_runtime.poll_tick.candidate_intake.eligible_count == 2
+      assert snapshot.hub_runtime.candidate_intake.candidate_count == 2
+      assert snapshot.hub_runtime.candidate_intake.eligible_count == 2
+
+      assert snapshot.hub_candidate_intake.counts == %{
+               candidate_count: 2,
+               valid_candidate_count: 2,
+               eligible_count: 2,
+               skipped_count: 0,
+               invalid_count: 0,
+               project_count: 1
+             }
+
+      assert [intake_project] = snapshot.hub_candidate_intake.projects
+      assert intake_project.project_id == "alpha"
+      assert intake_project.provider_scope_key == "memory:alpha"
+
+      assert Enum.map(intake_project.candidates, & &1.issue_key) == [
+               "alpha:memory:alpha:mem-1",
+               "alpha:memory:alpha:mem-2"
+             ]
+
+      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation"))
+      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.eligible == true))
+      assert Enum.all?(intake_project.candidates, &(&1.source_poll.request_id == request.request_id))
 
       facts_by_type = Enum.group_by(snapshot.hub_poll_coordination.facts, & &1.fact_type)
       assert [_attempt | _] = Map.fetch!(facts_by_type, :poll_attempt)
       assert [result | _] = Map.fetch!(facts_by_type, :poll_result)
       assert result.status == :success
-      assert result.result_summary == %{issue_count: 2}
+      assert result.result_summary.issue_count == 2
 
       [project] = snapshot.hub_poll_coordination.projects
       assert project.allow_poll == false
@@ -336,7 +364,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [device_project] = snapshot.hub_device_observability.projects
       assert device_project.poll.allow_poll == false
       assert device_project.poll.last_poll["status"] == "success"
-      assert [%{"status" => "success", "result_summary" => %{"issue_count" => 2}}] = device_project.provider_queue.recent_results
+      assert [%{"status" => "success", "result_summary" => %{"issue_count" => 2, "candidates" => _candidates}}] = device_project.provider_queue.recent_results
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_candidate_intake.counts.candidate_count == 2
+      assert [%{candidates: payload_candidates}] = payload.hub_candidate_intake.projects
+      assert Enum.all?(payload_candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation"))
     after
       File.rm_rf(root)
     end
@@ -468,10 +501,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       refute safe_text =~ "ghp_supersecret"
       refute safe_text =~ "Bearer supersecret"
+      refute safe_text =~ "Bearer nested"
       refute safe_text =~ "session=secret"
       refute safe_text =~ "full prompt"
       refute safe_text =~ "transcript"
       refute safe_text =~ "raw provider body"
+      refute safe_text =~ "complete comment body"
       refute safe_text =~ "authorization"
       refute safe_text =~ "cookie"
       refute safe_text =~ "ghp_"
@@ -503,6 +538,68 @@ defmodule SymphonyElixir.HubRuntimeTest do
            }
   end
 
+  test "candidate intake marks active attempt and workspace conflicts without dispatching" do
+    root = tmp_root("hub-runtime-candidate-intake-conflicts")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        max_concurrent_agents: 10
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :CandidateIntakeConflictRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: conflict_executor(self(), Path.join([root, "workspaces", "alpha"])),
+         runtime_ledger: active_runtime_ledger(Path.join([root, "workspaces", "alpha"]))},
+        id: :hub_runtime_candidate_intake_conflicts
+      )
+
+      assert %{
+               poll_tick: %{
+                 selected_count: 1,
+                 candidate_intake: %{candidate_count: 3, eligible_count: 1, skipped_count: 2}
+               }
+             } = Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan_conflicts, %{project_id: "alpha"}}, 1_000
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 3
+      assert snapshot.hub_candidate_intake.counts.eligible_count == 1
+      assert snapshot.hub_candidate_intake.skipped_reasons == %{"duplicate_active_attempt" => 1, "workspace_busy" => 1}
+
+      [project] = snapshot.hub_candidate_intake.projects
+
+      reasons_by_issue =
+        project.candidates
+        |> Map.new(&{&1.issue_ref.provider_issue_id, &1.dispatch_evaluation.skipped_reason})
+
+      assert reasons_by_issue["mem-active"] == "duplicate_active_attempt"
+      assert reasons_by_issue["mem-workspace"] == "workspace_busy"
+      assert reasons_by_issue["mem-ready"] == nil
+      assert Enum.count(project.candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation")) == 1
+
+      dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      [ledger_project] = dispatch_summary.projects
+      assert length(ledger_project.active_attempts) == 2
+      refute Enum.any?(ledger_project.active_attempts, &(&1.issue_key =~ "mem-ready"))
+    after
+      File.rm_rf(root)
+    end
+  end
+
   defmodule StaticSnapshot do
     @moduledoc false
     use GenServer
@@ -525,7 +622,16 @@ defmodule SymphonyElixir.HubRuntimeTest do
     fn request, _opts ->
       send(parent, {:provider_candidate_scan, request})
 
-      ProviderGovernance.result(request, :success, result_summary: %{issue_count: 2, token: "ghp_secret_should_not_leak"})
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          issue_count: 2,
+          token: "ghp_secret_should_not_leak",
+          candidates: [
+            %{id: "mem-1", identifier: "MEM-1", current_stage: "ready"},
+            %{"id" => "mem-2", "identifier" => "MEM-2", "current_stage" => "ready"}
+          ]
+        }
+      )
     end
   end
 
@@ -558,7 +664,32 @@ defmodule SymphonyElixir.HubRuntimeTest do
           prompt: "full prompt should not leak",
           transcript: "complete transcript should not leak",
           raw_body: "raw provider body should not leak",
-          visible_count: 1
+          visible_count: 1,
+          candidates: [
+            %{
+              id: "mem-secret",
+              identifier: "MEM-SECRET",
+              authorization: "Bearer nested",
+              comment_body: "complete comment body should not leak"
+            }
+          ]
+        }
+      )
+    end
+  end
+
+  defp conflict_executor(parent, workspace_root) do
+    fn request, _opts ->
+      send(parent, {:provider_candidate_scan_conflicts, request})
+
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          issue_count: 3,
+          candidates: [
+            %{id: "mem-active", identifier: "MEM-ACTIVE", workspace_path: Path.join(workspace_root, "active")},
+            %{id: "mem-workspace", identifier: "MEM-WORKSPACE", workspace_path: Path.join(workspace_root, "shared")},
+            %{id: "mem-ready", identifier: "MEM-READY", workspace_path: Path.join(workspace_root, "ready")}
+          ]
         }
       )
     end
@@ -588,6 +719,54 @@ defmodule SymphonyElixir.HubRuntimeTest do
       blocked: [],
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       rate_limits: nil
+    }
+  end
+
+  defp active_runtime_ledger(workspace_root) do
+    active_ref = memory_issue_ref("alpha", "mem-active", "MEM-ACTIVE")
+    shared_ref = memory_issue_ref("alpha", "mem-shared", "MEM-SHARED")
+    active_key = RuntimeLedger.issue_key(active_ref)
+    shared_key = RuntimeLedger.issue_key(shared_ref)
+
+    RuntimeLedger.new(
+      projects: [
+        %{
+          project_id: "alpha",
+          issues: [
+            %{
+              issue_ref: active_ref,
+              claim_status: :running,
+              attempts: [
+                %{attempt_id: "attempt-active", attempt_number: 1, status: :running, workspace_path: Path.join(workspace_root, "active")}
+              ]
+            },
+            %{
+              issue_ref: shared_ref,
+              claim_status: :running,
+              attempts: [
+                %{attempt_id: "attempt-shared", attempt_number: 1, status: :running, workspace_path: Path.join(workspace_root, "shared")}
+              ]
+            }
+          ],
+          workspace_leases: [
+            %{lease_id: "lease-active", issue_key: active_key, attempt_id: "attempt-active", workspace_path: Path.join(workspace_root, "active"), status: :active},
+            %{lease_id: "lease-shared", issue_key: shared_key, attempt_id: "attempt-shared", workspace_path: Path.join(workspace_root, "shared"), status: :active}
+          ]
+        }
+      ]
+    )
+  end
+
+  defp memory_issue_ref(project_id, issue_id, identifier) do
+    %{
+      project_id: project_id,
+      tracker_kind: "memory",
+      provider_scope: %{namespace: project_id},
+      provider_scope_key: "memory:#{project_id}",
+      provider_issue_id: issue_id,
+      provider_local_id: identifier,
+      identifier: identifier,
+      url: "memory://#{project_id}/#{issue_id}"
     }
   end
 
