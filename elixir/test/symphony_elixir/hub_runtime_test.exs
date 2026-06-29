@@ -137,6 +137,91 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "StatusDashboard renders Hub runtime line from live runtime snapshot" do
+    root = tmp_root("hub-runtime-dashboard")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+      write_project!(root, "beta", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "beta"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :DashboardRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path},
+        id: :hub_runtime_dashboard
+      )
+
+      parent = self()
+      dashboard_name = Module.concat(__MODULE__, :Dashboard)
+      render_fun = fn content -> send(parent, {:dashboard_frame, content}) end
+
+      dashboard_opts = [
+        name: dashboard_name,
+        orchestrator: runtime_name,
+        mode: :hub,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 0,
+        render_fun: render_fun
+      ]
+
+      start_supervised!(
+        {StatusDashboard, dashboard_opts},
+        id: :hub_runtime_dashboard_status
+      )
+
+      send(Process.whereis(dashboard_name), :refresh)
+
+      assert_receive {:dashboard_frame, content}, 1_000
+
+      assert content =~ "│ Hub mode: "
+      assert content =~ "2 projects"
+      assert content =~ "0 config errors"
+      assert content =~ "2 provider scopes"
+      assert content =~ "read-only"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "StatusDashboard omits Hub runtime line for legacy snapshots" do
+    runtime_name = Module.concat(__MODULE__, :DashboardLegacySnapshot)
+
+    start_supervised!(
+      {__MODULE__.StaticSnapshot, name: runtime_name, snapshot: legacy_snapshot()},
+      id: :hub_runtime_dashboard_legacy_snapshot
+    )
+
+    parent = self()
+    dashboard_name = Module.concat(__MODULE__, :DashboardLegacy)
+
+    start_supervised!(
+      {StatusDashboard,
+       name: dashboard_name,
+       orchestrator: runtime_name,
+       mode: :legacy,
+       enabled: true,
+       refresh_ms: 60_000,
+       render_interval_ms: 0,
+       render_fun: fn content -> send(parent, {:dashboard_frame, content}) end},
+      id: :hub_runtime_dashboard_legacy_status
+    )
+
+    send(Process.whereis(dashboard_name), :refresh)
+
+    assert_receive {:dashboard_frame, content}, 1_000
+    refute content =~ "│ Hub mode: "
+  end
+
   test "string-key snapshots are exposed without creating atoms" do
     unknown_keys =
       Enum.map(1..200, fn index ->
