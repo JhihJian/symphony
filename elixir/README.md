@@ -631,8 +631,9 @@ can move a half-started attempt to retry queued, blocked, released, or manual at
 worker-start results keep an unresolved start intent so recovery can explain the state and avoid a
 blind double start. `record_worker_lifecycle/3` applies post-ack lifecycle results with idempotent
 attempt/start-intent/session/workspace matching. Duplicate terminal results are ignored, conflicting
-late terminal results are skipped, and mismatched workspace leases cannot release the wrong
-workspace. `release_attempt/3` closes the attempt and releases the workspace lease.
+late terminal results are skipped, late still-running results after a confirmed terminal result
+cannot revive the attempt, and mismatched workspace leases cannot release the wrong workspace.
+`release_attempt/3` closes the attempt and releases the workspace lease.
 
 Run context snapshots include project/workflow/tracker snapshot references, issue identity, stage,
 attempt/correlation ids, workspace lease/path, worker host/runtime identity summary, runner/start
