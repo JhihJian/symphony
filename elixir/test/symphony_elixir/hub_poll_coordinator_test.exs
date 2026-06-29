@@ -157,6 +157,53 @@ defmodule SymphonyElixir.HubPollCoordinatorTest do
     refute safe_text =~ "token"
   end
 
+  test "poll result summaries redact full body fields with atom and string keys" do
+    fact =
+      PollCoordinator.result_fact(
+        %{
+          project_id: "alpha",
+          provider_kind: "github",
+          provider_scope_key: "github:jhihjian/symphony",
+          request_id: "alpha-request",
+          operation_kind: :candidate_scan
+        },
+        :success,
+        finished_at: ~U[2026-06-27 10:00:00Z],
+        result_summary: %{
+          :issue_count => 1,
+          :body => "plain issue body should not leak",
+          "comment_body" => "plain comment body should not leak",
+          :pull_request_body => "plain pull request body should not leak",
+          "pr_body" => "plain pr body should not leak",
+          :raw_provider_body => "plain raw provider body should not leak",
+          "full_prompt" => "plain full prompt body should not leak"
+        }
+      )
+
+    assert fact.result_summary.issue_count == 1
+    assert is_binary(fact.result_summary.body_sha256)
+    assert is_integer(fact.result_summary.comment_body_bytes)
+
+    snapshot =
+      PollCoordinator.to_snapshot(%{
+        version: 1,
+        generated_at: ~U[2026-06-27 10:00:00Z],
+        registry: %{project_count: 1},
+        poll_order: [],
+        projects: [],
+        provider_queue: %{},
+        facts: [fact]
+      })
+
+    safe_text = inspect(snapshot)
+    refute safe_text =~ "plain issue body should not leak"
+    refute safe_text =~ "plain comment body should not leak"
+    refute safe_text =~ "plain pull request body should not leak"
+    refute safe_text =~ "plain pr body should not leak"
+    refute safe_text =~ "plain raw provider body should not leak"
+    refute safe_text =~ "plain full prompt body should not leak"
+  end
+
   test "recovers atom-key plan and JSON string-key snapshots through the snapshot boundary" do
     now = ~U[2026-06-27 10:00:00Z]
 
@@ -362,7 +409,7 @@ defmodule SymphonyElixir.HubPollCoordinatorTest do
         %{
           "fact_type" => "poll_result",
           "project_id" => "alpha",
-          "result_summary" => %{"prompt" => "full prompt secret"}
+          "result_summary" => %{"prompt" => "full prompt secret", "comment_body" => "plain comment body"}
         }
       ]
     }
@@ -376,12 +423,14 @@ defmodule SymphonyElixir.HubPollCoordinatorTest do
     assert Enum.any?(messages, &String.contains?(&1, "projects.0.governance.transcript"))
     assert Enum.any?(messages, &String.contains?(&1, "provider_queue.scope_states.github:o/r.cookie"))
     assert Enum.any?(messages, &String.contains?(&1, "facts.0.result_summary.prompt"))
+    assert Enum.any?(messages, &String.contains?(&1, "facts.0.result_summary.comment_body"))
 
     diagnostic_text = inspect(diagnostics)
     refute diagnostic_text =~ "ghp_supersecret"
     refute diagnostic_text =~ "Bearer supersecret"
     refute diagnostic_text =~ "session=supersecret"
     refute diagnostic_text =~ "full prompt secret"
+    refute diagnostic_text =~ "plain comment body"
   end
 
   defp registry(projects), do: %{projects: projects, warnings: [], errors: []}

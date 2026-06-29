@@ -519,6 +519,11 @@ input, isolates malformed candidates instead of failing the whole tick, and prod
 candidate/eligible/skipped counts plus reason counts. Its dispatch eligibility check reuses the
 model-only dispatch preflight and runtime ledger facts, but it does not call `dispatch/3`, start a
 worker, create a workspace lease, or write back to a provider.
+Candidate identity is source-bound: the poll source and registry project provide the authoritative
+`project_id`, provider kind, provider scope key, and provider scope. Candidate or input_ref
+project/scope fields are accepted only when they match that source; cross-project, cross-provider,
+or cross-repository mismatches are isolated as invalid candidates and never become
+`ready_for_dispatch_evaluation`.
 
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
@@ -533,8 +538,11 @@ blind double start. `release_attempt/3` closes the attempt and releases the work
 Run context snapshots include project/workflow/tracker snapshot references, issue identity, stage,
 attempt/correlation ids, workspace lease/path, worker host/runtime identity summary, runner/start
 command summary, session/activity timestamps, and exit summary. They intentionally do not include
-provider tokens, API keys, secret env values, cookies, full prompts, complete Codex transcripts, or
-raw secret-bearing config. If a runtime snapshot includes `hub_dispatch_boundary`, the observability
+provider tokens, API keys, secret env values, cookies, full prompts, complete Codex transcripts, raw
+secret-bearing config, or full provider body fields. Hub provider/poll/runtime summaries redact
+`body`, `comment_body`, `pull_request_body`, `pr_body`, `raw_provider_body`, and `full_prompt` to
+safe hash/byte metadata even when those fields appear without token or authorization values. If a
+runtime snapshot includes `hub_dispatch_boundary`, the observability
 presenter exposes the sanitized replay summary in `/api/v1/state`; legacy snapshots without that
 field keep the existing API shape.
 

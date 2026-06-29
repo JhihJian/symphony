@@ -115,6 +115,94 @@ defmodule SymphonyElixir.HubCandidateIntakeTest do
     refute safe_text =~ "raw_body"
   end
 
+  test "candidate identity is bound to poll source project" do
+    summary =
+      CandidateIntake.build(
+        registry([project("alpha"), project("beta", provider_scope_key: "github:other/repo")]),
+        [
+          %{
+            entry: %{
+              project_id: "alpha",
+              provider_kind: "github",
+              provider_scope: github_scope("github:jhihjian/symphony"),
+              provider_scope_key: "github:jhihjian/symphony"
+            },
+            request: %{
+              project_id: "alpha",
+              provider_kind: "github",
+              provider_scope: github_scope("github:jhihjian/symphony"),
+              provider_scope_key: "github:jhihjian/symphony",
+              request_id: "provider-request-alpha",
+              logical_key: "hub-poll:alpha:candidate_scan"
+            },
+            result: %{
+              project_id: "beta",
+              provider_scope_key: "github:other/repo",
+              status: :success,
+              result_summary: %{
+                candidates: [
+                  %{
+                    id: "beta-1",
+                    identifier: "other/repo#1",
+                    project_id: "beta",
+                    issue_ref: %{project_id: "beta", provider_scope_key: "github:other/repo"}
+                  }
+                ]
+              }
+            },
+            attempt: %{attempt_id: "poll-attempt-alpha"}
+          }
+        ],
+        now: @now
+      )
+
+    assert summary.counts == %{
+             candidate_count: 1,
+             valid_candidate_count: 0,
+             eligible_count: 0,
+             skipped_count: 1,
+             invalid_count: 1,
+             project_count: 1
+           }
+
+    assert [project] = summary.projects
+    assert project.project_id == "alpha"
+    assert project.provider_scope_key == "github:jhihjian/symphony"
+    assert project.candidates == []
+    assert [%{invalid_reason: "source_project_mismatch"}] = project.invalid_candidates
+
+    safe_text = inspect(summary)
+    refute safe_text =~ "ready_for_dispatch_evaluation"
+  end
+
+  test "candidate identity rejects provider scope kind and repo mismatches" do
+    summary =
+      CandidateIntake.build(
+        registry([project("alpha")]),
+        [
+          source("alpha", [
+            %{id: "scope-key", identifier: "scope-key", provider_scope_key: "github:other/repo"},
+            %{id: "kind", identifier: "kind", issue_ref: %{tracker_kind: "gitlab"}},
+            %{id: "repo", identifier: "repo", provider_scope: %{owner: "JhihJian", repo: "other"}}
+          ])
+        ],
+        now: @now
+      )
+
+    assert summary.counts.candidate_count == 3
+    assert summary.counts.valid_candidate_count == 0
+    assert summary.counts.eligible_count == 0
+    assert summary.counts.invalid_count == 3
+
+    assert [project] = summary.projects
+    assert project.candidates == []
+
+    invalid_reasons = Enum.map(project.invalid_candidates, & &1.invalid_reason)
+    assert "source_provider_scope_mismatch" in invalid_reasons
+    assert "source_provider_kind_mismatch" in invalid_reasons
+    refute inspect(summary) =~ "ready_for_dispatch_evaluation"
+  end
+
   test "precheck explains duplicate active attempts workspace leases and project capacity" do
     ledger = active_ledger()
 

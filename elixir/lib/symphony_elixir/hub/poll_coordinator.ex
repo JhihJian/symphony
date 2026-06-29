@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   `SymphonyElixir.Orchestrator` poll loop.
   """
 
-  alias SymphonyElixir.Hub.ProviderGovernance
+  alias SymphonyElixir.Hub.{ProviderGovernance, SafeSummary}
 
   @version 1
   @default_poll_interval_ms 30_000
@@ -34,28 +34,6 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     :scope_concurrency,
     :provider_unavailable
   ]
-  @sensitive_keys MapSet.new([
-                    "api_key",
-                    "apikey",
-                    "authorization",
-                    "cookie",
-                    "credential",
-                    "credentials",
-                    "prompt",
-                    "provider_response",
-                    "raw_config",
-                    "raw_body",
-                    "response_body",
-                    "secret",
-                    "token",
-                    "transcript"
-                  ])
-  @sensitive_value_patterns [
-    ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
-    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript)\b/i,
-    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
-  ]
-
   @type fact :: %{
           required(:fact_type) => atom(),
           required(:project_id) => String.t() | nil,
@@ -824,7 +802,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
 
   defp privacy_diagnostics(value) do
     value
-    |> collect_sensitive_paths([])
+    |> SafeSummary.collect_sensitive_paths()
     |> Enum.map(fn {path, reason} ->
       %{
         level: :error,
@@ -835,76 +813,8 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     end)
   end
 
-  defp collect_sensitive_paths(%_struct{}, _path), do: []
-
-  defp collect_sensitive_paths(%{} = map, path) do
-    Enum.flat_map(map, fn {raw_key, value} ->
-      key = raw_key |> normalize_key() |> String.downcase()
-      next_path = path ++ [key]
-
-      key_findings =
-        if sensitive_key?(key) do
-          [{next_path, "field"}]
-        else
-          []
-        end
-
-      key_findings ++ collect_sensitive_paths(value, next_path)
-    end)
-  end
-
-  defp collect_sensitive_paths(values, path) when is_list(values) do
-    values
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {value, index} -> collect_sensitive_paths(value, path ++ [Integer.to_string(index)]) end)
-  end
-
-  defp collect_sensitive_paths(value, path) when is_binary(value) do
-    if sensitive_value?(value) do
-      [{path, "value"}]
-    else
-      []
-    end
-  end
-
-  defp collect_sensitive_paths(_value, _path), do: []
-
-  defp sanitize_map(value) when is_map(value) do
-    value
-    |> Enum.reject(fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
-    |> Map.new(fn {key, raw_value} -> {normalize_output_key(key), sanitize_value(raw_value)} end)
-  end
-
-  defp sanitize_map(_value), do: %{}
-
-  defp sanitize_value(%DateTime{} = value), do: iso8601(value)
-  defp sanitize_value(%_struct{} = value), do: value
-  defp sanitize_value(value) when is_map(value), do: sanitize_map(value)
-  defp sanitize_value(value) when is_list(value), do: value |> Enum.reject(&sensitive_value?/1) |> Enum.map(&sanitize_value/1)
-  defp sanitize_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp sanitize_value(value), do: value
-
-  defp sensitive_key?(key) do
-    key =
-      key
-      |> to_string()
-      |> String.downcase()
-
-    MapSet.member?(@sensitive_keys, key) or String.contains?(key, ["token", "secret", "credential", "cookie", "prompt", "transcript", "raw_body", "response_body", "provider_response"])
-  end
-
-  defp sensitive_value?(value) when is_binary(value) do
-    Enum.any?(@sensitive_value_patterns, &Regex.match?(&1, value))
-  end
-
-  defp sensitive_value?(%_struct{}), do: false
-
-  defp sensitive_value?(value) when is_map(value) do
-    Enum.any?(value, fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
-  end
-
-  defp sensitive_value?(value) when is_list(value), do: Enum.any?(value, &sensitive_value?/1)
-  defp sensitive_value?(_value), do: false
+  defp sanitize_map(value), do: SafeSummary.sanitize_map(value)
+  defp sanitize_value(value), do: SafeSummary.sanitize_value(value)
 
   defp normalize_datetime(nil), do: nil
   defp normalize_datetime(%DateTime{} = value), do: value
@@ -963,7 +873,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   defp safe_optional_string(value) do
     case optional_string(value) do
       nil -> nil
-      string -> if sensitive_value?(string), do: nil, else: string
+      string -> if SafeSummary.sensitive_value?(string), do: nil, else: string
     end
   end
 
@@ -991,19 +901,4 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   end
 
   defp normalize_positive_integer(_value), do: nil
-
-  defp normalize_output_key(key) when is_atom(key), do: key
-
-  defp normalize_output_key(key) when is_binary(key) do
-    if Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*\z/, key) do
-      String.to_atom(key)
-    else
-      key
-    end
-  end
-
-  defp normalize_output_key(key), do: key
-
-  defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
-  defp normalize_key(value), do: to_string(value)
 end

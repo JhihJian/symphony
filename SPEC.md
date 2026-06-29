@@ -1185,6 +1185,11 @@ Runtime entrypoint:
   unresolved start intents, workspace lease conflicts, retry/backoff, and project/global capacity.
   This precheck MUST NOT start agents, create workspaces or leases, mutate provider state, or replace
   the final dispatch transaction.
+- Candidate identity MUST be bound to the current poll source and registry project. Provider
+  candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
+  repository, project slug, or equivalent scope identity MAY be present only when they match the poll
+  source; mismatches MUST be treated as invalid/skipped candidates and MUST NOT become
+  ready-for-dispatch-evaluation.
 - This runtime MUST NOT dispatch agents, create workspaces, write provider comments/statuses/PRs, or
   take ownership of existing legacy poll loops unless a later explicit Hub scheduler integration
   documents that ownership change.
@@ -1194,6 +1199,9 @@ Runtime entrypoint:
   SHOULD keep the existing API shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
+  Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
+  `pr_body`, `raw_provider_body`, and `full_prompt`, MUST be replaced with safe metadata such as
+  hashes and byte counts even when no credential-like value is present.
 
 Compatibility boundary:
 
