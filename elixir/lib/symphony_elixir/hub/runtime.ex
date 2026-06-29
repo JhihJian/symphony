@@ -22,11 +22,13 @@ defmodule SymphonyElixir.Hub.Runtime do
     ProviderExecutor,
     ProviderGovernance,
     RuntimeLedger,
+    WorkerLifecycleReconciliation,
     WorkerStartHandoff
   }
 
   @env_key :hub_config_file_path
   @worker_start_starter_env_key :hub_worker_start_starter
+  @worker_lifecycle_result_source_env_key :hub_worker_lifecycle_result_source
   @poll_fact_limit 200
   @empty_codex_totals %{
     input_tokens: 0,
@@ -43,11 +45,13 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:provider_queue) => ProviderGovernance.queue(),
           required(:provider_executor) => module() | function(),
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
+          required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
           required(:dispatch_planning) => map(),
           required(:dispatch_plan_application) => map(),
           required(:worker_start_handoff) => map(),
+          required(:worker_lifecycle_reconciliation) => map(),
           required(:tick) => map(),
           required(:snapshot) => map()
         }
@@ -88,6 +92,23 @@ defmodule SymphonyElixir.Hub.Runtime do
   def clear_worker_start_starter do
     Application.delete_env(:symphony_elixir, @worker_start_starter_env_key)
     :ok
+  end
+
+  @spec set_worker_lifecycle_result_source(WorkerLifecycleReconciliation.result_source()) :: :ok
+  def set_worker_lifecycle_result_source(source) when is_atom(source) or is_function(source, 2) or is_nil(source) do
+    Application.put_env(:symphony_elixir, @worker_lifecycle_result_source_env_key, source)
+    :ok
+  end
+
+  @spec clear_worker_lifecycle_result_source() :: :ok
+  def clear_worker_lifecycle_result_source do
+    Application.delete_env(:symphony_elixir, @worker_lifecycle_result_source_env_key)
+    :ok
+  end
+
+  @spec worker_lifecycle_result_source() :: WorkerLifecycleReconciliation.result_source()
+  def worker_lifecycle_result_source do
+    Application.get_env(:symphony_elixir, @worker_lifecycle_result_source_env_key)
   end
 
   @spec worker_start_starter() :: WorkerStartHandoff.starter()
@@ -165,6 +186,12 @@ defmodule SymphonyElixir.Hub.Runtime do
           runtime_ledger: runtime_ledger
         )
 
+      worker_lifecycle_reconciliation =
+        WorkerLifecycleReconciliation.empty(registry,
+          now: loaded_at,
+          runtime_ledger: runtime_ledger
+        )
+
       tick = idle_tick(loaded_at)
 
       {:ok,
@@ -176,11 +203,13 @@ defmodule SymphonyElixir.Hub.Runtime do
          provider_queue: provider_queue,
          provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
          worker_start_starter: Keyword.get(opts, :worker_start_starter, worker_start_starter()),
+         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
          runtime_ledger: runtime_ledger,
          candidate_intake: candidate_intake,
          dispatch_planning: dispatch_planning,
          dispatch_plan_application: dispatch_plan_application,
          worker_start_handoff: worker_start_handoff,
+         worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
          tick: tick,
          snapshot:
            build_snapshot(config_path, loaded_at, registry,
@@ -191,6 +220,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              dispatch_planning: dispatch_planning,
              dispatch_plan_application: dispatch_plan_application,
              worker_start_handoff: worker_start_handoff,
+             worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
              tick: tick
            )
        }}
@@ -227,6 +257,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_dispatch_planning",
              "hub_dispatch_plan_application",
              "hub_worker_start_handoff",
+             "hub_worker_lifecycle_reconciliation",
              "hub_device_observability"
            ],
            poll_tick: tick_summary
@@ -281,6 +312,13 @@ defmodule SymphonyElixir.Hub.Runtime do
     worker_start_handoff =
       Keyword.get(opts, :worker_start_handoff, WorkerStartHandoff.empty(registry, now: now, runtime_ledger: runtime_ledger))
 
+    worker_lifecycle_reconciliation =
+      Keyword.get(
+        opts,
+        :worker_lifecycle_reconciliation,
+        WorkerLifecycleReconciliation.empty(registry, now: now, runtime_ledger: runtime_ledger)
+      )
+
     poll_plan = PollCoordinator.build_plan(registry, now: now, facts: poll_facts, queue: provider_queue)
 
     device_observability =
@@ -289,6 +327,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           registry: registry,
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
+          worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
           migration_boundary: migration_boundary()
         },
         now: now
@@ -321,6 +360,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         dispatch_planning: DispatchPlanning.tick_summary(dispatch_planning),
         dispatch_plan_application: DispatchPlanApplication.tick_summary(dispatch_plan_application),
         worker_start_handoff: WorkerStartHandoff.tick_summary(worker_start_handoff),
+        worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(worker_lifecycle_reconciliation),
         migration_boundary: migration_boundary(),
         registry: registry_summary
       },
@@ -330,6 +370,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_dispatch_planning: dispatch_planning,
       hub_dispatch_plan_application: dispatch_plan_application,
       hub_worker_start_handoff: worker_start_handoff,
+      hub_worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
       hub_dispatch_boundary: runtime_ledger,
       hub_device_observability: device_observability
     }
@@ -420,6 +461,12 @@ defmodule SymphonyElixir.Hub.Runtime do
         starter: state.worker_start_starter
       )
 
+    {runtime_ledger, worker_lifecycle_reconciliation} =
+      WorkerLifecycleReconciliation.run(state.registry, runtime_ledger,
+        now: finished_at,
+        result_source: state.worker_lifecycle_result_source
+      )
+
     candidate_intake =
       CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
         now: finished_at,
@@ -442,7 +489,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         candidate_intake,
         dispatch_planning,
         dispatch_plan_application,
-        worker_start_handoff
+        worker_start_handoff,
+        worker_lifecycle_reconciliation
       )
 
     snapshot =
@@ -455,6 +503,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         dispatch_planning: dispatch_planning,
         dispatch_plan_application: dispatch_plan_application,
         worker_start_handoff: worker_start_handoff,
+        worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
         tick: tick
       )
 
@@ -467,6 +516,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         dispatch_planning: dispatch_planning,
         dispatch_plan_application: dispatch_plan_application,
         worker_start_handoff: worker_start_handoff,
+        worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
         tick: tick,
         snapshot: snapshot
     }
@@ -638,6 +688,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_planning: DispatchPlanning.tick_summary(%{}),
       dispatch_plan_application: DispatchPlanApplication.tick_summary(%{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(%{}),
+      worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(%{}),
       updated_at: iso8601(now)
     }
   end
@@ -655,11 +706,22 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_planning: DispatchPlanning.tick_summary(%{}),
       dispatch_plan_application: DispatchPlanApplication.tick_summary(%{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(%{}),
+      worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(%{}),
       updated_at: iso8601(started_at)
     }
   end
 
-  defp finished_tick(started_tick, finished_at, selected_count, result_summaries, candidate_intake, dispatch_planning, dispatch_plan_application, worker_start_handoff) do
+  defp finished_tick(
+         started_tick,
+         finished_at,
+         selected_count,
+         result_summaries,
+         candidate_intake,
+         dispatch_planning,
+         dispatch_plan_application,
+         worker_start_handoff,
+         worker_lifecycle_reconciliation
+       ) do
     results = Enum.reverse(result_summaries)
 
     %{
@@ -674,6 +736,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_planning: DispatchPlanning.tick_summary(dispatch_planning),
       dispatch_plan_application: DispatchPlanApplication.tick_summary(dispatch_plan_application),
       worker_start_handoff: WorkerStartHandoff.tick_summary(worker_start_handoff),
+      worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(worker_lifecycle_reconciliation),
       updated_at: iso8601(finished_at)
     }
   end
@@ -693,6 +756,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_planning: DispatchPlanning.tick_summary(Map.get(tick, :dispatch_planning) || Map.get(tick, "dispatch_planning") || %{}),
       dispatch_plan_application: DispatchPlanApplication.tick_summary(Map.get(tick, :dispatch_plan_application) || Map.get(tick, "dispatch_plan_application") || %{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(Map.get(tick, :worker_start_handoff) || Map.get(tick, "worker_start_handoff") || %{}),
+      worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(Map.get(tick, :worker_lifecycle_reconciliation) || Map.get(tick, "worker_lifecycle_reconciliation") || %{}),
       updated_at: Map.get(tick, :updated_at) || Map.get(tick, "updated_at")
     }
   end

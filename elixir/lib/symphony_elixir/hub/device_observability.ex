@@ -292,7 +292,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       pending_start_intents: sanitize_list(value(runtime, :pending_start_intents)),
       workspace_leases: sanitize_list(value(runtime, :workspace_leases)),
       retry_backoff: sanitize_list(value(runtime, :retry_backoff)),
-      blocked_candidates: sanitize_list(value(runtime, :blocked_candidates))
+      blocked_candidates: sanitize_list(value(runtime, :blocked_candidates)),
+      lifecycle: lifecycle_snapshot(value(runtime, :lifecycle))
     }
   end
 
@@ -552,7 +553,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         pending_start_intents: list_value(runtime_project, :pending_start_intents),
         workspace_leases: list_value(runtime_project, :workspace_leases),
         retry_backoff: list_value(runtime_project, :retry_backoff),
-        blocked_candidates: list_value(runtime_project, :blocked_candidates)
+        blocked_candidates: list_value(runtime_project, :blocked_candidates),
+        lifecycle: value(runtime_project, :lifecycle) || %{}
       }
     else
       runtime_summary_from_raw_project(runtime_project)
@@ -592,7 +594,59 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       blocked_candidates:
         Enum.filter(issues, fn issue ->
           safe_status(value(issue, :claim_status) || value(issue, :status)) == "blocked"
+        end),
+      lifecycle: lifecycle_summary_from_raw_project(project)
+    }
+  end
+
+  defp lifecycle_snapshot(lifecycle) when is_map(lifecycle) do
+    %{
+      counts: lifecycle_count_snapshot(value(lifecycle, :counts)),
+      reason_counts: sanitize_value(value(lifecycle, :reason_counts) || %{}),
+      workspace_action_counts: sanitize_value(value(lifecycle, :workspace_action_counts) || %{}),
+      running: sanitize_list(value(lifecycle, :running)),
+      terminal: sanitize_list(value(lifecycle, :terminal)),
+      unresolved: sanitize_list(value(lifecycle, :unresolved)),
+      retry_backoff: sanitize_list(value(lifecycle, :retry_backoff)),
+      blocked: sanitize_list(value(lifecycle, :blocked)),
+      released: sanitize_list(value(lifecycle, :released)),
+      retained_workspace: sanitize_list(value(lifecycle, :retained_workspace)),
+      manual_attention: sanitize_list(value(lifecycle, :manual_attention))
+    }
+  end
+
+  defp lifecycle_snapshot(_lifecycle), do: lifecycle_snapshot(%{})
+
+  defp lifecycle_summary_from_raw_project(project) do
+    results =
+      project
+      |> list_value(:issues)
+      |> Enum.flat_map(fn issue ->
+        issue
+        |> list_value(:lifecycle_results)
+        |> Enum.map(fn result ->
+          result
+          |> sanitize_value()
+          |> Map.put_new("issue_key", required_string(issue, :issue_key))
         end)
+      end)
+
+    grouped = Enum.group_by(results, &safe_status(value(&1, :status)))
+    unresolved = Enum.flat_map(["lost", "unknown", "manual_attention"], &Map.get(grouped, &1, []))
+    terminal = Enum.flat_map(["succeeded", "failed", "cancelled", "timeout", "stopped"], &Map.get(grouped, &1, []))
+
+    %{
+      counts: lifecycle_counts_from_results(results),
+      reason_counts: reason_counts(results),
+      workspace_action_counts: reason_counts(Enum.map(results, &%{"reason" => value(&1, :workspace_action)})),
+      running: Map.get(grouped, "running", []),
+      terminal: terminal,
+      unresolved: unresolved,
+      retry_backoff: [],
+      blocked: [],
+      released: Enum.filter(results, &(safe_status(value(&1, :workspace_action)) == "released")),
+      retained_workspace: Enum.filter(results, &(safe_status(value(&1, :workspace_action)) == "retained")),
+      manual_attention: Enum.filter(results, &truthy?(value(&1, :manual_attention)))
     }
   end
 
@@ -739,6 +793,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     project_id = project.project_id
     config_error = optional_string(registry_project || %{}, :load_error)
     writeback_counts = writeback_count_snapshot(value(writebacks, :counts))
+    lifecycle = lifecycle_snapshot(value(runtime_summary, :lifecycle))
+    lifecycle_counts = lifecycle_count_snapshot(value(lifecycle, :counts))
 
     []
     |> add_project_reason(
@@ -787,6 +843,10 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     )
     |> add_project_reason(writeback_counts.unknown > 0, "writeback_unknown", "runtime_ledger", project_id, nil)
     |> add_project_reason(writeback_counts.manual_attention > 0, "manual_attention", "runtime_ledger", project_id, nil)
+    |> add_project_reason(lifecycle_counts.lost > 0, "worker_lifecycle_lost", "runtime_ledger", project_id, nil)
+    |> add_project_reason(lifecycle_counts.unknown > 0, "worker_lifecycle_unknown", "runtime_ledger", project_id, nil)
+    |> add_project_reason(lifecycle_counts.manual_attention > 0, "manual_attention", "runtime_ledger", project_id, nil)
+    |> add_project_reason(non_empty_list?(lifecycle, :retained_workspace), "workspace_retained", "runtime_ledger", project_id, nil)
     |> add_project_reason(
       non_empty_list?(project, :manual_attention),
       "manual_attention",
@@ -1025,6 +1085,55 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
 
   defp count_snapshot(_counts), do: count_snapshot(%{})
 
+  defp lifecycle_count_snapshot(counts) when is_map(counts) do
+    %{
+      running: non_negative_integer(value(counts, :running)) || 0,
+      succeeded: non_negative_integer(value(counts, :succeeded)) || 0,
+      failed: non_negative_integer(value(counts, :failed)) || 0,
+      cancelled: non_negative_integer(value(counts, :cancelled)) || 0,
+      timeout: non_negative_integer(value(counts, :timeout)) || 0,
+      stopped: non_negative_integer(value(counts, :stopped)) || 0,
+      lost: non_negative_integer(value(counts, :lost)) || 0,
+      unknown: non_negative_integer(value(counts, :unknown)) || 0,
+      manual_attention: non_negative_integer(value(counts, :manual_attention)) || 0,
+      retry: non_negative_integer(value(counts, :retry)) || 0,
+      blocked: non_negative_integer(value(counts, :blocked)) || 0,
+      released: non_negative_integer(value(counts, :released)) || 0,
+      retained_workspace: non_negative_integer(value(counts, :retained_workspace)) || 0
+    }
+  end
+
+  defp lifecycle_count_snapshot(_counts), do: lifecycle_count_snapshot(%{})
+
+  defp lifecycle_counts_from_results(results) do
+    Enum.reduce(results, lifecycle_count_snapshot(%{}), fn result, counts ->
+      status = safe_status(value(result, :status))
+      recovery = safe_status(value(result, :recovery_status))
+      workspace_action = safe_status(value(result, :workspace_action))
+
+      counts
+      |> update_lifecycle_status_count(status)
+      |> update_lifecycle_recovery_count(recovery)
+      |> update_lifecycle_retained_count(workspace_action)
+    end)
+  end
+
+  defp update_lifecycle_status_count(counts, status)
+       when status in ["running", "succeeded", "failed", "cancelled", "timeout", "stopped", "lost", "unknown", "manual_attention"] do
+    Map.update!(counts, String.to_existing_atom(status), &(&1 + 1))
+  end
+
+  defp update_lifecycle_status_count(counts, _status), do: counts
+
+  defp update_lifecycle_recovery_count(counts, "retry_queued"), do: Map.update!(counts, :retry, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, "blocked"), do: Map.update!(counts, :blocked, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, "released"), do: Map.update!(counts, :released, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, "manual_attention"), do: Map.update!(counts, :manual_attention, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, _recovery), do: counts
+
+  defp update_lifecycle_retained_count(counts, "retained"), do: Map.update!(counts, :retained_workspace, &(&1 + 1))
+  defp update_lifecycle_retained_count(counts, _workspace_action), do: counts
+
   defp writeback_count_snapshot(counts) when is_map(counts) do
     %{
       pending: non_negative_integer(value(counts, :pending)) || 0,
@@ -1036,6 +1145,15 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   end
 
   defp writeback_count_snapshot(_counts), do: writeback_count_snapshot(%{})
+
+  defp reason_counts(entries) when is_list(entries) do
+    entries
+    |> Enum.map(&(optional_string(&1, :reason) || optional_string(&1, "reason")))
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {reason, _count} -> reason end)
+    |> Map.new()
+  end
 
   defp status_counts(projects) do
     base = Map.new(@project_statuses, &{String.to_atom(&1), 0})

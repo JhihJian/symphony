@@ -106,6 +106,17 @@ a worker. The opt-in real starter is the first controlled integration slice: it 
 request to the existing AgentRunner/Workspace/Codex app-server path and records an acknowledgement
 only after the worker reports a session start. This is not a complete Hub scheduler, provider
 writeback executor, durable supervisor, or migration of `symphony@project.service`.
+`SymphonyElixir.Hub.WorkerLifecycleReconciliation` adds the first post-ack lifecycle reconciliation
+baseline. After a start intent has been acknowledged and an attempt is running, Hub can consume safe
+worker/session result summaries from an injectable source and write completed/succeeded, failed,
+cancelled, timeout/stopped, heartbeat lost, unknown, or manual-attention facts back into the runtime
+ledger. Terminal results release workspace capacity or enter retry/backoff, blocked, or released
+states; unresolved lost/unknown/manual-attention results retain the attempt/workspace as observable
+evidence and do not trigger blind redispatch. Hub snapshot and `/api/v1/state` now expose safe
+lifecycle counts, reason counts, workspace release/retention counts, and per-project summaries
+without raw prompts, transcripts, provider bodies, hook/app-server output, tokens, cookies, or raw
+config. This remains a reconciliation baseline, not a Hub-owned scheduler, worker supervisor,
+provider writeback executor, durable store, or legacy service migration.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
@@ -137,13 +148,14 @@ The Elixir runtime now also has an explicit Hub entrypoint,
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
 boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
 exposes safe Hub fields through `/api/v1/state`, including `hub_dispatch_plan_application` and
-`hub_worker_start_handoff` runtime-ledger replay summaries after a plan is applied. The default
-skeleton executor does not migrate GitHub/GitLab/Linear legacy adapters, create real workspaces, or
-start agents; the default start handoff records an unknown skeleton result instead of launching a
-worker. Passing `--hub-worker-starter real` explicitly opts into the first real worker handoff
-adapter, which starts through the existing worker boundary and writes the safe ack/failure back to
-the ledger. This entrypoint is opt-in only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md`
-startup path and per-project services stay unchanged.
+`hub_worker_start_handoff` and `hub_worker_lifecycle_reconciliation` runtime-ledger replay summaries
+after a plan is applied. The default skeleton executor does not migrate GitHub/GitLab/Linear legacy
+adapters, create real workspaces, or start agents; the default start handoff records an unknown
+skeleton result instead of launching a worker. Passing `--hub-worker-starter real` explicitly opts
+into the first real worker handoff adapter, which starts through the existing worker boundary and
+writes the safe ack/failure back to the ledger. Lifecycle reconciliation is likewise driven by a
+controlled result source and remains safe-summary based. This entrypoint is opt-in only; the legacy
+`--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services stay unchanged.
 
 ---
 

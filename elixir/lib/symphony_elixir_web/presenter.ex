@@ -12,6 +12,7 @@ defmodule SymphonyElixirWeb.Presenter do
     DispatchPlanning,
     PollCoordinator,
     RuntimeLedger,
+    WorkerLifecycleReconciliation,
     WorkerStartHandoff
   }
 
@@ -46,6 +47,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_dispatch_planning(snapshot)
         |> maybe_put_hub_dispatch_plan_application(snapshot)
         |> maybe_put_hub_worker_start_handoff(snapshot)
+        |> maybe_put_hub_worker_lifecycle_reconciliation(snapshot)
         |> maybe_put_hub_dispatch_boundary(snapshot)
 
       :timeout ->
@@ -138,6 +140,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case WorkerStartHandoff.observability_snapshot(hub_worker_start_handoff) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_worker_start_handoff, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_worker_lifecycle_reconciliation(payload, snapshot) do
+    hub_worker_lifecycle_reconciliation =
+      Map.get(snapshot, :hub_worker_lifecycle_reconciliation) ||
+        Map.get(snapshot, "hub_worker_lifecycle_reconciliation")
+
+    case WorkerLifecycleReconciliation.observability_snapshot(hub_worker_lifecycle_reconciliation) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_worker_lifecycle_reconciliation, safe_snapshot)
     end
   end
 

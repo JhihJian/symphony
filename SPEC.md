@@ -1252,6 +1252,27 @@ Runtime entrypoint:
   MUST NOT launch Codex app-server, create real worker workspaces, execute workspace hooks, write
   provider state, persist durable DB/WAL facts, acquire distributed locks, or take ownership of
   legacy `symphony@project.service`.
+- A Hub worker lifecycle reconciliation boundary MAY consume acknowledged start intents/running
+  attempts plus controlled worker/session lifecycle summaries. It MUST NOT infer lifecycle state
+  from raw provider payloads. Accepted summaries SHOULD cover still-running activity, succeeded,
+  failed, cancelled, timeout/stopped, heartbeat/session lost, result unknown, and manual-attention
+  outcomes.
+- Lifecycle reconciliation MUST apply recoverable facts to the runtime ledger under the same
+  `project_id + IssueRef + attempt_id + start_intent_id` identity. Repeated refreshes, duplicate
+  terminal results, old-session results, late results after a different terminal result, or
+  mismatched workspace leases MUST NOT create a second active attempt, overwrite an incompatible
+  attempt, or release the wrong workspace.
+- Confirmed terminal lifecycle results SHOULD release the matching workspace lease/capacity unless
+  the implementation explicitly records a retained-workspace reason. Retryable failures SHOULD
+  enter retry/backoff or an equivalent recoverable state. Blocked/manual-attention failures SHOULD
+  remain observable. Lost, unknown, or manual-attention outcomes MUST NOT be silently released and
+  blindly redispatched; they SHOULD retain enough safe evidence for later reconciliation.
+- Lifecycle reconciliation summaries SHOULD expose running attempt to acknowledged start-intent
+  associations, succeeded/failed/cancelled/timeout/stopped/lost/unknown/manual-attention counts,
+  reason counts, workspace released/retained counts, retry/backoff, blocked, released, and
+  manual-attention summaries by project. They MUST NOT expose provider tokens, authorization/cookie
+  values, secret env values, raw provider config, full prompts/transcripts, full comment/PR/provider
+  bodies, or raw hook/app-server output.
 - Candidate identity MUST be bound to the current poll source and registry project. Provider
   candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
   repository, project slug, or equivalent scope identity MAY be present only when they match the poll
@@ -1263,8 +1284,9 @@ Runtime entrypoint:
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
   `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
   `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
-  `hub_dispatch_boundary`, and `hub_device_observability` when a Hub snapshot is present. Legacy
-  snapshots without Hub fields SHOULD keep the existing API shape.
+  `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`
+  when a Hub snapshot is present. Legacy snapshots without Hub fields SHOULD keep the existing API
+  shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
@@ -1317,6 +1339,11 @@ Compatibility boundary:
   conflicts, pending/unknown start acknowledgements, retry/backoff, blocked candidates, and manual
   attention. This boundary MAY be model-only until a later persistent transaction store or scheduler
   integration is introduced.
+- Hub worker lifecycle reconciliation MAY consume safe post-ack worker/session result summaries and
+  apply them to runtime-ledger attempts, leases, retry/backoff, blocked, released, unknown, and
+  manual-attention facts. It remains a reconciliation boundary and MUST NOT imply a Hub-owned
+  scheduler loop, cross-process worker supervisor, provider writeback executor, durable database/WAL,
+  or migration of legacy single-project worker lifecycle ownership.
 - Hub device observability MAY expose a single safe projection for Dashboard/API consumers that
   summarizes project registry, provider governance, poll coordination, dispatch/runtime ledger, and
   writeback/manual-attention state. This projection MUST remain a read model and MUST NOT imply that
