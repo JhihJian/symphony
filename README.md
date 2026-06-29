@@ -72,9 +72,14 @@ coordination baseline on top of those models: it builds safe poll plans, candida
 requests, eligibility/backoff decisions, recoverable poll facts, and optional sanitized
 observability snapshots. `SymphonyElixir.Hub.CandidateIntake` adds the poll-to-dispatch intake
 baseline: governed candidate-scan result summaries are normalized into provider-neutral candidate
-records, tied back to project/provider scope/IssueRef and poll request/result ids, and prechecked
-against paused/config-error projects, provider backoff/manual attention, active attempts, workspace
-leases, and capacity without starting agents. `SymphonyElixir.Hub.DispatchBoundary` adds the next
+records, tied back to the poll source project/provider scope/IssueRef and poll request/result ids,
+and prechecked against paused/config-error projects, provider backoff/manual attention, active
+attempts, workspace leases, and capacity without starting agents. Candidate/input_ref
+project/scope fields are treated as provider input to validate against that poll source, not as
+authority to rewrite the Hub project or provider scope. Safe Hub summaries redact full body fields
+such as `body`, `comment_body`, `pull_request_body`, `pr_body`, `raw_provider_body`, and
+`full_prompt` to hash/byte metadata before they reach provider queues, poll coordination, or
+`/api/v1/state`. `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
 and safe run context snapshots. It is still not a provider executor or full Hub scheduler: without

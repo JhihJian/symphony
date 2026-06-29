@@ -273,6 +273,59 @@ defmodule SymphonyElixir.HubProviderGovernanceTest do
     refute safe_text =~ "full Codex transcript"
   end
 
+  test "result summaries redact full body fields without other secret markers" do
+    request =
+      request(
+        project_id: "alpha",
+        provider_scope: github_scope(),
+        operation_kind: :candidate_scan
+      )
+
+    result =
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          issue_count: 1,
+          body: "plain issue body should not leak",
+          comment_body: "plain comment body should not leak",
+          pull_request_body: "plain pull request body should not leak",
+          pr_body: "plain pr body should not leak",
+          raw_provider_body: "plain raw provider body should not leak",
+          full_prompt: "plain full prompt body should not leak",
+          candidates: [
+            %{
+              :id => "1",
+              "comment_body" => "nested string-key comment body should not leak"
+            }
+          ]
+        }
+      )
+
+    summary = ProviderGovernance.result_summary(result)
+    summary_text = inspect(summary)
+
+    refute summary_text =~ "plain issue body should not leak"
+    refute summary_text =~ "plain comment body should not leak"
+    refute summary_text =~ "plain pull request body should not leak"
+    refute summary_text =~ "plain pr body should not leak"
+    refute summary_text =~ "plain raw provider body should not leak"
+    refute summary_text =~ "plain full prompt body should not leak"
+    refute summary_text =~ "nested string-key comment body should not leak"
+
+    assert summary.result_summary.body_bytes == 32
+    assert is_binary(summary.result_summary.comment_body_sha256)
+
+    assert [
+             %{
+               id: "1",
+               comment_body_bytes: comment_body_bytes,
+               comment_body_sha256: comment_body_sha256
+             }
+           ] = summary.result_summary.candidates
+
+    assert is_integer(comment_body_bytes)
+    assert is_binary(comment_body_sha256)
+  end
+
   defp enqueue!(queue, request) do
     assert {:ok, queue} = ProviderGovernance.enqueue(queue, request)
     queue

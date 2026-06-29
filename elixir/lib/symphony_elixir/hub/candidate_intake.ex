@@ -8,37 +8,11 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   stores raw provider response bodies.
   """
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, RuntimeLedger}
+  alias SymphonyElixir.Hub.{DispatchBoundary, RuntimeLedger, SafeSummary}
 
   @version 1
   @candidate_list_keys [:candidates, :candidate_issues, :issues]
-  @sensitive_key_fragments [
-    "api_key",
-    "apikey",
-    "authorization",
-    "body",
-    "comment_body",
-    "cookie",
-    "credential",
-    "credentials",
-    "full_prompt",
-    "prompt",
-    "pull_request_body",
-    "pr_body",
-    "provider_response",
-    "raw_body",
-    "raw_config",
-    "raw_provider_body",
-    "response_body",
-    "secret",
-    "token",
-    "transcript"
-  ]
-  @sensitive_value_patterns [
-    ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
-    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript)\b/i,
-    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
-  ]
+  @scope_identity_keys [:owner, :repo, :repository, :owner_repo, :project_slug, :namespace]
 
   @type summary :: map()
 
@@ -235,32 +209,15 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
   defp candidate_identity(candidate, source, project) do
     input_ref = map_value(candidate, :issue_ref)
-
-    project_id =
-      optional_string(candidate, :project_id) ||
-        optional_string(input_ref || %{}, :project_id) ||
-        source.project_id
-
-    provider_scope_key =
-      optional_string(candidate, :provider_scope_key) ||
-        optional_string(input_ref || %{}, :provider_scope_key) ||
-        source.provider_scope_key ||
-        project_provider_scope_key(project)
+    project_id = source.project_id
+    provider_scope_key = source.provider_scope_key || project_provider_scope_key(project)
 
     provider_kind =
-      optional_string(candidate, :tracker_kind) ||
-        optional_string(candidate, :provider_kind) ||
-        optional_string(input_ref || %{}, :tracker_kind) ||
-        source.provider_kind ||
+      source.provider_kind ||
         project_tracker_kind(project) ||
         provider_kind_from_scope_key(provider_scope_key)
 
-    provider_scope =
-      map_value(candidate, :provider_scope) ||
-        map_value(input_ref || %{}, :provider_scope) ||
-        source.provider_scope ||
-        project_provider_scope(project) ||
-        %{}
+    provider_scope = non_empty_map(source.provider_scope) || project_provider_scope(project) || %{}
 
     issue_key = optional_string(candidate, :issue_key)
     issue_identity = issue_identity(candidate, input_ref, issue_key, project_id, provider_scope_key)
@@ -269,11 +226,23 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       blank?(project_id) ->
         {:error, :missing_project_id}
 
-      input_ref_project_mismatch?(input_ref, project_id) ->
-        {:error, :issue_project_mismatch}
+      candidate_project_mismatch?(candidate, input_ref, project_id) ->
+        {:error, :source_project_mismatch}
 
       blank?(provider_scope_key) ->
         {:error, :missing_provider_scope}
+
+      candidate_provider_scope_key_mismatch?(candidate, input_ref, provider_scope_key) ->
+        {:error, :source_provider_scope_mismatch}
+
+      blank?(provider_kind) ->
+        {:error, :missing_provider_kind}
+
+      candidate_provider_kind_mismatch?(candidate, input_ref, provider_kind) ->
+        {:error, :source_provider_kind_mismatch}
+
+      candidate_provider_scope_mismatch?(candidate, input_ref, provider_scope) ->
+        {:error, :source_provider_scope_mismatch}
 
       is_nil(issue_identity) ->
         {:error, :missing_issue_identity}
@@ -514,19 +483,22 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
         %{}
 
     project_id =
-      optional_string(result, :project_id) ||
-        optional_string(request, :project_id) ||
-        optional_string(entry, :project_id)
+      optional_string(request, :project_id) ||
+        optional_string(entry, :project_id) ||
+        optional_string(result_fact, :project_id) ||
+        optional_string(result, :project_id)
 
     provider_scope_key =
-      optional_string(result, :provider_scope_key) ||
-        optional_string(request, :provider_scope_key) ||
-        optional_string(entry, :provider_scope_key)
+      optional_string(request, :provider_scope_key) ||
+        optional_string(entry, :provider_scope_key) ||
+        optional_string(result_fact, :provider_scope_key) ||
+        optional_string(result, :provider_scope_key)
 
     provider_kind =
       optional_string(request, :provider_kind) ||
         optional_string(entry, :provider_kind) ||
         get_in_map(entry, [:tracker_identity, :kind]) ||
+        optional_string(result_fact, :provider_kind) ||
         provider_kind_from_scope_key(provider_scope_key)
 
     result_status = safe_status(value(result, :status)) || "unknown_result"
@@ -929,12 +901,111 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
   defp reason_count_snapshot(_reasons), do: %{}
 
-  defp input_ref_project_mismatch?(nil, _project_id), do: false
-
-  defp input_ref_project_mismatch?(input_ref, project_id) do
-    ref_project_id = optional_string(input_ref, :project_id)
-    not blank?(ref_project_id) and ref_project_id != project_id
+  defp candidate_project_mismatch?(candidate, input_ref, project_id) do
+    [optional_string(candidate, :project_id), optional_string(input_ref || %{}, :project_id)]
+    |> Enum.any?(&present_mismatch?(&1, project_id))
   end
+
+  defp candidate_provider_scope_key_mismatch?(candidate, input_ref, provider_scope_key) do
+    [optional_string(candidate, :provider_scope_key), optional_string(input_ref || %{}, :provider_scope_key)]
+    |> Enum.any?(&present_mismatch?(&1, provider_scope_key))
+  end
+
+  defp candidate_provider_kind_mismatch?(candidate, input_ref, provider_kind) do
+    [
+      optional_string(candidate, :provider_kind),
+      optional_string(candidate, :tracker_kind),
+      optional_string(input_ref || %{}, :provider_kind),
+      optional_string(input_ref || %{}, :tracker_kind)
+    ]
+    |> Enum.any?(&present_mismatch?(normalize_kind(&1), normalize_kind(provider_kind)))
+  end
+
+  defp candidate_provider_scope_mismatch?(candidate, input_ref, provider_scope) do
+    expected_scope = stringify_nested_keys(provider_scope || %{})
+
+    [
+      map_value(candidate, :provider_scope),
+      map_value(input_ref || %{}, :provider_scope),
+      provider_scope_from_identity_fields(candidate),
+      provider_scope_from_identity_fields(input_ref || %{})
+    ]
+    |> Enum.reject(&empty_map?/1)
+    |> Enum.any?(&provider_scope_mismatch?(&1, expected_scope))
+  end
+
+  defp provider_scope_from_identity_fields(map) when is_map(map) do
+    @scope_identity_keys
+    |> Enum.reduce(%{}, fn key, scope ->
+      case optional_string(map, key) do
+        nil -> scope
+        value -> Map.put(scope, Atom.to_string(key), value)
+      end
+    end)
+  end
+
+  defp provider_scope_from_identity_fields(_map), do: %{}
+
+  defp provider_scope_mismatch?(scope, expected_scope) do
+    scope
+    |> stringify_nested_keys()
+    |> canonical_scope()
+    |> Enum.any?(fn {key, actual_value} ->
+      expected_value = Map.get(expected_scope, key)
+
+      not blank?(actual_value) and not blank?(expected_value) and
+        normalize_scope_value(actual_value) != normalize_scope_value(expected_value)
+    end)
+  end
+
+  defp canonical_scope(scope) when is_map(scope) do
+    owner = optional_string(scope, "owner")
+    repo = optional_string(scope, "repo")
+    repository = optional_string(scope, "repository")
+    owner_repo = optional_string(scope, "owner_repo") || optional_string(scope, "owner/repo")
+    project_slug = optional_string(scope, "project_slug")
+    namespace = optional_string(scope, "namespace")
+
+    %{}
+    |> maybe_put_scope("owner", owner)
+    |> maybe_put_scope("repo", repo)
+    |> maybe_merge_owner_repo(repository)
+    |> maybe_merge_owner_repo(owner_repo)
+    |> maybe_put_scope("project_slug", project_slug)
+    |> maybe_put_scope("namespace", namespace)
+  end
+
+  defp present_mismatch?(nil, _expected), do: false
+  defp present_mismatch?(_actual, nil), do: false
+  defp present_mismatch?(actual, expected), do: actual != expected
+
+  defp normalize_kind(nil), do: nil
+  defp normalize_kind(kind) when is_binary(kind), do: kind |> String.trim() |> String.downcase() |> blank_to_nil()
+  defp normalize_kind(kind) when is_atom(kind), do: kind |> Atom.to_string() |> normalize_kind()
+  defp normalize_kind(_kind), do: nil
+
+  defp normalize_scope_value(value) when is_binary(value), do: String.downcase(value)
+  defp normalize_scope_value(value), do: value
+
+  defp maybe_merge_owner_repo(scope, nil), do: scope
+
+  defp maybe_merge_owner_repo(scope, owner_repo) do
+    case String.split(owner_repo, "/", parts: 2) do
+      [owner, repo] ->
+        scope
+        |> maybe_put_scope("owner", owner)
+        |> maybe_put_scope("repo", repo)
+
+      _other ->
+        scope
+    end
+  end
+
+  defp maybe_put_scope(scope, _key, nil), do: scope
+  defp maybe_put_scope(scope, _key, ""), do: scope
+  defp maybe_put_scope(scope, key, value), do: Map.put_new(scope, key, value)
+
+  defp empty_map?(value), do: value == %{} or is_nil(value)
 
   defp project_start_stage(project), do: project |> map_value(:workflow_summary) |> optional_string(:start_stage)
   defp project_tracker_kind(project), do: project |> map_value(:tracker_summary) |> optional_string(:kind)
@@ -977,6 +1048,9 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
     end
   end
 
+  defp non_empty_map(value) when is_map(value) and map_size(value) > 0, do: value
+  defp non_empty_map(_value), do: nil
+
   defp list_value(map, key) do
     case value(map, key) do
       value when is_list(value) -> value
@@ -1013,7 +1087,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   defp safe_optional_string(value) do
     case optional_string(value) do
       nil -> nil
-      string -> if sensitive_value?(string), do: nil, else: String.slice(string, 0, 500)
+      string -> if SafeSummary.sensitive_value?(string), do: nil, else: String.slice(string, 0, 500)
     end
   end
 
@@ -1093,45 +1167,14 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
     prefix <> ":" <> Base.encode16(:crypto.hash(:sha256, seed), case: :lower)
   end
 
-  defp sanitize_value(value) when is_map(value) do
-    value
-    |> Enum.reject(fn {key, raw_value} -> sensitive_entry?(key, raw_value) end)
-    |> Map.new(fn {key, raw_value} -> {safe_output_key(key), sanitize_value(raw_value)} end)
+  defp sanitize_value(value), do: SafeSummary.sanitize_value(value, output_keys: :preserve)
+
+  defp stringify_nested_keys(value) when is_map(value) do
+    Map.new(value, fn {key, raw_value} -> {to_string(key), stringify_nested_keys(raw_value)} end)
   end
 
-  defp sanitize_value(value) when is_list(value), do: value |> Enum.reject(&sensitive_value?/1) |> Enum.map(&sanitize_value/1)
-  defp sanitize_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
-  defp sanitize_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp sanitize_value(value), do: value
-
-  defp safe_output_key(key) when is_atom(key), do: key
-  defp safe_output_key(key) when is_binary(key), do: key
-  defp safe_output_key(key), do: to_string(key)
-
-  defp sensitive_key?(key) do
-    key =
-      key
-      |> to_string()
-      |> String.downcase()
-
-    Enum.any?(@sensitive_key_fragments, &String.contains?(key, &1))
-  end
-
-  defp sensitive_value?(value) when is_binary(value) do
-    Enum.any?(@sensitive_value_patterns, &Regex.match?(&1, value))
-  end
-
-  defp sensitive_value?(value) when is_map(value), do: Enum.any?(value, fn {key, raw_value} -> sensitive_entry?(key, raw_value) end)
-  defp sensitive_value?(value) when is_list(value), do: Enum.any?(value, &sensitive_value?/1)
-  defp sensitive_value?(_value), do: false
-
-  defp sensitive_entry?(key, raw_value) do
-    if sensitive_key?(key) do
-      true
-    else
-      sensitive_value?(raw_value)
-    end
-  end
+  defp stringify_nested_keys(value) when is_list(value), do: Enum.map(value, &stringify_nested_keys/1)
+  defp stringify_nested_keys(value), do: value
 
   defp truthy?(value), do: value in [true, "true", "1", 1]
 end

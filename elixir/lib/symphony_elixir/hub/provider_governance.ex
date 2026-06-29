@@ -8,8 +8,7 @@ defmodule SymphonyElixir.Hub.ProviderGovernance do
   single-project `SymphonyElixir.Orchestrator` path.
   """
 
-  alias SymphonyElixir.Hub.IssueRef
-  alias SymphonyElixir.Hub.RuntimeLedger
+  alias SymphonyElixir.Hub.{IssueRef, RuntimeLedger, SafeSummary}
 
   @default_recent_limit 10
   @default_max_running_per_scope 1
@@ -47,28 +46,6 @@ defmodule SymphonyElixir.Hub.ProviderGovernance do
     :not_found,
     :conflict,
     :unknown
-  ]
-
-  @sensitive_keys MapSet.new([
-                    "api_key",
-                    "apikey",
-                    "authorization",
-                    "cookie",
-                    "credential",
-                    "credentials",
-                    "prompt",
-                    "provider_response",
-                    "raw_config",
-                    "raw_body",
-                    "response_body",
-                    "secret",
-                    "token",
-                    "transcript"
-                  ])
-  @sensitive_value_patterns [
-    ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
-    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript)\b/i,
-    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
   ]
 
   @type provider_scope :: %{
@@ -723,48 +700,5 @@ defmodule SymphonyElixir.Hub.ProviderGovernance do
   defp stringify_key(key) when is_atom(key), do: Atom.to_string(key)
   defp stringify_key(key), do: to_string(key)
 
-  defp sanitize_map(value) when is_map(value) do
-    value
-    |> Enum.reject(fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
-    |> Map.new(fn {key, raw_value} -> {normalize_output_key(key), sanitize_value(raw_value)} end)
-  end
-
-  defp sanitize_map(_value), do: %{}
-
-  defp sanitize_value(%_struct{} = value), do: value
-  defp sanitize_value(value) when is_map(value), do: sanitize_map(value)
-  defp sanitize_value(value) when is_list(value), do: value |> Enum.reject(&sensitive_value?/1) |> Enum.map(&sanitize_value/1)
-  defp sanitize_value(value), do: value
-
-  defp normalize_output_key(key) when is_atom(key), do: key
-
-  defp normalize_output_key(key) when is_binary(key) do
-    if Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*\z/, key) do
-      String.to_atom(key)
-    else
-      key
-    end
-  end
-
-  defp normalize_output_key(key), do: key
-
-  defp sensitive_key?(key) do
-    key
-    |> to_string()
-    |> String.downcase()
-    |> then(&(MapSet.member?(@sensitive_keys, &1) or String.contains?(&1, ["token", "secret", "credential", "cookie", "prompt", "transcript", "raw_body", "response_body", "provider_response"])))
-  end
-
-  defp sensitive_value?(value) when is_binary(value) do
-    Enum.any?(@sensitive_value_patterns, &Regex.match?(&1, value))
-  end
-
-  defp sensitive_value?(%_struct{}), do: false
-
-  defp sensitive_value?(value) when is_map(value) do
-    Enum.any?(value, fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
-  end
-
-  defp sensitive_value?(value) when is_list(value), do: Enum.any?(value, &sensitive_value?/1)
-  defp sensitive_value?(_value), do: false
+  defp sanitize_map(value), do: SafeSummary.sanitize_map(value, atom_values: :preserve)
 end

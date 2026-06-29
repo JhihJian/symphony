@@ -515,6 +515,56 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "poll tick snapshot and API payload redact body-only provider summaries" do
+    root = tmp_root("hub-runtime-body-only-redaction")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :PollTickBodyOnlyRedactionRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: body_only_executor()},
+        id: :hub_runtime_poll_tick_body_only_redaction
+      )
+
+      Runtime.request_refresh(runtime_name)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      payload = Presenter.state_payload(runtime_name, 100)
+
+      safe_text =
+        inspect({
+          snapshot.hub_poll_coordination,
+          snapshot.hub_device_observability,
+          snapshot.hub_candidate_intake,
+          payload
+        })
+
+      refute safe_text =~ "plain issue body should not leak"
+      refute safe_text =~ "plain comment body should not leak"
+      refute safe_text =~ "plain pull request body should not leak"
+      refute safe_text =~ "plain pr body should not leak"
+      refute safe_text =~ "plain raw provider body should not leak"
+      refute safe_text =~ "plain full prompt body should not leak"
+      refute safe_text =~ "nested atom-key candidate body should not leak"
+      refute safe_text =~ "nested string-key candidate body should not leak"
+
+      assert [result | _] = Enum.filter(snapshot.hub_poll_coordination.facts, &(&1.fact_type == :poll_result))
+      assert is_binary(result.result_summary.comment_body_sha256)
+      assert is_integer(result.result_summary.pull_request_body_bytes)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "default provider executor returns a safe skeleton candidate scan result" do
     request =
       provider_request!(
@@ -671,6 +721,34 @@ defmodule SymphonyElixir.HubRuntimeTest do
               identifier: "MEM-SECRET",
               authorization: "Bearer nested",
               comment_body: "complete comment body should not leak"
+            }
+          ]
+        }
+      )
+    end
+  end
+
+  defp body_only_executor do
+    fn request, _opts ->
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          issue_count: 2,
+          body: "plain issue body should not leak",
+          comment_body: "plain comment body should not leak",
+          pull_request_body: "plain pull request body should not leak",
+          pr_body: "plain pr body should not leak",
+          raw_provider_body: "plain raw provider body should not leak",
+          full_prompt: "plain full prompt body should not leak",
+          candidates: [
+            %{
+              id: "mem-body-atom",
+              identifier: "MEM-BODY-ATOM",
+              body: "nested atom-key candidate body should not leak"
+            },
+            %{
+              "id" => "mem-body-string",
+              "identifier" => "MEM-BODY-STRING",
+              "comment_body" => "nested string-key candidate body should not leak"
             }
           ]
         }
