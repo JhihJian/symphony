@@ -8,6 +8,9 @@
 身份快照和校验能力；Hub provider request governance 也只是定义未来统一 provider 出口的请求、
 队列、quota/backoff/circuit 和结果分类模型。它不会让本部署方式变成单进程 Hub 调度，也不会接管
 现有 poll loop、tracker fetch、写回或 dynamic tools provider 调用。
+Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
+它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
+`symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
 
 ## 快速安装
 

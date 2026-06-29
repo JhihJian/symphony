@@ -685,6 +685,51 @@ Observability:
 - Poll coordination snapshots MUST NOT contain provider tokens, API keys, credentials, cookies, raw
   secret-bearing config, full prompts, full Codex transcripts, or cancellation token values.
 
+#### 4.1.14 Hub Device Observability Projection (OPTIONAL)
+
+Hub-compatible implementations MAY define a device-level observability projection that folds the
+safe Hub model summaries from project registry, provider governance, poll coordination, runtime
+ledger replay, dispatch boundary, and writeback processing into one Dashboard/API-safe snapshot.
+This projection is a read model only. It does not implement a Dashboard page, provider executor,
+Hub scheduler loop, database, distributed lock, or migration from legacy services.
+
+Device summary fields SHOULD include:
+
+- project count
+- active agent count
+- max agent capacity
+- provider scope count
+
+Project entries SHOULD include:
+
+- `project_id`, optional display name, and migration state such as `legacy_only`, `hub_ready`, or
+  `hub_managed`
+- a safe project status such as `running`, `idle`, `ready_to_poll`, `backoff`, `paused`, `blocked`,
+  `manual_attention`, `legacy_only`, or `config_invalid`
+- provider kind, provider scope key, and safe provider scope summary
+- provider queue/quota/backoff/circuit summary
+- poll coordination fields such as eligibility, `next_due_at`, `backoff_until`, last poll summary,
+  and governance decision/backpressure
+- runtime ledger replay fields such as active attempts, pending start intents, active workspace
+  leases, retry/backoff, blocked candidates, conflicts, and manual-attention diagnostics
+- writeback pending/succeeded/failed/unknown/manual-attention summary
+- backpressure reasons for Dashboard/API consumers, including provider rate limit, queue pressure,
+  project paused/backoff, workspace occupied, active attempt exists, writeback unknown, and manual
+  attention
+
+Safety:
+
+- Device projections MUST be safe for logs, APIs, and UI snapshots.
+- Device projections MUST NOT include provider tokens, API keys, authorization headers, cookies,
+  secret env values, raw provider config, full prompts, full transcripts, or full comment/PR body
+  text.
+- Implementations MUST NOT dynamically create atoms from untrusted string-key snapshots while
+  restoring or sanitizing a device projection. Unknown keys SHOULD remain strings or be discarded by
+  an explicit allow-list.
+- Presence of this projection MUST NOT imply that Hub has taken over all provider poll loops or
+  writeback paths. Legacy single-project `symphony@project.service` instances remain compatible
+  unless a later migration explicitly opts into Hub ownership.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
 - `Project ID`
@@ -1140,6 +1185,10 @@ Compatibility boundary:
   conflicts, pending/unknown start acknowledgements, retry/backoff, blocked candidates, and manual
   attention. This boundary MAY be model-only until a later persistent transaction store or scheduler
   integration is introduced.
+- Hub device observability MAY expose a single safe projection for Dashboard/API consumers that
+  summarizes project registry, provider governance, poll coordination, dispatch/runtime ledger, and
+  writeback/manual-attention state. This projection MUST remain a read model and MUST NOT imply that
+  legacy single-project provider polling or writeback has been replaced.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 

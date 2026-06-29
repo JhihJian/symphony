@@ -26,6 +26,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.GitHub.Client,
           SymphonyElixir.GitHub.PullRequest,
           SymphonyElixir.Hub.DispatchBoundary,
+          SymphonyElixir.Hub.DeviceObservability,
           SymphonyElixir.Hub.IssueRef,
           SymphonyElixir.Hub.PollCoordinator,
           SymphonyElixir.Hub.ProjectRegistry,
