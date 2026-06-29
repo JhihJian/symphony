@@ -111,6 +111,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
       assert payload.hub_dispatch_planning.counts.planned_count == 0
+      assert payload.hub_dispatch_plan_application.counts.applied_count == 0
       assert payload.hub_device_observability.device.project_count == 1
 
       safe_text = inspect(payload)
@@ -136,6 +137,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)
       refute Map.has_key?(legacy_payload, :hub_dispatch_planning)
+      refute Map.has_key?(legacy_payload, :hub_dispatch_plan_application)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
     after
       File.rm_rf(root)
@@ -325,21 +327,27 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.poll_tick.status == "completed"
       assert snapshot.hub_runtime.poll_tick.result_counts == %{"success" => 1}
       assert snapshot.hub_runtime.poll_tick.candidate_intake.candidate_count == 2
-      assert snapshot.hub_runtime.poll_tick.candidate_intake.eligible_count == 2
-      assert snapshot.hub_runtime.poll_tick.dispatch_planning.planned_count == 2
+      assert snapshot.hub_runtime.poll_tick.candidate_intake.eligible_count == 0
+      assert snapshot.hub_runtime.poll_tick.dispatch_planning.already_planned_count == 2
+      assert snapshot.hub_runtime.poll_tick.dispatch_plan_application.applied_count == 2
       assert snapshot.hub_runtime.candidate_intake.candidate_count == 2
-      assert snapshot.hub_runtime.candidate_intake.eligible_count == 2
-      assert snapshot.hub_runtime.dispatch_planning.planned_count == 2
+      assert snapshot.hub_runtime.candidate_intake.eligible_count == 0
+      assert snapshot.hub_runtime.dispatch_planning.planned_count == 0
+      assert snapshot.hub_runtime.dispatch_planning.already_planned_count == 2
       assert snapshot.hub_runtime.dispatch_planning.pending_intent_count == 2
+      assert snapshot.hub_runtime.dispatch_plan_application.applied_count == 2
+      assert snapshot.hub_runtime.dispatch_plan_application.pending_start_intent_count == 2
 
       assert snapshot.hub_candidate_intake.counts == %{
                candidate_count: 2,
                valid_candidate_count: 2,
-               eligible_count: 2,
-               skipped_count: 0,
+               eligible_count: 0,
+               skipped_count: 2,
                invalid_count: 0,
                project_count: 1
              }
+
+      assert snapshot.hub_candidate_intake.skipped_reasons == %{"duplicate_active_attempt" => 2}
 
       assert [intake_project] = snapshot.hub_candidate_intake.projects
       assert intake_project.project_id == "alpha"
@@ -350,13 +358,14 @@ defmodule SymphonyElixir.HubRuntimeTest do
                "alpha:memory:alpha:mem-2"
              ]
 
-      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation"))
-      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.eligible == true))
+      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.eligible == false))
+      assert Enum.all?(intake_project.candidates, &(&1.dispatch_evaluation.skipped_reason == "duplicate_active_attempt"))
       assert Enum.all?(intake_project.candidates, &(&1.source_poll.request_id == request.request_id))
 
-      assert snapshot.hub_dispatch_planning.counts.planned_count == 2
+      assert snapshot.hub_dispatch_planning.counts.planned_count == 0
+      assert snapshot.hub_dispatch_planning.counts.already_planned_count == 2
       assert snapshot.hub_dispatch_planning.counts.pending_intent_count == 2
-      assert snapshot.hub_dispatch_planning.skipped_reasons == %{}
+      assert snapshot.hub_dispatch_planning.skipped_reasons == %{"already_planned" => 2}
       assert length(snapshot.hub_dispatch_planning.pending_intents) == 2
 
       assert Enum.map(snapshot.hub_dispatch_planning.pending_intents, & &1.issue_key) == [
@@ -365,11 +374,33 @@ defmodule SymphonyElixir.HubRuntimeTest do
              ]
 
       assert Enum.all?(snapshot.hub_dispatch_planning.pending_intents, fn intent ->
-               intent.source_poll.request_id == request.request_id and
+               intent.source_model == "runtime_ledger" and
                  intent.safety.starts_agent == false and
                  intent.safety.creates_workspace == false and
                  intent.safety.writes_provider == false
              end)
+
+      assert snapshot.hub_dispatch_plan_application.counts.applied_count == 2
+      assert snapshot.hub_dispatch_plan_application.counts.pending_start_intent_count == 2
+      assert snapshot.hub_dispatch_plan_application.reason_counts == %{}
+
+      assert Enum.map(snapshot.hub_dispatch_plan_application.pending_start_intents, & &1.issue_key) == [
+               "alpha:memory:alpha:mem-1",
+               "alpha:memory:alpha:mem-2"
+             ]
+
+      assert Enum.all?(snapshot.hub_dispatch_plan_application.pending_start_intents, fn intent ->
+               intent.runtime_identity.source_poll.request_id == request.request_id and
+                 intent.runtime_identity.source_intake.candidate_key == intent.issue_key and
+                 intent.start_command_summary.starts_agent in [false, "false"] and
+                 intent.start_command_summary.creates_workspace in [false, "false"] and
+                 intent.start_command_summary.writes_provider in [false, "false"]
+             end)
+
+      dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      assert [ledger_project] = dispatch_summary.projects
+      assert length(ledger_project.active_attempts) == 2
+      assert length(ledger_project.pending_start_intents) == 2
 
       facts_by_type = Enum.group_by(snapshot.hub_poll_coordination.facts, & &1.fact_type)
       assert [_attempt | _] = Map.fetch!(facts_by_type, :poll_attempt)
@@ -390,9 +421,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       payload = Presenter.state_payload(runtime_name, 100)
       assert payload.hub_candidate_intake.counts.candidate_count == 2
-      assert payload.hub_dispatch_planning.counts.planned_count == 2
+      assert payload.hub_dispatch_planning.counts.already_planned_count == 2
+      assert payload.hub_dispatch_plan_application.counts.applied_count == 2
       assert [%{candidates: payload_candidates}] = payload.hub_candidate_intake.projects
-      assert Enum.all?(payload_candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation"))
+      assert Enum.all?(payload_candidates, &(&1.dispatch_evaluation.skipped_reason == "duplicate_active_attempt"))
     after
       File.rm_rf(root)
     end
@@ -612,7 +644,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
            }
   end
 
-  test "candidate intake marks active attempt and workspace conflicts without dispatching" do
+  test "candidate intake marks active attempt and workspace conflicts while applying only safe candidates" do
     root = tmp_root("hub-runtime-candidate-intake-conflicts")
     hub_path = Path.join(root, "HUB.yaml")
 
@@ -643,7 +675,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert %{
                poll_tick: %{
                  selected_count: 1,
-                 candidate_intake: %{candidate_count: 3, eligible_count: 1, skipped_count: 2}
+                 candidate_intake: %{candidate_count: 3, eligible_count: 0, skipped_count: 3},
+                 dispatch_plan_application: %{applied_count: 1, blocked_count: 2}
                }
              } = Runtime.request_refresh(runtime_name)
 
@@ -651,11 +684,25 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       snapshot = Runtime.snapshot(runtime_name, 100)
       assert snapshot.hub_candidate_intake.counts.candidate_count == 3
-      assert snapshot.hub_candidate_intake.counts.eligible_count == 1
-      assert snapshot.hub_candidate_intake.skipped_reasons == %{"duplicate_active_attempt" => 1, "workspace_busy" => 1}
-      assert snapshot.hub_dispatch_planning.counts.planned_count == 1
-      assert snapshot.hub_dispatch_planning.counts.skipped_count == 2
-      assert snapshot.hub_dispatch_planning.skipped_reasons == %{"duplicate_active_attempt" => 1, "workspace_busy" => 1}
+      assert snapshot.hub_candidate_intake.counts.eligible_count == 0
+      assert snapshot.hub_candidate_intake.skipped_reasons == %{"duplicate_active_attempt" => 2, "workspace_busy" => 1}
+      assert snapshot.hub_dispatch_planning.counts.planned_count == 0
+      assert snapshot.hub_dispatch_planning.counts.already_planned_count == 1
+      assert snapshot.hub_dispatch_planning.counts.skipped_count == 3
+
+      assert snapshot.hub_dispatch_planning.skipped_reasons == %{
+               "already_planned" => 1,
+               "duplicate_active_attempt" => 1,
+               "workspace_busy" => 1
+             }
+
+      assert snapshot.hub_dispatch_plan_application.counts.applied_count == 1
+      assert snapshot.hub_dispatch_plan_application.counts.blocked_count == 2
+
+      assert snapshot.hub_dispatch_plan_application.reason_counts == %{
+               "duplicate_active_attempt" => 1,
+               "workspace_busy" => 1
+             }
 
       [project] = snapshot.hub_candidate_intake.projects
 
@@ -665,19 +712,21 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       assert reasons_by_issue["mem-active"] == "duplicate_active_attempt"
       assert reasons_by_issue["mem-workspace"] == "workspace_busy"
-      assert reasons_by_issue["mem-ready"] == nil
-      assert Enum.count(project.candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation")) == 1
+      assert reasons_by_issue["mem-ready"] == "duplicate_active_attempt"
+      refute Enum.any?(project.candidates, &(&1.dispatch_evaluation.status == "ready_for_dispatch_evaluation"))
 
       dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
       [ledger_project] = dispatch_summary.projects
-      assert length(ledger_project.active_attempts) == 2
-      refute Enum.any?(ledger_project.active_attempts, &(&1.issue_key =~ "mem-ready"))
+      assert length(ledger_project.active_attempts) == 3
+      assert Enum.any?(ledger_project.active_attempts, &(&1.issue_key =~ "mem-ready"))
+      assert [%{issue_key: ready_key}] = ledger_project.pending_start_intents
+      assert ready_key =~ "mem-ready"
 
       [planning_project] = snapshot.hub_dispatch_planning.projects
       statuses_by_issue = Map.new(planning_project.outcomes, &{&1.issue_ref.provider_issue_id, &1.status})
       assert statuses_by_issue["mem-active"] == "blocked_by_active_attempt"
       assert statuses_by_issue["mem-workspace"] == "blocked_by_workspace"
-      assert statuses_by_issue["mem-ready"] == "planned"
+      assert statuses_by_issue["mem-ready"] == "already_planned"
     after
       File.rm_rf(root)
     end
@@ -708,16 +757,28 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_dispatch_planning_replay
       )
 
-      assert %{poll_tick: %{dispatch_planning: %{planned_count: 2}}} = Runtime.request_refresh(runtime_name)
+      assert %{
+               poll_tick: %{
+                 dispatch_planning: %{planned_count: 0, already_planned_count: 2},
+                 dispatch_plan_application: %{applied_count: 2}
+               }
+             } = Runtime.request_refresh(runtime_name)
+
       assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
 
       first = Runtime.snapshot(runtime_name, 100).hub_dispatch_planning
       assert first.counts.pending_intent_count == 2
+      first_application = Runtime.snapshot(runtime_name, 100).hub_dispatch_plan_application
+      assert first_application.counts.applied_count == 2
 
       Process.sleep(5)
 
-      assert %{poll_tick: %{dispatch_planning: %{planned_count: 0, already_planned_count: 2}}} =
-               Runtime.request_refresh(runtime_name)
+      assert %{
+               poll_tick: %{
+                 dispatch_planning: %{planned_count: 0, already_planned_count: 2},
+                 dispatch_plan_application: %{already_applied_count: 2}
+               }
+             } = Runtime.request_refresh(runtime_name)
 
       assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
 
@@ -725,6 +786,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert second.counts.pending_intent_count == 2
       assert second.counts.already_planned_count == 2
       assert Enum.map(second.pending_intents, & &1.intent_id) == Enum.map(first.pending_intents, & &1.intent_id)
+
+      dispatch_summary = Runtime.snapshot(runtime_name, 100).hub_dispatch_boundary |> RuntimeLedger.replay()
+      assert [ledger_project] = dispatch_summary.projects
+      assert length(ledger_project.active_attempts) == 2
+      assert length(ledger_project.pending_start_intents) == 2
     after
       File.rm_rf(root)
     end
@@ -756,17 +822,22 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       assert %{
                poll_tick: %{
-                 candidate_intake: %{eligible_count: 2},
-                 dispatch_planning: %{planned_count: 1, capacity_unavailable_count: 1}
+                 candidate_intake: %{eligible_count: 0},
+                 dispatch_planning: %{planned_count: 0, already_planned_count: 1, capacity_unavailable_count: 1},
+                 dispatch_plan_application: %{applied_count: 1, skipped_count: 1}
                }
              } = Runtime.request_refresh(runtime_name)
 
       assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
 
       snapshot = Runtime.snapshot(runtime_name, 100)
-      assert snapshot.hub_dispatch_planning.counts.planned_count == 1
+      assert snapshot.hub_dispatch_planning.counts.planned_count == 0
+      assert snapshot.hub_dispatch_planning.counts.already_planned_count == 1
       assert snapshot.hub_dispatch_planning.counts.capacity_unavailable_count == 1
-      assert snapshot.hub_dispatch_planning.skipped_reasons == %{"project_capacity_full" => 1}
+      assert snapshot.hub_dispatch_planning.skipped_reasons == %{"already_planned" => 1, "project_capacity_full" => 1}
+      assert snapshot.hub_dispatch_plan_application.counts.applied_count == 1
+      assert snapshot.hub_dispatch_plan_application.counts.skipped_count == 1
+      assert snapshot.hub_dispatch_plan_application.reason_counts == %{"project_capacity_full" => 1}
     after
       File.rm_rf(root)
     end

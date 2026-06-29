@@ -1201,6 +1201,23 @@ Runtime entrypoint:
 - Dispatch planning MUST remain model-only until an explicit Hub scheduler integration is
   specified. It MUST NOT start agents, create real worker workspaces, write provider comments,
   update provider statuses, or take ownership of legacy single-project scheduling by itself.
+- A Hub dispatch plan application boundary MAY consume dispatch planning summaries and apply only
+  planned eligible pending intents through the Hub atomic dispatch boundary into runtime-ledger
+  model facts. Application records SHOULD include per-project applied, skipped, blocked,
+  already-applied, already-planned, and manual-attention counts, reason counts, safe pending
+  start-intent summaries, and source poll/intake/planning correlation.
+- Dispatch plan application MUST remain idempotent across refresh/replay. Reapplying a plan,
+  rescanning the same candidate, or encountering an unresolved runtime-ledger start intent for the
+  same `project_id + provider scope + IssueRef` MUST NOT create a second active attempt. It MUST
+  report already applied, already planned, blocked, manual attention, or skipped instead.
+- Dispatch plan application MUST respect the same safety constraints as candidate intake,
+  dispatch planning, and the atomic dispatch boundary: active attempts, unresolved start intents,
+  workspace leases, retry/backoff, project pause/config error, provider backpressure/manual
+  attention, and project/global capacity.
+- Dispatch plan application is a ledger skeleton only. It MUST NOT start Codex, create a real
+  worker workspace, execute workspace hooks, mutate provider state, write provider comments/statuses
+  or PRs, persist a database/WAL transaction, or migrate legacy `symphony@project.service`
+  ownership.
 - Candidate identity MUST be bound to the current poll source and registry project. Provider
   candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
   repository, project slug, or equivalent scope identity MAY be present only when they match the poll
@@ -1211,8 +1228,9 @@ Runtime entrypoint:
   documents that ownership change.
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
   `hub_runtime`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
-  `hub_dispatch_planning`, and `hub_device_observability` when a Hub snapshot is present. Legacy
-  snapshots without Hub fields SHOULD keep the existing API shape.
+  `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_dispatch_boundary`, and
+  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
+  SHOULD keep the existing API shape.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
@@ -1245,6 +1263,12 @@ Compatibility boundary:
   replayed or refreshed candidates with an existing pending plan/start intent MUST be explainable as
   already planned rather than duplicated, and capacity/full/backoff/manual-attention/workspace
   blockers MUST be visible without starting workers or touching providers.
+- Hub dispatch plan application MAY consume planned eligible intents and apply them to the
+  runtime-ledger model through the atomic dispatch boundary, producing claim, attempt, workspace
+  lease, start-intent, and safe run-context facts plus safe applied/skipped/blocked/already-applied
+  summaries. It remains a skeleton for later scheduler/worker integration and MUST NOT launch real
+  workers, create real workspaces, write providers, or introduce durable transaction storage by
+  itself.
 - Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
   builds `ProviderGovernance` requests for structured provider calls and returns safe result
   summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned
@@ -1476,6 +1500,10 @@ Run context snapshots:
 - MUST include safe references to project/workflow/tracker configuration, issue identity, current
   stage, attempt id/number, correlation id, workspace lease/path, worker host/runtime identity
   summary, runner/start command summary, session id, start/activity timestamps, and exit summary.
+- MAY include safe source correlation showing the dispatch came from a Hub source poll, candidate
+  intake record, and dispatch planning outcome. This correlation MUST be safe metadata only and
+  MUST NOT include raw provider config, raw provider responses, full prompts/transcripts, or full
+  comment/PR bodies.
 - MUST NOT include provider tokens, API keys, credentials, cookies, secret env values, full prompts,
   complete Codex transcripts, or raw secret-bearing config.
 

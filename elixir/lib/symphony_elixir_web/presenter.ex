@@ -4,7 +4,15 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
-  alias SymphonyElixir.Hub.{CandidateIntake, DeviceObservability, DispatchPlanning, PollCoordinator, RuntimeLedger}
+
+  alias SymphonyElixir.Hub.{
+    CandidateIntake,
+    DeviceObservability,
+    DispatchPlanApplication,
+    DispatchPlanning,
+    PollCoordinator,
+    RuntimeLedger
+  }
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -35,6 +43,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_poll_coordination(snapshot)
         |> maybe_put_hub_candidate_intake(snapshot)
         |> maybe_put_hub_dispatch_planning(snapshot)
+        |> maybe_put_hub_dispatch_plan_application(snapshot)
         |> maybe_put_hub_dispatch_boundary(snapshot)
 
       :timeout ->
@@ -105,6 +114,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case DispatchPlanning.observability_snapshot(hub_dispatch_planning) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_dispatch_planning, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_dispatch_plan_application(payload, snapshot) do
+    hub_dispatch_plan_application =
+      Map.get(snapshot, :hub_dispatch_plan_application) ||
+        Map.get(snapshot, "hub_dispatch_plan_application")
+
+    case DispatchPlanApplication.observability_snapshot(hub_dispatch_plan_application) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_dispatch_plan_application, safe_snapshot)
     end
   end
 

@@ -86,6 +86,14 @@ reserves only model-level intent slots, explains already-planned, capacity, acti
 workspace, manual-attention, paused/config-error, and provider-backoff skips, and recovers previous
 pending plans on refresh instead of duplicating them. It still does not start an agent, create a
 real worker workspace, write providers, or replace legacy single-project scheduling.
+`SymphonyElixir.Hub.DispatchPlanApplication` connects planning to the runtime ledger skeleton:
+eligible planned intents are applied through `DispatchBoundary.dispatch/3` into recoverable claim,
+attempt, workspace lease, start-intent, and safe run-context facts. Refresh/replay remains
+idempotent: an existing unresolved start intent or active attempt is reported as already applied or
+already planned instead of creating a second active attempt. The summary exposes applied, skipped,
+blocked, manual-attention, and already-applied counts plus safe pending start-intent correlation.
+This still does not launch Codex, create a real worker workspace, run workspace hooks, write
+providers, or migrate legacy services.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
@@ -116,8 +124,9 @@ The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
 boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
-exposes safe Hub fields through `/api/v1/state`. The default skeleton executor does not migrate
-GitHub/GitLab/Linear legacy adapters, create workspaces, or start agents. This entrypoint is opt-in
+exposes safe Hub fields through `/api/v1/state`, including `hub_dispatch_plan_application` and
+runtime-ledger replay summaries after a plan is applied. The default skeleton executor does not
+migrate GitHub/GitLab/Linear legacy adapters, create real workspaces, or start agents. This entrypoint is opt-in
 only; the legacy `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services
 stay unchanged.
 

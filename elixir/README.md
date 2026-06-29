@@ -339,22 +339,28 @@ stable project/provider-scope/IssueRef identity, source poll correlation, intake
 minimal attempt/intent identity. Planning recovers previous pending plans on refresh instead of
 duplicating them, reserves project/global capacity across candidates in the same tick, and explains
 already-planned, capacity, active-attempt, workspace, manual-attention, paused/config-error, and
-provider-backoff skips. Hub mode still does not start the legacy single-project orchestrator,
-dispatch Codex agents, create real workspaces, write comments/statuses/PRs, or take ownership of
-existing `symphony@project.service` instances. The default executor is a skeleton
-boundary and does not migrate the legacy GitHub/GitLab/Linear adapters. The existing per-project
-services and their poll loops keep running until a later migration explicitly changes ownership.
+provider-backoff skips. The refresh then builds `hub_dispatch_plan_application`: a safe application
+summary that applies eligible planned intents through `DispatchBoundary.dispatch/3` to the in-memory
+runtime ledger model, creating claim, attempt, workspace lease, start-intent, and safe run-context
+facts. Repeated refreshes or unresolved runtime-ledger start intents are reported as already
+applied/already planned rather than creating a duplicate active attempt. Hub mode still does not
+start the legacy single-project orchestrator, dispatch Codex agents, create real workspaces, run
+workspace hooks, write comments/statuses/PRs, or take ownership of existing
+`symphony@project.service` instances. The default executor is a skeleton boundary and does not
+migrate the legacy GitHub/GitLab/Linear adapters. The existing per-project services and their poll
+loops keep running until a later migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, and
-`hub_device_observability`. These snapshots are safe summaries: they show tick status, project
-eligibility, last poll/backoff, provider queue/scope summaries, intake counts, candidate identities,
-safe poll correlation ids, planning counts, planned/skipped outcomes, pending intent summaries, and
-skipped reasons while omitting provider tokens, API keys, authorization/cookie values, secret env
-values, raw provider config, full prompts, full transcripts, provider response bodies, and full
-comment/PR bodies. The terminal dashboard only adds a compact Hub mode line with project count,
-config error count, provider scope count, and poll tick capability; it is not a complete Hub
-dashboard page.
+`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`,
+`hub_dispatch_plan_application`, `hub_dispatch_boundary`, and `hub_device_observability`. These
+snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
+provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
+planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
+counts, pending start-intent summaries, runtime-ledger replay summaries, and skipped reasons while
+omitting provider tokens, API keys, authorization/cookie values, secret env values, raw provider
+config, full prompts, full transcripts, provider response bodies, and full comment/PR bodies. The
+terminal dashboard only adds a compact Hub mode line with project count, config error count,
+provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -544,6 +550,22 @@ Manual attention, provider/project backoff, paused/config-error projects, active
 workspace/lease conflicts, retry backoff, and invalid identity remain skipped outcomes. This
 planning boundary is still model-only: it does not call `dispatch/3`, launch Codex, create a real
 workspace, write a provider, or take over the legacy `symphony@project.service` path.
+
+`SymphonyElixir.Hub.DispatchPlanApplication` is the Hub runtime's plan-to-ledger skeleton. It
+consumes `hub_dispatch_planning`, selects only planned eligible pending intents, and calls
+`DispatchBoundary.dispatch/3` against the current runtime ledger. The resulting snapshot records
+recoverable model facts for the claim, attempt, workspace lease, pending start intent, and safe run
+context, including poll/intake/planning correlation. The application summary exposes per-project
+applied, skipped, blocked, already-applied, already-planned, manual-attention, and reason counts,
+plus pending start-intent summaries and a runtime-ledger replay summary. It reuses dispatch
+preflight and capacity checks, so repeated refreshes, duplicate candidates, active attempts,
+workspace conflicts, retry/backoff, project pause/config error, provider backpressure, manual
+attention, and capacity limits remain observable instead of causing a blind double start.
+
+This is still not a scheduler or worker launcher. The application boundary does not start Codex,
+create a real worker workspace, run workspace hooks, write GitHub/GitLab/Linear provider state,
+comments, or PRs, persist a database/WAL transaction, or migrate the legacy
+`symphony@project.service` path.
 
 `dispatch/3` applies the context to a runtime ledger snapshot as one model-level transition:
 claiming the issue, creating the attempt, acquiring the workspace lease, recording a start intent,
