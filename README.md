@@ -82,6 +82,13 @@ construct safe `ProviderGovernance` requests, execute through an injectable boun
 sanitized request/result/writeback summaries. This is still a migration seam only; legacy
 single-project provider calls remain direct unless a caller explicitly opts into the Hub routing
 boundary.
+The Hub writeback intent/result processing baseline connects those routing summaries back to the
+runtime ledger model: routed writeback intents can now be normalized into safe recoverable facts,
+deduplicated by stable intent key, and replayed into decisions such as completed, retryable, provider
+lookup required, manual attention, or conflict. It is still model-only and does not implement the
+final Hub scheduler, provider writeback executor, persistent database, or Dashboard page; future
+Dashboard/API surfaces can consume the safe writeback observability summary without seeing tokens,
+prompts, transcripts, raw config, or full comment/PR bodies.
 
 ---
 

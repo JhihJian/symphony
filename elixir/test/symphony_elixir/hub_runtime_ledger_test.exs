@@ -204,6 +204,17 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
     assert [%{code: :writeback_unknown_manual_attention, intent_key: "alpha:blocking-side-effect"}] =
              summary.manual_attention
 
+    assert projects["alpha"].writebacks.counts == %{
+             pending: 0,
+             succeeded: 1,
+             failed: 0,
+             unknown: 1,
+             manual_attention: 1
+           }
+
+    assert [%{manual_attention_reason: "unknown_non_idempotent_writeback", target: %{"pr" => "12", "provider" => "github"}}] =
+             projects["alpha"].writebacks.manual_attention
+
     refute inspect(snapshot) =~ "GITHUB_TOKEN"
     refute inspect(snapshot) =~ "api_key"
     refute inspect(snapshot) =~ "credential"
@@ -440,6 +451,63 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
 
     assert {:error, validate_diagnostics} = RuntimeLedger.validate(snapshot)
     assert Enum.any?(validate_diagnostics, &(&1.code == :sensitive_ledger_snapshot_field))
+  end
+
+  test "normalizes writeback body fields to digest summaries in replay observability" do
+    snapshot = %{
+      "version" => 1,
+      "projects" => [
+        %{
+          "project_id" => "alpha",
+          "issues" => [
+            %{
+              "issue_ref" => %{
+                "project_id" => "alpha",
+                "tracker_kind" => "github",
+                "provider_scope_key" => "github:jhihjian/symphony",
+                "provider_issue_id" => "97"
+              },
+              "writebacks" => [
+                %{
+                  "intent_key" => "alpha:github:jhihjian/symphony:97:writeback:comment_append:abc",
+                  "logical_action" => "comment_append",
+                  "operation_type" => "comment_append",
+                  "target" => %{
+                    "issue_id" => "97",
+                    "body" => "comment body should not be copied",
+                    "authorization" => "Bearer github_pat_secret"
+                  },
+                  "replay_policy" => "non_idempotent",
+                  "result_status" => "unknown",
+                  "attempt_id" => "attempt-1",
+                  "manual_attention" => true,
+                  "manual_attention_reason" => "unknown_append_comment_requires_manual_attention",
+                  "correlation" => %{
+                    "attempt_id" => "attempt-1",
+                    "prompt" => "full prompt should not leak"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+
+    ledger = RuntimeLedger.to_snapshot(snapshot)
+    [project] = RuntimeLedger.replay(ledger).projects
+
+    assert [%{target: target}] = project.writebacks.manual_attention
+    assert target["issue_id"] == "97"
+    assert is_binary(target["body_sha256"])
+    assert target["body_bytes"] == 33
+    refute Map.has_key?(target, "body")
+    refute Map.has_key?(target, "authorization")
+
+    safe_text = inspect(project)
+    refute safe_text =~ "comment body should not be copied"
+    refute safe_text =~ "github_pat_secret"
+    refute safe_text =~ "full prompt"
   end
 
   defp ledger_with_issue(issue) do
