@@ -14,7 +14,10 @@ Hub device observability 投影同样只是把这些 safe summary 汇总成 Dash
 如果需要试运行 Hub runtime poll tick 骨架，可以手动执行
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口会加载注册表、生成 poll plan、
 通过 Hub provider request 边界执行一轮可控的 candidate-scan tick、记录 poll attempt/result fact，
-并通过 `/api/v1/state` 暴露安全字段。默认骨架 executor 不迁移 GitHub/GitLab/Linear legacy adapter、
+并通过 `/api/v1/state` 暴露安全字段。若额外传入 `--hub-scheduler`，Hub runtime 会启用第一版
+显式 opt-in 的 Hub-owned tick loop baseline：启动后自动 tick，完成后根据 Hub poll plan、
+provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手动 `/refresh` 与运行中/已排队 tick
+合并而不是并发执行。默认骨架 executor 不迁移 GitHub/GitLab/Linear legacy adapter、
 不派发 agent、不停止各项目自己的 poll loop。本文档的 systemd template 仍使用
 `--tracker-config <TRACKER.yaml> <WORKFLOW.md>`，不会自动改成 Hub mode。
 

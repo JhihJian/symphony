@@ -1101,6 +1101,255 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "opt-in scheduler automatically executes a startup tick and exposes safe API summary" do
+    root = tmp_root("hub-runtime-scheduler-auto")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 60_000
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerAutoRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        scheduler_enabled: true,
+        provider_executor: success_executor(self())
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_scheduler_auto
+      )
+
+      assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_scheduler: scheduler, hub_runtime: hub_runtime} ->
+                   scheduler.counts.run_count >= 1 and hub_runtime.poll_tick.status == "completed"
+
+                 _snapshot ->
+                   false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.enabled == true
+      assert snapshot.hub_scheduler.status == "scheduled"
+      assert snapshot.hub_scheduler.next_tick_at != nil
+      assert snapshot.hub_scheduler.next_reason in ["runtime_reconciliation", "next_project_due"]
+      assert [project] = snapshot.hub_scheduler.projects
+      assert project.project_id == "alpha"
+      assert project.pending_start_intent_count == 2
+      assert snapshot.hub_scheduler.unresolved_runtime.pending_start_intent_count == 2
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_scheduler.enabled == true
+      assert payload.hub_runtime.scheduler.enabled == true
+
+      safe_text = inspect(payload)
+      refute safe_text =~ "GITHUB_TOKEN"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "cookie"
+      refute safe_text =~ "secret"
+      refute safe_text =~ "raw_config"
+      refute safe_text =~ "full prompt"
+      refute safe_text =~ "transcript"
+      refute safe_text =~ "comment body"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "scheduler coalesces manual refresh while a tick is running without duplicating ledger state" do
+    root = tmp_root("hub-runtime-scheduler-coalesce")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 1
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerCoalesceRuntime)
+      parent = self()
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        scheduler_enabled: true,
+        provider_executor: blocking_success_executor(parent)
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_scheduler_coalesce
+      )
+
+      assert_receive {:blocking_provider_started, %{project_id: "alpha"}, provider_pid}, 1_000
+
+      reply = Runtime.request_refresh(runtime_name)
+      assert reply.queued == true
+      assert reply.coalesced == true
+      assert reply.next_tick_at == nil
+      assert reply.scheduler.status == "coalesced"
+      assert reply.scheduler.counts.coalesced_count == 1
+
+      send(provider_pid, :release_blocking_provider)
+      assert_receive {:blocking_provider_released, "alpha"}, 1_000
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_scheduler: scheduler, hub_dispatch_plan_application: application} ->
+                   scheduler.counts.run_count >= 1 and application.counts.applied_count == 2
+
+                 _snapshot ->
+                   false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.counts.coalesced_count == 1
+
+      dispatch_summary = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      assert [ledger_project] = dispatch_summary.projects
+      assert length(ledger_project.active_attempts) == 2
+      assert length(ledger_project.pending_start_intents) == 2
+    after
+      send(self(), :release_blocking_provider)
+      File.rm_rf(root)
+    end
+  end
+
+  test "scheduler next tick uses provider backoff and isolates provider failures" do
+    root = tmp_root("hub-runtime-scheduler-backoff")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+      write_project!(root, "beta", tracker_kind: "gitlab", tracker_project_slug: "platform/beta", workspace_root: Path.join([root, "workspaces", "beta"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerBackoffRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        scheduler_enabled: true,
+        provider_executor: raising_alpha_executor(self())
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_scheduler_backoff
+      )
+
+      assert_receive {:raising_provider_request, "alpha"}, 1_000
+      assert_receive {:successful_request, "beta"}, 1_000
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_runtime: hub_runtime} ->
+                   hub_runtime.poll_tick.result_counts == %{"retryable_failure" => 1, "success" => 1}
+
+                 _snapshot ->
+                   false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.enabled == true
+      assert snapshot.hub_scheduler.next_tick_at != nil
+      assert snapshot.hub_scheduler.counts.error_count == 0
+
+      projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
+      assert projects["alpha"].allow_poll == false
+      assert projects["alpha"].eligibility.reason == :backoff
+      assert projects["alpha"].last_poll.status == :retryable_failure
+      assert projects["beta"].last_poll.status == :success
+
+      scheduler_projects = Map.new(snapshot.hub_scheduler.projects, &{&1.project_id, &1})
+      assert scheduler_projects["alpha"].backoff_until != nil
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      safe_text = inspect(payload)
+      refute safe_text =~ "Bearer scheduler secret"
+      refute safe_text =~ "ghp_scheduler_secret"
+      refute safe_text =~ "raw provider body"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "disabled scheduler keeps legacy-shaped Hub refresh synchronous" do
+    root = tmp_root("hub-runtime-scheduler-disabled")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerDisabledRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        id: :hub_runtime_scheduler_disabled
+      )
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.enabled == false
+      assert snapshot.hub_scheduler.status == "disabled"
+      assert snapshot.hub_scheduler.queued == false
+      refute_receive {:provider_candidate_scan, _request}, 100
+
+      assert %{queued: true, coalesced: false, poll_tick: %{selected_count: 1}} = Runtime.request_refresh(runtime_name)
+      assert_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 1_000
+
+      legacy_name = Module.concat(__MODULE__, :SchedulerLegacySnapshot)
+
+      start_supervised!(
+        {__MODULE__.StaticSnapshot, name: legacy_name, snapshot: legacy_snapshot()},
+        id: :hub_runtime_scheduler_legacy_snapshot
+      )
+
+      legacy_payload = Presenter.state_payload(legacy_name, 100)
+      refute Map.has_key?(legacy_payload, :hub_scheduler)
+      refute Map.has_key?(legacy_payload, :hub_runtime)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   defmodule StaticSnapshot do
     @moduledoc false
     use GenServer
@@ -1133,6 +1382,44 @@ defmodule SymphonyElixir.HubRuntimeTest do
           ]
         }
       )
+    end
+  end
+
+  defp blocking_success_executor(parent) do
+    fn request, _opts ->
+      send(parent, {:blocking_provider_started, request, self()})
+
+      receive do
+        :release_blocking_provider -> :ok
+      after
+        2_000 -> :ok
+      end
+
+      send(parent, {:blocking_provider_released, request.project_id})
+
+      ProviderGovernance.result(request, :success,
+        result_summary: %{
+          issue_count: 2,
+          candidates: [
+            %{id: "mem-1", identifier: "MEM-1", current_stage: "ready"},
+            %{id: "mem-2", identifier: "MEM-2", current_stage: "ready"}
+          ]
+        }
+      )
+    end
+  end
+
+  defp raising_alpha_executor(parent) do
+    fn request, _opts ->
+      case request.project_id do
+        "alpha" ->
+          send(parent, {:raising_provider_request, request.project_id})
+          raise "provider exploded with Bearer scheduler secret and ghp_scheduler_secret raw provider body"
+
+        project_id ->
+          send(parent, {:successful_request, project_id})
+          ProviderGovernance.result(request, :success, result_summary: %{issue_count: 0})
+      end
     end
   end
 
@@ -1308,4 +1595,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
   defp tmp_root(name) do
     Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive, :monotonic])}")
   end
+
+  defp eventually(fun, attempts \\ 20)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(50)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp eventually(_fun, 0), do: false
 end

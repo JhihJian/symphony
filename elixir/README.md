@@ -316,6 +316,12 @@ Hub mode now has an explicit runtime entrypoint with a small poll tick execution
 ./bin/symphony --hub-config /path/to/HUB.yaml --port 21000
 ```
 
+The scheduler loop is a separate explicit opt-in:
+
+```bash
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-scheduler --port 21000
+```
+
 `--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
 present, and the legacy startup path remains:
 
@@ -358,16 +364,25 @@ still-running activity, succeeded completion, failed, cancelled, timeout/stopped
 unknown, or manual-attention outcomes. Confirmed terminal outcomes release the matching
 workspace/capacity or enter retry/backoff, blocked, or released states; lost/unknown/manual-attention
 outcomes retain the active attempt/workspace as observable evidence and do not blindly redispatch.
+When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
+tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
+tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
+or unknown start intents, running attempts, retry/backoff, and manual attention. If `/refresh` or
+`SymphonyElixir.Hub.Runtime.request_refresh/1` arrives while an automatic tick is running or already
+queued, the request returns a diagnostic queued/coalesced summary with `requested_at`,
+`next_tick_at`, and scheduler state instead of running a second concurrent tick. Without
+`--hub-scheduler`, manual refresh remains synchronous and keeps the previous behavior.
 Hub mode still does not start the legacy single-project orchestrator, write comments/statuses/PRs,
-run a full Hub scheduler, or take ownership of existing `symphony@project.service` instances. The
+run the final durable Hub scheduler, or take ownership of existing `symphony@project.service`
+instances. The
 default provider executor and default start handoff are skeleton boundaries and do not migrate the
 legacy GitHub/GitLab/Linear adapters. The lifecycle reconciliation source is likewise injectable and
 safe-summary based. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`,
-`hub_dispatch_plan_application`, `hub_worker_start_handoff`,
+`hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
+`hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
 `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
@@ -375,7 +390,9 @@ planning counts, planned/skipped outcomes, application applied/skipped/blocked/a
 counts, start handoff selected/acked/failed/unknown/manual-attention/already-acked/skipped counts,
 post-ack lifecycle succeeded/failed/cancelled/timeout/stopped/lost/unknown/manual-attention counts,
 reason counts, workspace released/retained counts, pending or unresolved start-intent summaries,
-runtime-ledger replay summaries, and skipped reasons while omitting provider tokens, API keys,
+runtime-ledger replay summaries, scheduler enabled/disabled state, queued/running/coalesced status,
+last/next tick times, duration, reason, coalesced/error counts, per-project due/backoff/runtime
+summary, and skipped reasons while omitting provider tokens, API keys,
 authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
 provider response bodies, full comment/PR bodies, and raw hook/app-server output.
 The terminal dashboard only adds a compact Hub mode line with project count, config error count,

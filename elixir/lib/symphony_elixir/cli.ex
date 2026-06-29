@@ -11,6 +11,7 @@ defmodule SymphonyElixir.CLI do
   @switches [
     {@acknowledgement_switch, :boolean},
     hub_config: :string,
+    hub_scheduler: :boolean,
     hub_worker_starter: :string,
     logs_root: :string,
     port: :integer,
@@ -23,6 +24,7 @@ defmodule SymphonyElixir.CLI do
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_tracker_config_file_path: (String.t() -> :ok | {:error, term()}),
           set_hub_config_path: (String.t() -> :ok | {:error, term()}),
+          set_hub_scheduler_enabled: (boolean() -> :ok | {:error, term()}),
           validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
           set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
@@ -83,6 +85,7 @@ defmodule SymphonyElixir.CLI do
     with :ok <- require_guardrails_acknowledgement(opts),
          :ok <- maybe_set_logs_root(opts, deps),
          :ok <- maybe_set_server_port(opts, deps),
+         :ok <- maybe_set_hub_scheduler(opts, deps),
          :ok <- maybe_set_hub_worker_starter(opts, deps),
          {:ok, hub_config_path} <- hub_config_path(opts),
          :ok <- require_regular_file(deps, hub_config_path, "Hub config file not found"),
@@ -117,7 +120,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] --hub-config <path-to-HUB.yaml>"
+    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -127,6 +130,7 @@ defmodule SymphonyElixir.CLI do
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_tracker_config_file_path: &TrackerConfig.set_tracker_file_path/1,
       set_hub_config_path: &HubRuntime.set_config_path/1,
+      set_hub_scheduler_enabled: &HubRuntime.set_scheduler_enabled/1,
       validate_hub_config: &HubRuntime.validate_config/1,
       set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
       set_logs_root: &set_logs_root/1,
@@ -227,6 +231,10 @@ defmodule SymphonyElixir.CLI do
           {:error, message} -> {:error, message}
         end
     end
+  end
+
+  defp maybe_set_hub_scheduler(opts, deps) do
+    deps.set_hub_scheduler_enabled.(Keyword.get(opts, :hub_scheduler, false) == true)
   end
 
   defp set_server_port_override(port) when is_integer(port) and port >= 0 do

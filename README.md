@@ -156,6 +156,12 @@ into the first real worker handoff adapter, which starts through the existing wo
 writes the safe ack/failure back to the ledger. Lifecycle reconciliation is likewise driven by a
 controlled result source and remains safe-summary based. This entrypoint is opt-in only; the legacy
 `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services stay unchanged.
+Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
+ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
+runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of
+starting a concurrent one. This scheduler summary is exposed as `hub_scheduler` and
+`hub_runtime.scheduler`; it is still not the final durable Hub scheduler, provider writeback
+executor, distributed lock, or migration of existing `symphony@project.service` instances.
 
 ---
 
