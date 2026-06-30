@@ -544,6 +544,18 @@ of those inputs changes, the closeout is shown as stale or conflicting rather th
 manual attention. Closeouts only annotate the audit summary: they do not override the cutover gate,
 call providers, start workers, write runtime-ledger facts, operate systemd, write provider state, or
 edit Hub/project config.
+`hub_cutover_readiness_permit` and
+`hub_device_observability.cutover_readiness_permit` add the read-only execution readiness permit
+baseline after the gate, dry-run audit, audit history, and closeout summaries. The permit summary is
+generated from safe snapshots only and binds each explicitly requested operation to the current
+request fingerprint, activation plan and acknowledgement evidence, cutover gate and staged
+ownership evidence, dry-run audit decision, audit history/closeout currentness, executor/starter
+mode, source, safe timestamps, evidence fingerprints, and a stable permit fingerprint. Permit
+decisions include `ready_for_execution_consideration`, `blocked`, `stale`, `manual_attention`,
+`unsupported`, and `malformed`. Ready means only that a later explicit execution entrypoint may
+consider the operation; it does not execute migration, provider I/O, dispatch, worker start,
+runtime-ledger mutation, provider writeback, systemd changes, config edits, or legacy service
+takeover, and it does not replace the cutover gate.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

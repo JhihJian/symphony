@@ -64,6 +64,16 @@ evidence fingerprint 变化而 stale/conflict。closeout 可以通过显式启�
 `--hub-cutover-audit-history /path/to/history.yaml` 输入。它们都只影响 Dashboard/API 审计摘要，不会绕过
 cutover gate，不会访问 provider、启动 worker、写 runtime ledger、写 provider、操作 systemd 或修改
 `HUB.yaml` / `WORKFLOW.md` / `TRACKER.yaml` / 项目配置。无历史时显示 `no_history`，不会表示迁移已经排队。
+在 audit history / closeout 之后，Hub 还会暴露只读的 cutover execution readiness permit：
+`hub_cutover_readiness_permit` 和 `hub_device_observability.cutover_readiness_permit`。permit 把当前
+request fingerprint、activation plan / ack fingerprint、cutover gate / staged ownership evidence、
+dry-run audit decision、audit history/closeout 当前性、executor/starter mode 和 evidence fingerprint
+汇总成每个 requested operation 的 `ready_for_execution_consideration`、`blocked`、`stale`、
+`manual_attention`、`unsupported` 或 `malformed` 决策。只有 gate 当前允许、dry-run 当前 would allow、
+manual attention 已安全处理、ack 与 plan 仍匹配、模式兼容且证据未漂移时才显示 ready。它仍然只是
+Dashboard/API 可审计的执行前只读门禁摘要，不会绕过 cutover gate，不会访问 provider、dispatch、
+启动 worker、写 runtime ledger / provider、操作 systemd、修改配置或接管 legacy service。无 request
+时显示 `no_request` / permit count 0，不表示迁移已经排队或执行中。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -104,7 +114,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_operation_audit: .hub_cutover_operation_audit,
   device_cutover_operation_audit: .hub_device_observability.cutover_operation_audit,
   cutover_audit_history: .hub_cutover_audit_history,
-  device_cutover_audit_history: .hub_device_observability.cutover_audit_history
+  device_cutover_audit_history: .hub_device_observability.cutover_audit_history,
+  cutover_readiness_permit: .hub_cutover_readiness_permit,
+  device_cutover_readiness_permit: .hub_device_observability.cutover_readiness_permit
 }'
 ```
 

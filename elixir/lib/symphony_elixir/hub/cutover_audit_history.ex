@@ -493,7 +493,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
         optional_string(closeout, :cutover_gate_fingerprint) ||
           optional_string(closeout, :gate_fingerprint),
       evidence_fingerprint: optional_string(closeout, :evidence_fingerprint),
-      operation: operation_name(value(closeout, :operation)),
+      operation: operation_name(value(closeout, :operation)) |> blank_to_default("unknown_operation"),
       reason_code: safe_status(value(closeout, :reason_code)) |> blank_to_default(nil),
       required_operator_action_code:
         safe_status(value(closeout, :required_operator_action_code) || value(closeout, :action_code))

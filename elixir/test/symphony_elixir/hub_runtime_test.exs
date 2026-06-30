@@ -120,6 +120,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.counts.running == 0
       assert payload.hub_runtime.mode == "hub"
       assert payload.hub_cutover_gate.counts.project_count == 1
+      assert payload.hub_cutover_readiness_permit.counts.permit_count == 0
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -148,6 +149,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       legacy_payload = Presenter.state_payload(legacy_name, 100)
       refute Map.has_key?(legacy_payload, :hub_runtime)
       refute Map.has_key?(legacy_payload, :hub_cutover_gate)
+      refute Map.has_key?(legacy_payload, :hub_cutover_readiness_permit)
       refute Map.has_key?(legacy_payload, :hub_project_registry)
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)
@@ -344,16 +346,21 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       assert snapshot.hub_cutover_operation_audit.status == "dry_run_ready"
       assert snapshot.hub_cutover_audit_history.status == "history_ready"
+      assert snapshot.hub_cutover_readiness_permit.status == "ready_for_execution_consideration"
       assert snapshot.hub_runtime.cutover_operation_audit.counts.request_count == 1
       assert snapshot.hub_runtime.cutover_audit_history.counts.history_entry_count == 1
+      assert snapshot.hub_runtime.cutover_readiness_permit.counts.permit_count == 1
+      assert snapshot.hub_runtime.cutover_readiness_permit.counts.ready_count == 1
       assert snapshot.hub_device_observability.cutover_operation_audit.counts.dry_run_ready_count == 1
       assert snapshot.hub_device_observability.cutover_audit_history.counts.unresolved_manual_attention_count == 0
+      assert snapshot.hub_device_observability.cutover_readiness_permit.counts.ready_count == 1
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_operation_audit.request.request_id == "cutover-dry-run-alpha"
       assert [%{decision: "would_allow", dry_run_only: true, operation: "writeback"}] = project.cutover_operation_audit.operation_results
       assert project.cutover_audit_history.latest_audit.request_id == "cutover-dry-run-alpha"
       assert project.cutover_audit_history.dry_run_only == true
       assert project.cutover_audit_history.no_side_effects == true
+      assert [%{decision: "ready_for_execution_consideration", operation: "writeback"}] = project.cutover_readiness_permit.permits
 
       runtime_name = Module.concat(__MODULE__, :CutoverOperationAuditSnapshot)
 
@@ -365,9 +372,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
       payload = Presenter.state_payload(runtime_name, 100)
       assert payload.hub_cutover_operation_audit.counts.request_count == 1
       assert payload.hub_cutover_audit_history.counts.history_entry_count == 1
+      assert payload.hub_cutover_readiness_permit.counts.ready_count == 1
       assert payload.hub_device_observability.overview.cutover_operation_audit.request_count == 1
       assert payload.hub_device_observability.overview.cutover_audit_history.history_entry_count == 1
+      assert payload.hub_device_observability.overview.cutover_readiness_permit.ready_count == 1
       assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_audit_history, :status]) == "history_ready"
+      assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_readiness_permit, :status]) == "ready_for_execution_consideration"
 
       safe_text = inspect(payload)
       refute safe_text =~ "full prompt"
