@@ -27,6 +27,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.GitHub.PullRequest,
           SymphonyElixir.Hub.ActivationPreflight,
           SymphonyElixir.Hub.CandidateIntake,
+          SymphonyElixir.Hub.CutoverAuditHistory,
           SymphonyElixir.Hub.CutoverGate,
           SymphonyElixir.Hub.CutoverOperationAudit,
           SymphonyElixir.Hub.DispatchBoundary,

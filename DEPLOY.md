@@ -55,6 +55,15 @@ code、脱敏证据和 `dry_run_only`。它不会访问 provider、启动 worker
 writeback fact、写 provider、操作 systemd 或修改 `HUB.yaml` / `WORKFLOW.md` / `TRACKER.yaml` / 项目配置。
 没有显式 request 时，Dashboard/API 只显示 `no_request` 计数，不会把 gate allowed 误表示为迁移已排队
 或正在执行。
+在 dry-run audit 之后，Hub 还会暴露只读的 cutover audit history / manual attention closeout 摘要：
+`hub_cutover_audit_history` 和 `hub_device_observability.cutover_audit_history`。它把当前 dry-run audit
+和可选的历史输入整理成有大小边界的项目级历史，并用显式 closeout 记录说明某个 operation 的
+reason/action 是否已被 operator 接受、外部解决、驳回、延期，或因为 request / plan / gate /
+evidence fingerprint 变化而 stale/conflict。closeout 可以通过显式启动参数
+`--hub-manual-attention-closeout /path/to/closeout.yaml` 输入；历史基线可通过
+`--hub-cutover-audit-history /path/to/history.yaml` 输入。它们都只影响 Dashboard/API 审计摘要，不会绕过
+cutover gate，不会访问 provider、启动 worker、写 runtime ledger、写 provider、操作 systemd 或修改
+`HUB.yaml` / `WORKFLOW.md` / `TRACKER.yaml` / 项目配置。无历史时显示 `no_history`，不会表示迁移已经排队。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -93,7 +102,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_gate: .hub_cutover_gate,
   device_cutover_gate: .hub_device_observability.cutover_gate,
   cutover_operation_audit: .hub_cutover_operation_audit,
-  device_cutover_operation_audit: .hub_device_observability.cutover_operation_audit
+  device_cutover_operation_audit: .hub_device_observability.cutover_operation_audit,
+  cutover_audit_history: .hub_cutover_audit_history,
+  device_cutover_audit_history: .hub_device_observability.cutover_audit_history
 }'
 ```
 

@@ -1571,6 +1571,35 @@ Runtime entrypoint:
   device-level counts such as `no_request`, `dry_run_ready`, `blocked`, `manual_attention`,
   `unsupported`, and `summary_error`; projects without an explicit request MUST show a
   non-misleading no-request state rather than pending migration or execution.
+- Hub-compatible implementations SHOULD expose a bounded cutover audit history / manual attention
+  closeout read model after the dry-run audit. The history summary SHOULD include project identity,
+  safe provider/tracker scope, request id/fingerprint/source/evaluated time, requested operations,
+  activation plan id/fingerprint, cutover gate decision or staged ownership evidence, per-operation
+  dry-run decisions, reason codes, required operator action codes, safe evidence references, and
+  explicit `dry_run_only` / `no_side_effects` markers. Implementations MUST bound or summarize
+  history before exposing it to Dashboard/API and MUST NOT expose full prompts, complete provider
+  issue/comment/PR bodies, raw provider responses, raw systemd/hook/app-server output, raw config,
+  raw env, secrets, tokens, or private absolute paths.
+- A manual attention closeout SHOULD be an explicit record bound to `project_id`, request
+  fingerprint, activation plan fingerprint, cutover gate or staged-record fingerprint, operation,
+  reason code, required operator action code, evidence fingerprint, closeout decision, source,
+  decided timestamp, and an operator note digest or summary. Decisions MAY include
+  `accepted_risk`, `resolved_externally`, `rejected`, `deferred`, `stale`, `conflict`,
+  `malformed`, or `unsupported`. A closeout MUST NOT store full prompt/transcript/provider body,
+  secret-bearing config/env, credentials, or raw local command output.
+- Closeouts MUST NOT override the cutover gate or any Hub-owned side-effect guardrail. If the
+  current cutover gate still blocks an operation, a matching closeout may only report whether the
+  operator has closed, deferred, accepted, or rejected that manual-attention item in the audit
+  summary. It MUST NOT allow candidate scan, dispatch plan application, real worker start,
+  writeback provider I/O, runtime ledger mutation, systemd operation, or project config changes.
+- If request fingerprint, activation plan, operator acknowledgement, cutover gate, preflight,
+  host/service probe, executor/starter mode, project snapshot, or evidence references change, an old
+  closeout MUST be reported as stale, conflicting, malformed, unsupported, or still requiring manual
+  attention rather than silently clearing current unresolved manual attention. Malformed closeouts,
+  unknown project/operation/reason/action codes, unsupported sources, fingerprint mismatches, and
+  missing evidence MUST NOT clear unresolved manual attention. A malformed history or closeout for
+  one project MUST NOT affect other project summaries, Hub ticks, Dashboard/API responses, or
+  execution of unrelated projects.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
