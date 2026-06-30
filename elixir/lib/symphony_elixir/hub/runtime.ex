@@ -35,6 +35,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @provider_executor_env_key :hub_provider_executor
   @worker_start_starter_env_key :hub_worker_start_starter
   @activation_probe_env_key :hub_activation_probe
+  @operator_acknowledgements_env_key :hub_operator_acknowledgements
   @worker_lifecycle_result_source_env_key :hub_worker_lifecycle_result_source
   @poll_fact_limit 200
   @scheduler_min_delay_ms 10
@@ -57,6 +58,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:provider_executor) => module() | function(),
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
           required(:activation_probe) => map() | function() | nil,
+          required(:operator_acknowledgements) => term(),
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
@@ -143,6 +145,32 @@ defmodule SymphonyElixir.Hub.Runtime do
     :ok
   end
 
+  @spec set_operator_acknowledgements(term()) :: :ok
+  def set_operator_acknowledgements(acknowledgements) do
+    Application.put_env(:symphony_elixir, @operator_acknowledgements_env_key, acknowledgements)
+    :ok
+  end
+
+  @spec clear_operator_acknowledgements() :: :ok
+  def clear_operator_acknowledgements do
+    Application.delete_env(:symphony_elixir, @operator_acknowledgements_env_key)
+    :ok
+  end
+
+  @spec load_operator_acknowledgements(Path.t()) :: :ok | {:error, String.t()}
+  def load_operator_acknowledgements(path) when is_binary(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, acknowledgements} <- decode_operator_acknowledgements(content, path) do
+      set_operator_acknowledgements(acknowledgements)
+    else
+      {:error, reason} when is_atom(reason) ->
+        {:error, "Hub activation acknowledgement file not found: #{path} (#{reason})"}
+
+      {:error, reason} ->
+        {:error, "Failed to load Hub activation acknowledgement file #{path}: #{inspect(reason)}"}
+    end
+  end
+
   @spec set_host_service_activation_probe(keyword()) :: :ok
   def set_host_service_activation_probe(opts \\ []) when is_list(opts) do
     set_activation_probe(HostServiceProbe.build_fun(opts))
@@ -182,6 +210,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   @spec activation_probe() :: map() | function() | nil
   def activation_probe do
     Application.get_env(:symphony_elixir, @activation_probe_env_key)
+  end
+
+  @spec operator_acknowledgements() :: term()
+  def operator_acknowledgements do
+    Application.get_env(:symphony_elixir, @operator_acknowledgements_env_key)
   end
 
   @spec config_path() :: Path.t() | nil
@@ -269,6 +302,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       scheduler = new_scheduler(Keyword.get(opts, :scheduler_enabled, scheduler_enabled?()), loaded_at)
       provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
       activation_probe = Keyword.get(opts, :activation_probe, activation_probe())
+      operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements, operator_acknowledgements())
       worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
 
@@ -277,6 +311,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           now: loaded_at,
           activation_preflight: activation_preflight,
           activation_probe: activation_probe,
+          operator_acknowledgements: operator_acknowledgements,
           provider_queue: provider_queue,
           provider_executor: provider_executor,
           worker_start_starter: worker_start_starter,
@@ -299,6 +334,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         provider_executor: provider_executor,
         worker_start_starter: worker_start_starter,
         activation_probe: activation_probe,
+        operator_acknowledgements: operator_acknowledgements,
         activation_preflight: activation_preflight,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
         runtime_ledger: runtime_ledger,
@@ -452,6 +488,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
     worker_start_starter = Keyword.get(opts, :worker_start_starter)
     activation_probe = Keyword.get(opts, :activation_probe)
+    operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements)
 
     activation_preflight =
       Keyword.get(opts, :activation_preflight) ||
@@ -525,7 +562,8 @@ defmodule SymphonyElixir.Hub.Runtime do
           writeback: writeback,
           migration_boundary: migration_boundary()
         },
-        now: now
+        now: now,
+        operator_acknowledgements: operator_acknowledgements
       )
 
     counts = counts(registry, device_observability)
@@ -564,6 +602,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         worker_start_handoff: WorkerStartHandoff.tick_summary(worker_start_handoff),
         worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(worker_lifecycle_reconciliation),
         migration_boundary: migration_boundary(),
+        operator_acknowledgements: operator_acknowledgement_runtime_summary(device_observability.activation_plan),
         registry: registry_summary
       },
       hub_scheduler: scheduler,
@@ -598,6 +637,19 @@ defmodule SymphonyElixir.Hub.Runtime do
     else
       {:error, message} when is_binary(message) -> {:error, message}
       {:error, reason} -> {:error, format_hub_error(reason)}
+    end
+  end
+
+  defp decode_operator_acknowledgements(content, path) when is_binary(content) do
+    cond do
+      String.trim(content) == "" ->
+        {:ok, %{"acknowledgements" => []}}
+
+      Path.extname(path) == ".json" ->
+        Jason.decode(content)
+
+      true ->
+        YamlElixir.read_from_string(content)
     end
   end
 
@@ -737,6 +789,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         poll_facts: poll_facts,
         activation_preflight: state.activation_preflight,
         activation_probe: state.activation_probe,
+        operator_acknowledgements: state.operator_acknowledgements,
         provider_queue: provider_queue,
         provider_executor: state.provider_executor,
         worker_start_starter: state.worker_start_starter,
@@ -950,6 +1003,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         poll_facts: state.poll_facts,
         activation_preflight: state.activation_preflight,
         activation_probe: state.activation_probe,
+        operator_acknowledgements: state.operator_acknowledgements,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
         worker_start_starter: state.worker_start_starter,
@@ -1332,6 +1386,16 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp count_value(map, key) when is_map(map), do: non_negative_integer(value(map, key)) || 0
   defp count_value(_map, _key), do: 0
+
+  defp operator_acknowledgement_runtime_summary(activation_plan) when is_map(activation_plan) do
+    %{
+      status: value(activation_plan, :status),
+      counts: value(activation_plan, :counts) || %{},
+      safety_gates: value(activation_plan, :safety_gates) || [],
+      global_blocking_risk_count: length(list_value(activation_plan, :global_blocking_risks)),
+      global_advisory_risk_count: length(list_value(activation_plan, :global_advisory_risks))
+    }
+  end
 
   defp hub_runtime_observability(opts) do
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)

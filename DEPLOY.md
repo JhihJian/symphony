@@ -26,6 +26,14 @@ project 的 `legacy_only`、`ready_for_dry_run`、`ready_for_hub_management`、`
 `unknown_manual_attention`、`already_hub_managed` 决策、阻断原因、建议动作和脱敏证据。单个项目
 summary 缺字段、版本不兼容或构建失败时，只会让该项目进入 `unknown_manual_attention` /
 `summary_error`，不会拖垮整个 Dashboard/API。
+同一个投影还会暴露 `hub_device_observability.activation_plan`：它把 readiness 证据整理成每个
+project 的只读 activation plan，包括稳定 `plan_id`、建议下一状态、需要 operator 确认的 action
+code、阻断/建议原因、脱敏 evidence，以及 acknowledgement 状态。acknowledgement 只通过显式输入
+进入，例如 Hub 启动参数 `--hub-activation-ack /path/to/ack.yaml`；它必须绑定 `project_id` 和
+`plan_id`，并列出已确认的 action/risk code。readiness evidence、provider scope、migration state、
+executor/probe mode、ownership facts 或 reason/action code 变化后，旧 ack 会显示为 `stale`、
+`conflict` 或 manual attention，不能静默复用。`accepted` 只表示 operator 已确认这份证据，不会
+自动 stop/disable legacy service、编辑配置、写回 provider 或交接 worker。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -59,7 +67,8 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
 
 curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   preflight: .hub_activation_preflight,
-  readiness: .hub_device_observability.migration_readiness
+  readiness: .hub_device_observability.migration_readiness,
+  activation_plan: .hub_device_observability.activation_plan
 }'
 ```
 

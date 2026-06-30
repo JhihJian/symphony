@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   the legacy `symphony@project.service` single-project path.
   """
 
+  alias SymphonyElixir.Hub.ActivationPlan
+
   @version 1
   @project_statuses [
     "running",
@@ -214,13 +216,16 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       device: device_summary(projects, registry, poll_coordination, provider_queue, sources, opts),
       status_counts: status_counts(projects),
       migration_readiness: migration_readiness_summary(projects, overview, now),
+      activation_plan: %{},
       migration_boundary: migration_boundary_summary(sources),
       provider_queue: sanitize_value(provider_queue),
       projects: projects,
       backpressure_reasons: aggregate_backpressure_reasons(projects)
     }
 
-    to_snapshot(projection)
+    projection
+    |> attach_activation_plan_summary(opts)
+    |> to_snapshot()
   end
 
   def build(_sources, opts) when is_list(opts), do: build(%{}, opts)
@@ -244,7 +249,20 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         generated_at
       )
 
-    projects = attach_project_readiness(projects, migration_readiness.projects)
+    activation_plan =
+      activation_plan_snapshot(
+        value(projection, :activation_plan),
+        migration_readiness,
+        projects,
+        overview
+      )
+
+    migration_readiness = attach_activation_plan_to_readiness_summary(migration_readiness, activation_plan.projects)
+
+    projects =
+      projects
+      |> attach_project_readiness(migration_readiness.projects)
+      |> attach_project_activation_plans(activation_plan.projects)
 
     %{
       version: positive_integer(value(projection, :version)) || @version,
@@ -253,6 +271,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       device: device_snapshot(value(projection, :device), projects),
       status_counts: status_counts(projects),
       migration_readiness: migration_readiness,
+      activation_plan: activation_plan,
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
       provider_queue: sanitize_value(value(projection, :provider_queue) || %{}),
       projects: projects,
@@ -447,6 +466,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       manual_attention: sanitize_list(value(project, :manual_attention)),
       detail: detail_snapshot(value(project, :detail)),
       migration_readiness: migration_readiness_project_snapshot(value(project, :migration_readiness)),
+      activation_plan: activation_plan_project_snapshot(value(project, :activation_plan)),
       summary_error: summary_error_snapshot(value(project, :summary_error)),
       backpressure_reasons: reason_snapshots(list_value(project, :backpressure_reasons))
     }
@@ -554,6 +574,49 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     }
   end
 
+  defp attach_activation_plan_summary(projection, opts) do
+    activation_plan =
+      ActivationPlan.build(
+        value(projection, :migration_readiness),
+        list_value(projection, :projects),
+        value(projection, :overview),
+        now: value(projection, :generated_at),
+        operator_acknowledgements: Keyword.get(opts, :operator_acknowledgements) || Keyword.get(opts, :acknowledgements)
+      )
+
+    Map.put(projection, :activation_plan, activation_plan)
+  end
+
+  defp activation_plan_snapshot(activation_plan, migration_readiness, projects, overview) do
+    project_plans =
+      projects
+      |> Enum.map(&value(&1, :activation_plan))
+      |> Enum.filter(&is_map/1)
+
+    cond do
+      is_map(activation_plan) and list_value(activation_plan, :projects) != [] ->
+        ActivationPlan.to_snapshot(activation_plan)
+
+      project_plans != [] ->
+        ActivationPlan.to_snapshot(%{
+          generated_at: value(migration_readiness, :generated_at),
+          hub_runtime: value(migration_readiness, :hub_runtime),
+          projects: project_plans
+        })
+
+      true ->
+        ActivationPlan.build(migration_readiness, projects, overview, now: value(migration_readiness, :generated_at))
+    end
+  end
+
+  defp activation_plan_project_snapshot(nil), do: nil
+
+  defp activation_plan_project_snapshot(plan) when is_map(plan) do
+    ActivationPlan.project_plan_snapshot(plan)
+  end
+
+  defp activation_plan_project_snapshot(_plan), do: nil
+
   defp hub_runtime_readiness_snapshot(runtime, scheduler) do
     runtime = hub_runtime_overview_snapshot(runtime || %{})
     scheduler = scheduler_overview_snapshot(scheduler || %{})
@@ -575,6 +638,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
 
   defp migration_readiness_project_snapshot(readiness) when is_map(readiness) do
     decision = normalize_readiness_decision(value(readiness, :decision))
+    activation_plan = activation_plan_project_snapshot(value(readiness, :activation_plan))
 
     %{
       version: positive_integer(value(readiness, :version)) || @readiness_version,
@@ -598,7 +662,13 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         |> Enum.reject(&blank?(&1.code))
         |> Enum.uniq_by(& &1.code)
         |> Enum.sort_by(& &1.code),
-      evidence: readiness_evidence_snapshot(value(readiness, :evidence))
+      evidence: readiness_evidence_snapshot(value(readiness, :evidence)),
+      activation_plan: activation_plan,
+      operator_acknowledgement:
+        case activation_plan do
+          nil -> nil
+          plan -> plan.operator_acknowledgement
+        end
     }
   end
 
@@ -613,6 +683,53 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     Enum.map(projects, fn project ->
       Map.put(project, :migration_readiness, Map.get(decisions_by_project, project.project_id))
     end)
+  end
+
+  defp attach_activation_plan_to_readiness_summary(readiness, activation_plans) do
+    plans_by_project =
+      activation_plans
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    projects =
+      readiness
+      |> list_value(:projects)
+      |> Enum.map(fn project ->
+        activation_plan = Map.get(plans_by_project, project.project_id)
+        attach_activation_plan_to_readiness(project, activation_plan)
+      end)
+
+    Map.put(readiness, :projects, projects)
+  end
+
+  defp attach_project_activation_plans(projects, activation_plans) do
+    plans_by_project =
+      activation_plans
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    Enum.map(projects, fn project ->
+      activation_plan = Map.get(plans_by_project, project.project_id)
+
+      project
+      |> Map.put(:activation_plan, activation_plan)
+      |> put_in(
+        [:migration_readiness],
+        attach_activation_plan_to_readiness(value(project, :migration_readiness), activation_plan)
+      )
+    end)
+  end
+
+  defp attach_activation_plan_to_readiness(nil, _activation_plan), do: nil
+
+  defp attach_activation_plan_to_readiness(readiness, nil) do
+    Map.put(readiness, :activation_plan, nil)
+  end
+
+  defp attach_activation_plan_to_readiness(readiness, activation_plan) do
+    readiness
+    |> Map.put(:activation_plan, activation_plan)
+    |> Map.put(:operator_acknowledgement, activation_plan.operator_acknowledgement)
   end
 
   defp project_readiness_decision(project, overview, generated_at) do
@@ -1912,7 +2029,10 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       enabled: true,
       mode: optional_string(runtime, :mode) || "hub",
       read_only: truthy?(value(runtime, :read_only)),
-      provider_executor: sanitize_value(value(runtime, :provider_executor) || %{})
+      provider_executor: sanitize_value(value(runtime, :provider_executor) || %{}),
+      writeback_executor: sanitize_value(value(runtime, :writeback_executor) || %{}),
+      worker_starter: sanitize_value(value(runtime, :worker_starter) || %{}),
+      activation_probe: sanitize_value(value(runtime, :activation_probe) || %{})
     }
   end
 

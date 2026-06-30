@@ -352,6 +352,56 @@ defmodule SymphonyElixir.CLITest do
     refute_received {:legacy_hub_activation_probe_set, _opts}
   end
 
+  test "accepts explicit hub activation acknowledgement file only for hub mode" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    ack_path = "tmp/hub/activation_ack.json"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+    expanded_ack_path = Path.expand(ack_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path in [expanded_hub_config_path, expanded_ack_path] end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end,
+        load_hub_activation_ack: fn path ->
+          send(parent, {:hub_activation_ack_loaded, path})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-activation-ack", ack_path], deps)
+    assert_received {:hub_activation_ack_loaded, ^expanded_ack_path}
+
+    legacy_deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        load_hub_activation_ack: fn path ->
+          send(parent, {:legacy_hub_activation_ack_loaded, path})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], legacy_deps)
+    refute_received {:legacy_hub_activation_ack_loaded, _path}
+  end
+
+  test "rejects missing hub activation acknowledgement file" do
+    hub_config_path = "tmp/hub/HUB.yaml"
+    ack_path = "tmp/hub/missing-ack.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end
+      })
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-activation-ack", ack_path], deps)
+    assert message =~ "Hub activation acknowledgement file not found"
+  end
+
   test "rejects unsupported hub activation probe mode" do
     deps = deps(%{})
 
@@ -463,6 +513,7 @@ defmodule SymphonyElixir.CLITest do
         set_hub_config_path: fn _path -> :ok end,
         set_hub_provider_executor: fn _executor -> :ok end,
         set_hub_activation_probe: fn _opts -> :ok end,
+        load_hub_activation_ack: fn _path -> :ok end,
         set_hub_scheduler_enabled: fn _enabled? -> :ok end,
         validate_hub_config: fn _path -> :ok end,
         set_hub_worker_starter: fn _starter -> :ok end,

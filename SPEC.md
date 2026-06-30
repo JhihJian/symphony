@@ -1490,6 +1490,30 @@ Runtime entrypoint:
   malformed snapshot MUST degrade only that project to `unknown_manual_attention` or `summary_error`.
   It MUST NOT crash the Hub runtime, Dashboard/API response, or readiness decisions for other
   projects.
+- `hub_device_observability` SHOULD also expose a read-only `activation_plan` summary derived from
+  the same safe readiness evidence. The device-level summary SHOULD include Hub runtime/scheduler,
+  provider executor, writeback executor, worker starter, and activation probe modes; plan status
+  counts (`plan_ready`, `ack_required`, `ack_stale`, `ack_conflict`, `blocked`,
+  `unknown_manual_attention`, `already_managed`); acknowledgement status counts (`missing`,
+  `accepted`, `stale`, `conflict`, `malformed`, `unsupported`, `manual_attention`); global blocking
+  risks; advisory risks; and the safety gates that still govern Hub-owned actions.
+- Each project activation plan SHOULD include `project_id`, safe provider/tracker scope,
+  migration/readiness decision, stable `plan_id`, proposed next state, required acknowledgement action
+  codes, blocking/advisory reasons, safe evidence, and an `operator_acknowledgement` summary. The
+  `plan_id` SHOULD bind to project scope, migration/readiness state, executor/probe modes,
+  action/reason codes, ownership/provider/writeback/lifecycle evidence facts, and other non-volatile
+  safe evidence. Observation timestamps alone SHOULD NOT rotate the plan id.
+- Operator acknowledgement input MUST be explicit, serialized, testable, and safe. It SHOULD include
+  `project_id`, `plan_id` or equivalent readiness fingerprint, confirmed action/risk codes, source,
+  created timestamp, and optional note summary. Implementations MUST distinguish `missing`,
+  `accepted`, `stale`, `conflict`, `malformed`, `unsupported`, and `manual_attention`. When evidence,
+  executor/probe mode, migration state, provider scope, ownership facts, or action/reason codes
+  change, old acknowledgement MUST NOT be silently treated as accepted.
+- An accepted acknowledgement MUST NOT by itself change ownership or allow automatic migration. It is
+  only an audit boundary for operator confirmation. Hub-owned poll, dispatch, worker start, and real
+  writeback MUST continue to be governed by activation preflight, the legacy ownership guardrail,
+  provider governance, runtime ledger, executor mode, workspace leases, lifecycle reconciliation, and
+  any existing safety checks.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

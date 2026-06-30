@@ -67,6 +67,10 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.lifecycle.unresolved_count >= 1
     assert projection.overview.manual_attention.project_count == 1
     assert projection.migration_readiness.status == "blocked"
+    assert projection.activation_plan.status == "blocked"
+    assert projection.activation_plan.counts.project_count == 4
+    assert projection.activation_plan.counts.ack_missing_count == 4
+    assert projection.activation_plan.counts.unknown_manual_attention_count >= 1
     assert projection.migration_readiness.hub_runtime.scheduler_enabled == true
     assert projection.migration_readiness.counts.project_count == 4
     assert projection.migration_readiness.counts.migration_states.legacy_only == 1
@@ -95,6 +99,8 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["alpha"].detail.worker_start.counts["selected_count"] == 1
     assert projects["alpha"].detail.lifecycle.counts.running == 1
     assert projects["alpha"].migration_readiness.decision == "unknown_manual_attention"
+    assert projects["alpha"].activation_plan.status == "unknown_manual_attention"
+    assert projects["alpha"].activation_plan.operator_acknowledgement.status == "missing"
     assert "active_attempt_exists" in readiness_reason_codes(projects["alpha"])
     assert "probe_missing" in readiness_reason_codes(projects["alpha"])
     assert "wait_or_reconcile_lifecycle" in readiness_action_codes(projects["alpha"])
@@ -122,6 +128,7 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["legacy"].status == "legacy_only"
     assert projects["legacy"].migration_state == "legacy_only"
     assert projects["legacy"].migration_readiness.decision == "legacy_only"
+    assert projects["legacy"].activation_plan.proposed_next_state == "keep_legacy_only"
     assert "prepare_hub_yaml" in readiness_action_codes(projects["legacy"])
 
     aggregate_reasons = Enum.map(projection.backpressure_reasons, & &1.reason)
@@ -191,17 +198,160 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     projects = Map.new(projection.projects, &{&1.project_id, &1})
 
     assert projects["dry"].migration_readiness.decision == "ready_for_hub_management"
+    assert projects["dry"].activation_plan.status == "ack_required"
+    assert projects["dry"].activation_plan.operator_acknowledgement.status == "missing"
+    assert projects["dry"].activation_plan.proposed_next_state == "operator_may_mark_hub_managed_after_checks"
+    assert projects["dry"].activation_plan.plan_id == projects["dry"].migration_readiness.activation_plan.plan_id
+    assert "mark_hub_managed_after_checks" in activation_ack_codes(projects["dry"])
     assert "hub_management_requires_operator_mark_hub_managed" in advisory_reason_codes(projects["dry"])
     assert "mark_hub_managed_after_checks" in readiness_action_codes(projects["dry"])
     assert projects["managed"].migration_readiness.decision == "already_hub_managed"
+    assert projects["managed"].activation_plan.status == "already_managed"
+    assert projects["managed"].activation_plan.operator_acknowledgement.status == "missing"
     assert projection.migration_readiness.counts.ready_for_hub_management_count == 1
     assert projection.migration_readiness.counts.decisions.already_hub_managed == 1
+    assert projection.activation_plan.counts.plan_statuses.ack_required == 1
+    assert projection.activation_plan.counts.plan_statuses.already_managed == 1
+    assert projection.activation_plan.counts.acknowledgement_statuses.missing == 2
     assert Enum.any?(projection.migration_readiness.global_blocking_risks, &(&1.code == "scheduler_disabled"))
     assert Enum.any?(projection.migration_readiness.global_advisory_risks, &(&1.code == "provider_executor_skeleton"))
 
-    safe_text = inspect(projection.migration_readiness)
+    safe_text = inspect({projection.migration_readiness, projection.activation_plan})
     refute safe_text =~ "/workspaces/dry"
     refute safe_text =~ "GITHUB_TOKEN"
+  end
+
+  test "evaluates operator acknowledgement accepted stale conflict malformed unsupported and manual attention statuses" do
+    base_sources = ready_ack_sources()
+    base = DeviceObservability.build(base_sources, now: ~U[2026-06-28 09:00:00Z])
+    plan_id = base.projects |> Enum.find(&(&1.project_id == "dry")) |> get_in([:activation_plan, :plan_id])
+
+    accepted =
+      DeviceObservability.build(base_sources,
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [
+          %{
+            project_id: "dry",
+            plan_id: plan_id,
+            source: "operator-file",
+            created_at: "2026-06-28T09:01:00Z",
+            acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"],
+            note: "确认已人工检查 legacy service 和 executor mode"
+          }
+        ]
+      )
+
+    dry = accepted.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status == "plan_ready"
+    assert dry.activation_plan.operator_acknowledgement.status == "accepted"
+    assert dry.activation_plan.operator_acknowledgement.plan_id_matches == true
+    refute inspect(dry.activation_plan.operator_acknowledgement) =~ "legacy service"
+    assert accepted.activation_plan.counts.acknowledgement_statuses.accepted == 1
+
+    stale =
+      DeviceObservability.build(base_sources,
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [
+          %{
+            project_id: "dry",
+            plan_id: "old-plan",
+            source: "operator-file",
+            created_at: "2026-06-28T09:01:00Z",
+            acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"]
+          }
+        ]
+      )
+
+    dry = stale.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status == "ack_stale"
+    assert dry.activation_plan.operator_acknowledgement.status == "stale"
+    assert dry.activation_plan.operator_acknowledgement.stale_reasons == ["plan_id_mismatch"]
+
+    conflict =
+      DeviceObservability.build(base_sources,
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [
+          %{
+            project_id: "dry",
+            plan_id: plan_id,
+            source: "operator-file",
+            created_at: "2026-06-28T09:01:00Z",
+            provider_scope_key: "github:other/repo",
+            acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"]
+          }
+        ]
+      )
+
+    dry = conflict.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status == "ack_conflict"
+    assert dry.activation_plan.operator_acknowledgement.status == "conflict"
+    assert dry.activation_plan.operator_acknowledgement.conflict_reasons == ["provider_scope_mismatch"]
+
+    malformed =
+      DeviceObservability.build(base_sources,
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [%{project_id: "dry", plan_id: plan_id}]
+      )
+
+    dry = malformed.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status in ["ack_conflict", "unknown_manual_attention"]
+    assert dry.activation_plan.operator_acknowledgement.status == "malformed"
+    assert "source_missing" in dry.activation_plan.operator_acknowledgement.malformed_reasons
+
+    unsupported =
+      DeviceObservability.build(base_sources,
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [
+          %{
+            version: 99,
+            project_id: "dry",
+            plan_id: plan_id,
+            status: "unsupported",
+            source: "operator-file",
+            created_at: "2026-06-28T09:01:00Z",
+            acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"]
+          }
+        ]
+      )
+
+    dry = unsupported.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status in ["ack_conflict", "unknown_manual_attention"]
+    assert dry.activation_plan.operator_acknowledgement.status == "unsupported"
+
+    blocked =
+      DeviceObservability.build(
+        Map.put(base_sources, :runtime_ledger, %{
+          projects: [
+            %{
+              project_id: "dry",
+              counts: %{manual_attention: 1},
+              active_attempts: [],
+              workspace_leases: [],
+              pending_start_intents: [],
+              retry_backoff: [],
+              writebacks: %{counts: %{manual_attention: 1}},
+              lifecycle: %{counts: %{manual_attention: 1}},
+              conflicts: [],
+              manual_attention: [%{code: "manual_attention_required"}]
+            }
+          ]
+        }),
+        now: ~U[2026-06-28 09:00:00Z],
+        operator_acknowledgements: [
+          %{
+            project_id: "dry",
+            plan_id: plan_id,
+            source: "operator-file",
+            created_at: "2026-06-28T09:01:00Z",
+            acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"]
+          }
+        ]
+      )
+
+    dry = blocked.projects |> Enum.find(&(&1.project_id == "dry"))
+    assert dry.activation_plan.status == "unknown_manual_attention"
+    assert dry.activation_plan.operator_acknowledgement.status in ["manual_attention", "stale"]
+    assert "plan_id_mismatch" in dry.activation_plan.operator_acknowledgement.stale_reasons
   end
 
   test "accepts string-key snapshots and redacts sensitive fields without dynamic atom keys" do
@@ -257,6 +407,17 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
             "backpressure_reasons" => [
               %{"reason" => "writeback_unknown", "source" => "runtime_ledger", "project_id" => "alpha"}
             ],
+            "activation_plan" => %{
+              "project_id" => "alpha",
+              "plan_id" => "safe-plan",
+              "status" => "ack_required",
+              "operator_acknowledgement" => %{
+                "status" => "missing",
+                "project_id" => "alpha",
+                "note" => "Authorization: Bearer supersecret"
+              },
+              "evidence" => %{"raw_systemd_output" => "raw systemd output should not leak"}
+            },
             "raw_config" => %{"secret_env" => "TOKEN"}
           }
         ],
@@ -276,6 +437,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert is_binary(writeback["target"]["comment_body_sha256"])
     assert writeback["target"]["comment_body_bytes"] == 29
     refute Map.has_key?(writeback["target"], "comment_body")
+    assert project.activation_plan.plan_id == "safe-plan"
+    assert project.activation_plan.operator_acknowledgement.status == "missing"
+    refute Map.has_key?(project.activation_plan.evidence, "raw_systemd_output")
 
     safe_text = inspect(safe_projection)
     refute safe_text =~ "$GITHUB_TOKEN"
@@ -287,6 +451,7 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     refute safe_text =~ "raw_config"
     refute safe_text =~ "api_key"
     refute safe_text =~ "cookie"
+    refute safe_text =~ "raw systemd output"
   end
 
   test "isolates a single project summary error and keeps other projects readable" do
@@ -399,6 +564,12 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     |> Enum.sort()
   end
 
+  defp activation_ack_codes(project) do
+    project.activation_plan.required_acknowledgements
+    |> Enum.map(& &1.code)
+    |> Enum.sort()
+  end
+
   defp registry do
     %{
       projects: [
@@ -408,6 +579,47 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
       ],
       warnings: [],
       errors: []
+    }
+  end
+
+  defp ready_ack_sources do
+    %{
+      hub_runtime: %{
+        read_only: false,
+        provider_executor: %{mode: "real_writeback", provider_io: true},
+        writeback_executor: %{mode: "real_writeback", provider_io: true},
+        worker_starter: %{mode: "real_worker_starter", worker_start: true},
+        activation_probe: %{mode: "host_service", source: "host_service_probe", host_service_probe: true}
+      },
+      registry: %{
+        projects: [
+          registry_project("dry", "github:o/r") |> Map.put(:migration_state, "hub_ready")
+        ],
+        warnings: [],
+        errors: []
+      },
+      poll_coordination: %{
+        projects: [
+          %{project_id: "dry", allow_poll: true, eligibility: %{reason: "ready"}, provider_scope_key: "github:o/r"}
+        ]
+      },
+      activation_preflight: %{
+        projects: [
+          %{
+            project_id: "dry",
+            status: "not_hub_managed",
+            safe_to_manage: false,
+            reason: "migration_state_not_hub_managed",
+            checked_at: "2026-06-28T09:00:00Z",
+            probe_source: "host_service_probe",
+            blocked_operations: [],
+            detected_legacy_ownership: [],
+            unknown_probe_results: []
+          }
+        ]
+      },
+      scheduler: %{enabled: true, status: "scheduled"},
+      runtime_ledger: %{projects: []}
     }
   end
 

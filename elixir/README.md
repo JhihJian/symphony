@@ -484,6 +484,21 @@ codes such as `legacy_service_active`, `provider_scope_owner_conflict`, `probe_u
 `resolve_writeback_manual_attention`, and `confirm_hub_executor_modes`. Evidence references only
 safe summary fields, checked times, counts, fingerprints, and request/result identifiers; it does
 not re-read raw provider/config/env material.
+`hub_device_observability.activation_plan` builds on that readiness report and adds the operator
+acknowledgement baseline. It exposes device counts for `plan_ready`, `ack_required`, `ack_stale`,
+`ack_conflict`, `blocked`, `unknown_manual_attention`, and `already_managed`, plus ack status counts
+for `missing`, `accepted`, `stale`, `conflict`, `malformed`, `unsupported`, and `manual_attention`.
+Each project gets a stable `plan_id`, safe provider scope, readiness decision, proposed next state,
+required acknowledgement action codes, blocking/advisory reasons, safe evidence, and an
+`operator_acknowledgement` summary. The `plan_id` is derived from scope, migration/readiness state,
+executor/probe modes, action/reason codes, and non-volatile evidence facts; observation timestamps do
+not by themselves rotate it. An acknowledgement must explicitly reference `project_id` and
+`plan_id`; stale or conflicting ack input is displayed as such instead of being accepted silently.
+Malformed/unsupported ack input is isolated to that project summary. Even with `accepted`, the
+summary keeps `hub_owned_actions_allowed: false` and lists the existing safety gates because poll,
+dispatch, worker start, and real writeback remain governed by activation preflight, legacy ownership
+guardrails, provider governance, runtime ledger, executor mode, workspace leases, and lifecycle
+reconciliation.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -512,8 +527,9 @@ Use readiness for migration preparation only; it does not execute a migration.
 
 3. Inspect `/api/v1/state`, especially `hub_activation_preflight`,
    `hub_device_observability.overview`, and
-   `hub_device_observability.migration_readiness`. The Dashboard shows the same readiness status,
-   project decisions, leading reasons, and action codes when Hub summary fields exist.
+   `hub_device_observability.migration_readiness` /
+   `hub_device_observability.activation_plan`. The Dashboard shows the same readiness, plan, ack
+   status, leading reasons, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -522,6 +538,10 @@ Use readiness for migration preparation only; it does not execute a migration.
    `symphony@<project>.service`, resolving unresolved writeback/manual-attention items, clearing
    active attempts or workspace leases, enabling the Hub scheduler, and selecting real
    provider/writeback executor or worker starter modes.
+6. Optionally pass `--hub-activation-ack /path/to/ack.yaml` to load a serialized operator
+   acknowledgement. The file should contain acknowledgement entries with `project_id`, `plan_id`,
+   `source`, `created_at`, and confirmed action/risk codes. This only changes the safe ack summary;
+   it does not execute migration work.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does
