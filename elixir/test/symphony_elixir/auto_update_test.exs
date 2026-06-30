@@ -22,14 +22,45 @@ defmodule SymphonyElixir.AutoUpdateTest do
 
     test "resolves mise from the user-local fallback when PATH is minimal" do
       original_path = System.get_env("PATH")
+      original_home = System.get_env("HOME")
+      home = Path.join(System.tmp_dir!(), "symphony-auto-update-home-#{System.unique_integer([:positive])}")
+      mise = Path.join([home, ".local", "bin", "mise"])
+      File.mkdir_p!(Path.dirname(mise))
+      File.write!(mise, "#!/bin/sh\n")
+      File.chmod!(mise, 0o755)
+
       System.put_env("PATH", "/usr/bin:/bin")
+      System.put_env("HOME", home)
 
       try do
-        assert {:ok, mise} = AutoUpdate.resolve_mise_executable()
-        assert String.ends_with?(mise, "/.local/bin/mise") or Path.basename(mise) == "mise"
-        assert File.exists?(mise)
+        assert {:ok, resolved_mise} = AutoUpdate.resolve_mise_executable()
+        assert resolved_mise == mise
       after
         if original_path, do: System.put_env("PATH", original_path), else: System.delete_env("PATH")
+        if original_home, do: System.put_env("HOME", original_home), else: System.delete_env("HOME")
+        File.rm_rf!(home)
+      end
+    end
+
+    test "resolves mise from the official installer fallback when PATH is minimal" do
+      original_path = System.get_env("PATH")
+      original_home = System.get_env("HOME")
+      home = Path.join(System.tmp_dir!(), "symphony-auto-update-home-#{System.unique_integer([:positive])}")
+      mise = Path.join([home, ".local", "share", "mise", "bin", "mise"])
+      File.mkdir_p!(Path.dirname(mise))
+      File.write!(mise, "#!/bin/sh\n")
+      File.chmod!(mise, 0o755)
+
+      System.put_env("PATH", "/usr/bin:/bin")
+      System.put_env("HOME", home)
+
+      try do
+        assert {:ok, resolved_mise} = AutoUpdate.resolve_mise_executable()
+        assert resolved_mise == mise
+      after
+        if original_path, do: System.put_env("PATH", original_path), else: System.delete_env("PATH")
+        if original_home, do: System.put_env("HOME", original_home), else: System.delete_env("HOME")
+        File.rm_rf!(home)
       end
     end
 
