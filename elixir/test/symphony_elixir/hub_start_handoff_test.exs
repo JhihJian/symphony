@@ -1,7 +1,14 @@
 defmodule SymphonyElixir.HubStartHandoffTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, IssueRef, RealWorkerStarter, RuntimeLedger, WorkerStartHandoff}
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    DispatchBoundary,
+    IssueRef,
+    RealWorkerStarter,
+    RuntimeLedger,
+    WorkerStartHandoff
+  }
 
   @now ~U[2026-06-29 09:00:00Z]
 
@@ -128,6 +135,38 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     assert [%{attempt_id: attempt_id, due_at: "2026-06-29T09:05:00Z", error_summary: "worker unavailable"}] = project.retry_backoff
     assert attempt_id == context.attempt_id
     assert project.workspace_leases == []
+  end
+
+  test "activation preflight skips real worker start handoff without calling starter" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    preflight =
+      ActivationPreflight.build(registry(),
+        now: @now,
+        probe: %{
+          projects: %{
+            "alpha" => %{legacy_service: %{service: "symphony@alpha.service", active: true}}
+          }
+        }
+      )
+
+    fail_if_called = fn _request, _opts ->
+      flunk("starter must not be called when activation preflight blocks worker_start")
+    end
+
+    assert {same_ledger, handoff} =
+             WorkerStartHandoff.run(registry(), ledger,
+               now: @now,
+               starter: fail_if_called,
+               activation_preflight: preflight
+             )
+
+    assert same_ledger == ledger
+    assert handoff.counts.selected_count == 1
+    assert handoff.counts.skipped_count == 1
+    assert handoff.counts.unresolved_start_intent_count == 1
+    assert handoff.reason_counts == %{"activation_preflight_blocked" => 1}
+    assert [%{status: "skipped", reason: "activation_preflight_blocked"}] = handoff.results
   end
 
   test "real worker starter opt-in launches through injectable runner and returns safe ack" do
@@ -322,7 +361,11 @@ defmodule SymphonyElixir.HubStartHandoffTest do
              "worker exited before start acknowledgement: normal_exit",
              "worker exited before start acknowledgement: worker_runtime_error"
            ]},
-          {{:shutdown, :stopping}, ["worker exited before start acknowledgement: shutdown"]},
+          {{:shutdown, :stopping},
+           [
+             "worker exited before start acknowledgement: shutdown",
+             "worker exited before start acknowledgement: worker_runtime_error"
+           ]},
           {:boom, ["worker exited before start acknowledgement: worker_runtime_error"]}
         ] do
       RealWorkerStarter.set_runner(fn _issue, _request, _runtime, _recipient, _opts ->
@@ -500,6 +543,7 @@ defmodule SymphonyElixir.HubStartHandoffTest do
         %{
           project_id: "alpha",
           name: "Alpha",
+          migration_state: "hub_managed",
           dispatch_enabled: true,
           paused: false,
           status: :ready,

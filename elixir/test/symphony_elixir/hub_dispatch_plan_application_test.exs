@@ -1,7 +1,13 @@
 defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{CandidateIntake, DispatchPlanApplication, DispatchPlanning, RuntimeLedger}
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    CandidateIntake,
+    DispatchPlanApplication,
+    DispatchPlanning,
+    RuntimeLedger
+  }
 
   @now ~U[2026-06-29 08:00:00Z]
 
@@ -75,6 +81,34 @@ defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
     assert statuses["124"] == "skipped"
   end
 
+  test "activation preflight blocks planned intent application without mutating the ledger" do
+    registry = registry([project("alpha", migration_state: "hub_managed")])
+    intake = CandidateIntake.build(registry, [source("alpha", [%{id: "123", identifier: "ALPHA-123"}])], now: @now)
+    plan = DispatchPlanning.build(registry, intake, now: @now)
+
+    preflight =
+      ActivationPreflight.build(registry,
+        now: @now,
+        probe: %{
+          projects: %{
+            "alpha" => %{workspace_owners: [%{project_id: "alpha", workspace_root: "/workspaces/alpha", owner: "legacy-worker"}]}
+          }
+        }
+      )
+
+    {ledger, application} =
+      DispatchPlanApplication.apply_plan(registry, plan, RuntimeLedger.new(),
+        now: @now,
+        activation_preflight: preflight
+      )
+
+    assert application.counts.applied_count == 0
+    assert application.counts.blocked_count == 1
+    assert application.reason_counts == %{"activation_preflight_blocked" => 1}
+    assert [%{outcomes: [%{status: "blocked", reason: "activation_preflight_blocked"}]}] = application.projects
+    assert RuntimeLedger.replay(ledger).projects == []
+  end
+
   test "sanitizes application summary and pending start intent metadata" do
     registry = registry([project("alpha")])
 
@@ -129,6 +163,7 @@ defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
     %{
       project_id: project_id,
       name: String.capitalize(project_id),
+      migration_state: Keyword.get(opts, :migration_state, "hub_ready"),
       dispatch_enabled: true,
       paused: false,
       status: :ready,

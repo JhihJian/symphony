@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   stores raw provider response bodies.
   """
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, RuntimeLedger, SafeSummary}
 
   @version 1
   @candidate_list_keys [:candidates, :candidate_issues, :issues]
@@ -20,6 +20,12 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   def build(registry, poll_sources, opts \\ []) when is_map(registry) and is_list(poll_sources) and is_list(opts) do
     now = normalize_datetime(Keyword.get(opts, :now)) || DateTime.utc_now()
     ledger = opts |> Keyword.get(:runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
+
+    activation_preflight =
+      opts
+      |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
+      |> ActivationPreflight.to_snapshot()
+
     projects_by_id = registry_projects_by_id(registry)
     capacities = capacity_snapshot(registry, ledger, opts)
 
@@ -29,7 +35,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
     {projects, all_candidates, all_invalid} =
       source_rows
-      |> Enum.map(&project_intake(&1, projects_by_id, ledger, capacities, now))
+      |> Enum.map(&project_intake(&1, projects_by_id, ledger, capacities, activation_preflight, now))
       |> collapse_project_intakes()
 
     %{
@@ -110,7 +116,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
     }
   end
 
-  defp project_intake(source, projects_by_id, ledger, capacities, now) do
+  defp project_intake(source, projects_by_id, ledger, capacities, activation_preflight, now) do
     project = Map.get(projects_by_id, source.project_id, %{})
     raw_candidates = candidate_entries(source.result_summary)
 
@@ -120,7 +126,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       |> Enum.reduce({[], []}, fn {raw_candidate, index}, {candidates, invalids} ->
         case normalize_candidate(raw_candidate, index, source, project) do
           {:ok, candidate} ->
-            evaluated = evaluate_candidate(candidate, project, source, ledger, capacities, now)
+            evaluated = evaluate_candidate(candidate, project, source, ledger, capacities, activation_preflight, now)
             {[evaluated | candidates], invalids}
 
           {:invalid, invalid} ->
@@ -355,7 +361,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
   defp issue_identity_from_key(_issue_key, _project_id, _provider_scope_key), do: nil
 
-  defp evaluate_candidate(candidate, project, source, ledger, capacities, now) do
+  defp evaluate_candidate(candidate, project, source, ledger, capacities, activation_preflight, now) do
     cond do
       project_config_error?(project) ->
         skip_candidate(candidate, "config_error", optional_string(project, :load_error) || "Project configuration is invalid")
@@ -369,6 +375,14 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       provider_backpressure_reason(source, now) ->
         reason = provider_backpressure_reason(source, now)
         skip_candidate(candidate, reason, "Provider poll result is under backoff or unavailable")
+
+      activation_block = ActivationPreflight.block_reason(activation_preflight, candidate.project_id, :dispatch) ->
+        skip_candidate(
+          candidate,
+          "activation_preflight_blocked",
+          optional_string(activation_block, :message) || "Activation preflight blocked dispatch",
+          %{preflight: activation_preflight_snapshot(activation_block)}
+        )
 
       ledger_manual_attention?(ledger, candidate.project_id, candidate.issue_key) ->
         skip_candidate(candidate, "manual_attention", "Runtime ledger requires manual attention for this issue")
@@ -718,6 +732,17 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       blocked_by: preflight |> list_value(:blocked_by) |> Enum.map(&safe_status/1) |> Enum.reject(&is_nil/1)
     }
   end
+
+  defp activation_preflight_snapshot(preflight) when is_map(preflight) do
+    %{
+      status: safe_status(value(preflight, :status)),
+      can_start: false,
+      reason: safe_status(value(preflight, :reason)) || "activation_preflight_blocked",
+      blocked_by: preflight |> list_value(:blocked_operations) |> Enum.map(&safe_status/1) |> Enum.reject(&is_nil/1)
+    }
+  end
+
+  defp activation_preflight_snapshot(_preflight), do: activation_preflight_snapshot(%{})
 
   defp counts(candidates, invalid_candidates) do
     eligible_count = Enum.count(candidates, &(get_in(&1, [:dispatch_evaluation, :eligible]) == true))

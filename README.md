@@ -139,6 +139,18 @@ config/auth/provider failure is recorded for that project/scope only. Hub snapsh
 `/api/v1/state` include safe writeback executor mode, supported/rejected operations, counts, project
 pressure, and recent error categories without tokens, raw provider payloads, or full comment/PR
 bodies.
+Hub activation preflight adds the #74 legacy ownership guardrail before those Hub-owned paths run.
+For projects explicitly marked `hub_managed`, Hub evaluates a safe project snapshot plus injected
+host/service probe evidence for active/enabled legacy services, legacy-owned provider scopes,
+workspace/runtime/log/state ownership, Dashboard/API port ownership, instance registry ownership,
+and unknown probe results. A blocked or unknown preflight prevents that project from candidate
+scan, dispatch application, real worker start, and real writeback provider I/O by default, while
+other projects whose preflight is safe continue to run. The summary is exposed as
+`hub_activation_preflight` and inside device observability with blocked operations, reason/source,
+last check time, and conflict/manual-attention counts. This guardrail is not an automatic migration
+tool and does not stop, disable, or replace existing `symphony@project.service` instances; operators
+must resolve or explicitly account for ownership conflicts before marking a project safe for Hub
+management.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,

@@ -56,6 +56,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     registry = source_map(sources, [:registry, :project_registry, :hub_project_registry])
     poll_coordination = source_map(sources, [:poll_coordination, :hub_poll_coordination])
     runtime = source_map(sources, [:runtime_ledger, :dispatch_boundary, :hub_dispatch_boundary, :runtime])
+    activation_preflight = source_map(sources, [:activation_preflight, :hub_activation_preflight])
     provider_queue = provider_queue_summary(sources, poll_coordination)
     legacy_projects = list_value(sources, :legacy_projects)
     managed_project_ids = managed_project_ids(sources, opts)
@@ -65,6 +66,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         registry |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         poll_coordination |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         runtime |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
+        activation_preflight |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         Enum.map(legacy_projects, &required_string(&1, :project_id))
       ]
       |> List.flatten()
@@ -79,6 +81,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
           registry,
           poll_coordination,
           runtime,
+          activation_preflight,
           provider_queue,
           legacy_projects,
           managed_project_ids
@@ -153,6 +156,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
          registry,
          poll_coordination,
          runtime,
+         activation_preflight,
          provider_queue,
          legacy_projects,
          managed_project_ids
@@ -160,6 +164,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     registry_project = find_project(registry, project_id)
     poll_project = find_project(poll_coordination, project_id)
     runtime_project = find_project(runtime, project_id)
+    preflight_project = find_project(activation_preflight, project_id)
     legacy_project = Enum.find(legacy_projects, &(required_string(&1, :project_id) == project_id))
 
     migration_state =
@@ -192,6 +197,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       poll: poll_summary(poll_project),
       provider_queue: project_queue,
       runtime: runtime_summary,
+      activation_preflight: activation_preflight_summary(preflight_project),
       writebacks: writeback_summary,
       conflicts: sanitize_value(list_value(runtime_project, :conflicts)),
       manual_attention: sanitize_value(list_value(runtime_project, :manual_attention)),
@@ -204,6 +210,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         registry_project,
         poll_project,
         runtime_summary,
+        preflight_project,
         writeback_summary,
         project_queue
       )
@@ -237,6 +244,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       poll: poll_snapshot(value(project, :poll)),
       provider_queue: provider_queue_project_snapshot(value(project, :provider_queue)),
       runtime: runtime_snapshot(value(project, :runtime)),
+      activation_preflight: activation_preflight_project_snapshot(value(project, :activation_preflight)),
       writebacks: writeback_snapshot(value(project, :writebacks)),
       conflicts: sanitize_list(value(project, :conflicts)),
       manual_attention: sanitize_list(value(project, :manual_attention)),
@@ -298,6 +306,52 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   end
 
   defp runtime_snapshot(_runtime), do: runtime_snapshot(%{})
+
+  defp activation_preflight_summary(nil), do: nil
+
+  defp activation_preflight_summary(preflight) do
+    activation_preflight_snapshot(preflight)
+  end
+
+  defp activation_preflight_project_snapshot(nil), do: nil
+  defp activation_preflight_project_snapshot(preflight), do: activation_preflight_snapshot(preflight)
+
+  defp activation_preflight_snapshot(preflight) when is_map(preflight) do
+    %{
+      status: normalize_activation_preflight_status(value(preflight, :status)),
+      safe_to_manage: truthy?(value(preflight, :safe_to_manage)),
+      reason: optional_string(preflight, :reason),
+      blocked_operations: string_list(value(preflight, :blocked_operations)),
+      checked_at: iso8601(value(preflight, :checked_at)),
+      probe_source: optional_string(preflight, :probe_source),
+      conflict_count: non_negative_integer(value(preflight, :conflict_count)) || 0,
+      manual_attention_count: non_negative_integer(value(preflight, :manual_attention_count)) || 0,
+      detected_legacy_ownership: sanitize_list(value(preflight, :detected_legacy_ownership)),
+      unknown_probe_results: sanitize_list(value(preflight, :unknown_probe_results))
+    }
+  end
+
+  defp activation_preflight_snapshot(_preflight) do
+    %{
+      status: "unknown_manual_attention",
+      safe_to_manage: false,
+      reason: nil,
+      blocked_operations: [],
+      checked_at: nil,
+      probe_source: nil,
+      conflict_count: 0,
+      manual_attention_count: 0,
+      detected_legacy_ownership: [],
+      unknown_probe_results: []
+    }
+  end
+
+  defp normalize_activation_preflight_status(status) do
+    case safe_status(status) do
+      "" -> "unknown_manual_attention"
+      value -> value
+    end
+  end
 
   defp writeback_snapshot(writebacks) when is_map(writebacks) do
     %{
@@ -754,6 +808,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       counts.blocked > 0 or MapSet.member?(reason_names, "blocked") ->
         "blocked"
 
+      MapSet.member?(reason_names, "activation_preflight_blocked") ->
+        "blocked"
+
       MapSet.member?(reason_names, "project_backoff") or
         MapSet.member?(reason_names, "provider_rate_limit") or
           MapSet.member?(reason_names, "provider_backoff") ->
@@ -787,6 +844,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
          registry_project,
          poll_project,
          runtime_summary,
+         preflight_project,
          writebacks,
          provider_queue
        ) do
@@ -795,6 +853,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     writeback_counts = writeback_count_snapshot(value(writebacks, :counts))
     lifecycle = lifecycle_snapshot(value(runtime_summary, :lifecycle))
     lifecycle_counts = lifecycle_count_snapshot(value(lifecycle, :counts))
+    preflight = activation_preflight_summary(preflight_project)
+    preflight_status = value(preflight, :status)
+    preflight_reason = value(preflight, :reason)
 
     []
     |> add_project_reason(
@@ -843,6 +904,20 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     )
     |> add_project_reason(writeback_counts.unknown > 0, "writeback_unknown", "runtime_ledger", project_id, nil)
     |> add_project_reason(writeback_counts.manual_attention > 0, "manual_attention", "runtime_ledger", project_id, nil)
+    |> add_project_reason(
+      preflight_status == "blocked_conflict",
+      "activation_preflight_blocked",
+      "activation_preflight",
+      project_id,
+      preflight_reason
+    )
+    |> add_project_reason(
+      preflight_status == "unknown_manual_attention",
+      "manual_attention",
+      "activation_preflight",
+      project_id,
+      preflight_reason
+    )
     |> add_project_reason(lifecycle_counts.lost > 0, "worker_lifecycle_lost", "runtime_ledger", project_id, nil)
     |> add_project_reason(lifecycle_counts.unknown > 0, "worker_lifecycle_unknown", "runtime_ledger", project_id, nil)
     |> add_project_reason(lifecycle_counts.manual_attention > 0, "manual_attention", "runtime_ledger", project_id, nil)

@@ -11,6 +11,13 @@
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
 它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
 `symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
+Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
+Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
+和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
+workspace/runtime/log/state 路径、Dashboard/API 端口或 instance registry owner。发现冲突或探测未知时，
+Hub 默认只阻断该项目的 Hub poll、dispatch、worker_start 和 writeback，并在 `/api/v1/state` /
+device observability 中给出脱敏 reason/source；其他无冲突项目继续运行。这个 guardrail 不会自动
+`stop`、`disable`、迁移或删除 `symphony@<project>.service`，需要人工处理 legacy owner 或做明确的风险确认。
 如果需要试运行 Hub runtime poll tick 骨架，可以手动执行
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口会加载注册表、生成 poll plan、
 通过 Hub provider request 边界执行一轮可控的 candidate-scan tick、记录 poll attempt/result fact，

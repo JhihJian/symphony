@@ -666,6 +666,10 @@ Scheduling behavior:
 - Scope-level backpressure from provider governance MUST apply only to matching provider scopes.
 - The poll coordinator SHOULD expose the planned poll order separately from blocked or not-yet-due
   entries.
+- If a Hub activation preflight summary says the project is not safe to manage, the poll
+  coordinator MUST NOT enqueue a real `candidate_scan` provider request for that project. The
+  blocked reason SHOULD identify the preflight source and blocked operation without exposing
+  provider credentials or private path details.
 
 Recoverable facts:
 
@@ -716,6 +720,9 @@ Project entries SHOULD include:
 - runtime ledger replay fields such as active attempts, pending start intents, active workspace
   leases, retry/backoff, blocked candidates, conflicts, and manual-attention diagnostics
 - writeback pending/succeeded/failed/unknown/manual-attention summary
+- activation preflight status, blocked operations, checked time, probe source, detected legacy
+  ownership summary, and conflict/manual-attention counts when a Hub runtime is evaluating
+  ownership before real Hub actions
 - backpressure reasons for Dashboard/API consumers, including provider rate limit, queue pressure,
   project paused/backoff, workspace occupied, active attempt exists, writeback unknown, and manual
   attention
@@ -732,6 +739,55 @@ Safety:
 - Presence of this projection MUST NOT imply that Hub has taken over all provider poll loops or
   writeback paths. Legacy single-project `symphony@project.service` instances remain compatible
   unless a later migration explicitly opts into Hub ownership.
+
+#### 4.1.15 Hub Activation Preflight / Legacy Ownership Guardrail (OPTIONAL)
+
+Hub-compatible implementations that execute real Hub-owned poll, dispatch, worker start, or
+provider writeback SHOULD define an activation preflight boundary. The boundary evaluates whether a
+registered project can be safely managed by the Hub path before any real provider I/O, worker
+handoff, or dispatch ledger mutation occurs.
+
+Preflight inputs SHOULD be safe project/registry snapshot fields and injectable host/service probe
+summaries, including:
+
+- `project_id` and optional display name
+- workflow/tracker paths, workspace root, runtime/log/state paths, and Dashboard/API port as safe
+  summaries or fingerprints
+- provider kind and provider scope key
+- migration state such as `legacy_only`, `hub_ready`, or `hub_managed`
+- legacy service active/enabled/unknown state, instance registry observations, provider scope
+  ownership, workspace/path/port ownership, and probe failure/unknown evidence
+
+For a project explicitly marked `hub_managed`, the preflight MUST classify active or enabled
+legacy ownership, matching legacy provider scope ownership, matching workspace/runtime/log/state
+path ownership, matching Dashboard/API port or instance registry ownership, and unknown probe
+results as unsafe unless an implementation provides an explicit documented override. The default
+result for unsafe or unknown ownership MUST block that project's Hub `poll`, `dispatch`,
+`worker_start`, and `writeback` operations. The block is per project: unrelated projects with safe
+preflight results MUST continue to be eligible.
+
+Runtime enforcement:
+
+- Real candidate scan MUST NOT be executed for a preflight-blocked project.
+- Candidate intake, dispatch planning/application, and worker start handoff MUST preserve a
+  skipped or blocked reason instead of advancing the project toward a new worker.
+- Real writeback executors MUST return a governed no-provider-I/O result for a blocked project.
+- Legacy non-Hub runtime behavior and `symphony@project.service` defaults MUST remain unchanged.
+  Activation preflight is a migration guardrail, not an automatic stop, disable, or replacement
+  mechanism for legacy services.
+
+Observability:
+
+- Hub snapshots and APIs SHOULD expose a serializable, sanitized activation preflight summary with
+  statuses such as `safe_to_manage`, `blocked_conflict`, `unknown_manual_attention`, or
+  `not_hub_managed`.
+- Summaries SHOULD include blocked operation types, last checked time, probe source, reason/source
+  codes, detected legacy ownership summaries, and per-project conflict/manual-attention counts.
+- Summaries MUST NOT include provider tokens, API keys, authorization/cookie values, secret env,
+  raw provider config, full prompts/transcripts, full comment/PR/provider bodies, raw provider
+  responses, sensitive hook/app-server output, or unnecessary full private path details.
+- Implementations MUST NOT dynamically create atoms from untrusted string-key preflight snapshots
+  or probe payloads. Unknown fields SHOULD remain strings or be discarded by an explicit allow-list.
 
 ### 4.2 Stable Identifiers and Normalization Rules
 
