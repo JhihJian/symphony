@@ -262,6 +262,10 @@ defmodule SymphonyElixir.CLITest do
           send(parent, {:hub_provider_executor_set, executor})
           :ok
         end,
+        set_hub_activation_probe: fn opts ->
+          send(parent, {:hub_activation_probe_set, opts})
+          :ok
+        end,
         validate_hub_config: fn path ->
           send(parent, {:hub_config_validated, path})
           :ok
@@ -279,6 +283,7 @@ defmodule SymphonyElixir.CLITest do
     assert_received {:hub_scheduler_set, false}
     assert_received :started
     refute_received {:hub_provider_executor_set, _executor}
+    refute_received {:hub_activation_probe_set, _opts}
     refute_received {:workflow_set, _path}
     refute_received {:tracker_config_set, _path}
   end
@@ -313,6 +318,48 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], legacy_deps)
     refute_received {:legacy_scheduler_set, _enabled?}
+  end
+
+  test "accepts explicit hub host-service activation probe opt-in only for hub mode" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end,
+        set_hub_activation_probe: fn opts ->
+          send(parent, {:hub_activation_probe_set, opts})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-activation-probe", "host-service"], deps)
+    assert_received {:hub_activation_probe_set, []}
+
+    legacy_deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        set_hub_activation_probe: fn opts ->
+          send(parent, {:legacy_hub_activation_probe_set, opts})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], legacy_deps)
+    refute_received {:legacy_hub_activation_probe_set, _opts}
+  end
+
+  test "rejects unsupported hub activation probe mode" do
+    deps = deps(%{})
+
+    assert {:error, message} =
+             CLI.evaluate([@ack_flag, "--hub-config", "HUB.yaml", "--hub-activation-probe", "auto-migrate"], deps)
+
+    assert message =~ "Unsupported --hub-activation-probe"
+    assert message =~ "host-service"
   end
 
   test "accepts explicit real hub provider candidate scan executor opt-in" do
@@ -415,6 +462,7 @@ defmodule SymphonyElixir.CLITest do
         set_tracker_config_file_path: fn _path -> :ok end,
         set_hub_config_path: fn _path -> :ok end,
         set_hub_provider_executor: fn _executor -> :ok end,
+        set_hub_activation_probe: fn _opts -> :ok end,
         set_hub_scheduler_enabled: fn _enabled? -> :ok end,
         validate_hub_config: fn _path -> :ok end,
         set_hub_worker_starter: fn _starter -> :ok end,

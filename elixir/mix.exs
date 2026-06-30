@@ -31,6 +31,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.DispatchPlanApplication,
           SymphonyElixir.Hub.DispatchPlanning,
           SymphonyElixir.Hub.DeviceObservability,
+          SymphonyElixir.Hub.HostServiceProbe,
           SymphonyElixir.Hub.IssueRef,
           SymphonyElixir.Hub.PollCoordinator,
           SymphonyElixir.Hub.ProjectRegistry,

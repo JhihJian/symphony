@@ -758,6 +758,26 @@ summaries, including:
 - legacy service active/enabled/unknown state, instance registry observations, provider scope
   ownership, workspace/path/port ownership, and probe failure/unknown evidence
 
+Implementations MAY provide an explicit read-only local host/service probe, for example
+`--hub-activation-probe host-service`, that generates the injectable summary from local migration
+evidence. Such a probe SHOULD inspect only safe summaries from the user-level
+`symphony@<project>.service` status, legacy project config under
+`~/.config/symphony/projects/<project>/`, `env`, `WORKFLOW.md`, `TRACKER.yaml`,
+runtime/log/state path conventions, and local Dashboard/API listening ports. It MUST NOT call
+service lifecycle operations such as stop, disable, restart, delete, or migrate.
+
+Probe output MUST be safe for snapshots and APIs. It MUST NOT expose raw env files, token or secret
+values, Authorization/Cookie values, raw systemd output, raw provider config/response, full prompts,
+full transcripts, exception stacktraces, or full provider/comment/PR bodies. Paths SHOULD be reduced
+to fingerprints, basenames, or equivalent non-secret summaries before observability exposure.
+
+Probe failure isolation:
+
+- systemd unavailable, command failure, unreadable project config, parse failure, or unavailable port
+  inspection MUST produce `unknown_manual_attention` or equivalent for the affected project.
+- Unknown probe results MUST NOT be treated as safe.
+- One project's probe failure MUST NOT crash a Hub tick or change another project's preflight result.
+
 For a project explicitly marked `hub_managed`, the preflight MUST classify active or enabled
 legacy ownership, matching legacy provider scope ownership, matching workspace/runtime/log/state
 path ownership, matching Dashboard/API port or instance registry ownership, and unknown probe
@@ -1254,6 +1274,10 @@ Runtime entrypoint:
 - A Hub runtime MAY provide an explicit opt-in real candidate-scan provider executor, for example
   `--hub-provider-executor real-candidate-scan`. The default without that opt-in MUST remain the
   skeleton executor, and legacy single-project runtime behavior MUST remain unchanged.
+- A Hub runtime MAY provide an explicit opt-in host/service activation probe flag, for example
+  `--hub-activation-probe host-service`. Without that opt-in or an injected probe, the legacy
+  single-project runtime and existing `symphony@project.service` deployments MUST NOT start local
+  host/service probing or change behavior.
 - A real candidate-scan executor MUST handle only `candidate_scan` or the implementation's
   equivalent read-only operation. Non-candidate operations such as writeback, status update, comment
   upsert, PR creation, dynamic tools, or provider writes MUST return unsupported, permanent failure,
