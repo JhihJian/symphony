@@ -1440,11 +1440,29 @@ Runtime entrypoint:
   `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`
   when a Hub snapshot is present. Legacy snapshots without Hub fields SHOULD keep the existing API
   shape.
+- `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
+  summaries when Hub mode is explicitly enabled. The overview SHOULD summarize scheduler/tick state
+  and wait/coalescing reason, project status counts (`legacy_only`, `hub_ready`/ready,
+  `hub_managed`/managed, blocked, backoff, manual attention, config error), provider governance
+  pressure (queue, quota/backoff/circuit, unsupported provider/operation, recent failure), active
+  attempts, pending start intents, unknown lifecycle results, workspace leases, unreleased capacity,
+  writeback conflicts/unknown non-idempotent/provider lookup/manual attention, activation preflight
+  blocks/unknowns, and per-project summary errors. Each project detail SHOULD expose safe identity,
+  provider scope, migration/ownership status, config snapshot version or fingerprint, activation
+  preflight reason, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
+  candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
+  and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
+  MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
+- If a single project summary is missing fields, carries an incompatible version, or fails to build,
+  Hub observability MUST degrade only that project to `manual_attention`/`summary_error` and MUST
+  keep the overall Dashboard/API response available for other projects.
 - Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
   env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
   `pr_body`, `raw_provider_body`, and `full_prompt`, MUST be replaced with safe metadata such as
   hashes and byte counts even when no credential-like value is present.
+- Hub runtime and Dashboard output MUST NOT expose raw env/raw config, raw provider responses, raw
+  systemd output, hook/app-server raw output, or exception stack traces.
 - Hub runtime output SHOULD expose real writeback executor observability when present: executor
   mode, supported and rejected operation kinds, pending/succeeded/failed/unknown/manual-attention
   counts, per-project writeback pressure, and recent safe error categories. These summaries MUST

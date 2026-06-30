@@ -183,8 +183,15 @@ migration boundary baseline: it folds safe project registry, provider governance
 coordination, runtime ledger, dispatch, and writeback summaries into one Dashboard/API-safe
 projection with device counts, per-project status, provider queue/backpressure, workspace/attempt
 state, writeback/manual-attention state, and migration state such as `legacy_only`, `hub_ready`, or
-`hub_managed`. This remains a projection only. It is not a new Dashboard page, does not replace
-`symphony@project.service`, and does not mean Hub has taken over every provider poll loop.
+`hub_managed`. When the explicit Hub entrypoint also starts the Dashboard/API, `/api/v1/state`
+includes `hub_device_observability.overview` for scheduler/tick, project status counts, provider
+pressure, capacity/workspace, writeback/manual-attention, activation preflight, lifecycle, and
+summary-error counts, plus per-project `detail` blocks for identity, ownership, config snapshot,
+poll eligibility, candidate intake, dispatch application, worker start, lifecycle, and writeback
+state. The live Dashboard renders the same safe device overview and project detail table only when
+that Hub summary is present. This remains an observability surface: it does not replace
+`symphony@project.service`, stop/disable/migrate legacy services, or mean Hub has taken over every
+provider poll loop.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request

@@ -11,6 +11,13 @@
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
 它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
 `symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
+当手动以 `--hub-config ... --port <port>` 启动 Hub runtime 时，`/api/v1/state` 会暴露
+`hub_device_observability.overview` 和每个 project 的 `detail`。Overview 汇总 scheduler/tick
+等待或合并原因、project 状态计数、provider queue/backoff/circuit/recent failure、capacity/workspace、
+writeback/manual attention、activation preflight 和 lifecycle 状态；项目明细解释 identity/provider
+scope、migration/ownership、config fingerprint/snapshot version、preflight 阻断或 unknown、poll
+eligibility、candidate/dispatch/start/lifecycle/writeback 当前状态。Live Dashboard 也只在存在该 Hub
+summary 时显示“Hub 设备总览”和“Hub 项目明细”；legacy non-Hub 实例不会被误标为 Hub-managed。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -60,6 +67,11 @@ operation 会进入 governed manual-attention / lookup-required / permanent-fail
 同样按 registry project 重新加载对应 `WORKFLOW.md` / `TRACKER.yaml`，不会使用其他项目的 repo、
 token、项目号或 stage/label 映射；单项目写回失败只影响对应 project/scope。本文档的 systemd
 template 不会默认启用该模式，也不会把 legacy 多实例写回迁移到 Hub。
+
+Hub 设备/项目明细仍只展示脱敏摘要：不会显示 token、Authorization/cookie、secret env、raw env/raw
+config、完整 prompt/transcript、完整 issue/comment/PR/provider body、raw provider response、raw systemd
+output、hook/app-server raw output 或异常堆栈。单个 project 的 summary 缺字段、版本不兼容或构建失败
+只会让该 project 显示 summary error/manual attention，不会让整个 Dashboard/API 失败。
 
 ## 快速安装
 

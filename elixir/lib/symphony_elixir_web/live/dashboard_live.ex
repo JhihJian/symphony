@@ -124,6 +124,143 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
         </section>
 
+        <%= if hub_device?(@payload) do %>
+          <section class="section-card hub-device-overview">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Hub 设备总览</h2>
+                <p class="section-copy">显式 Hub mode 的设备级运行、安全阻断和下一轮 tick 状态。</p>
+              </div>
+              <span class={hub_scheduler_badge_class(@payload.hub_device_observability.overview.scheduler.status)}>
+                <%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %>
+              </span>
+            </div>
+
+            <div class="hub-overview-grid">
+              <article class="hub-summary-panel">
+                <p class="metric-label">Scheduler / Tick</p>
+                <p class="metric-value"><%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %></p>
+                <p class="metric-detail">
+                  下一轮 <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_reason || "暂无" %></span>
+                  · <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_tick_at || "暂无" %></span>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">项目状态</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.device.project_count %></p>
+                <p class="metric-detail">
+                  ready <%= hub_status_count(@payload, :ready_to_poll) %> · managed <%= hub_migration_count(@payload, "hub_managed") %> · blocked <%= hub_status_count(@payload, :blocked) %> · manual <%= hub_status_count(@payload, :manual_attention) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Provider 压力</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.provider_governance.queue_pressure_count %></p>
+                <p class="metric-detail">
+                  backoff <%= @payload.hub_device_observability.overview.provider_governance.quota_backoff_count %> · circuit <%= @payload.hub_device_observability.overview.provider_governance.circuit_open_count %> · failure <%= @payload.hub_device_observability.overview.provider_governance.recent_failure_count %>
+                </p>
+                <p class="metric-detail event-meta"><%= hub_recent_provider_failures(@payload.hub_device_observability.overview.provider_governance) %></p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Capacity / Workspace</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.capacity_workspace.active_attempt_count %></p>
+                <p class="metric-detail">
+                  start intents <%= @payload.hub_device_observability.overview.capacity_workspace.pending_start_intent_count %> · leases <%= @payload.hub_device_observability.overview.capacity_workspace.workspace_lease_count %> · waiting capacity <%= @payload.hub_device_observability.overview.capacity_workspace.waiting_capacity_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Writeback / Manual</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.writeback.manual_attention_count %></p>
+                <p class="metric-detail">
+                  unknown <%= @payload.hub_device_observability.overview.writeback.counts.unknown %> · conflict <%= @payload.hub_device_observability.overview.writeback.intent_conflict_count %> · lookup <%= @payload.hub_device_observability.overview.writeback.provider_lookup_required_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Activation / Lifecycle</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.activation_preflight.blocked_project_count %></p>
+                <p class="metric-detail">
+                  unknown preflight <%= @payload.hub_device_observability.overview.activation_preflight.unknown_project_count %> · lifecycle unknown <%= @payload.hub_device_observability.overview.lifecycle.unresolved_count %>
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section class="section-card hub-project-details">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Hub 项目明细</h2>
+                <p class="section-copy">每个 Hub project 的 ownership、preflight、poll、dispatch、start、lifecycle 和 writeback 当前状态。</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table hub-project-table">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>状态</th>
+                    <th>Poll / Preflight</th>
+                    <th>Dispatch / Start</th>
+                    <th>Lifecycle / Writeback</th>
+                    <th>需要处理</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={project <- @payload.hub_device_observability.projects}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= project.project_id %></span>
+                        <span class="muted event-meta"><%= project.name || project.detail.identity.provider_scope_key || "unknown scope" %></span>
+                        <span class="muted event-meta mono"><%= project.detail.config.config_fingerprint || "no fingerprint" %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
+                        <span class="muted event-meta"><%= project.migration_state %></span>
+                        <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= hub_poll_text(project.detail.poll_eligibility) %></span>
+                        <span class="muted event-meta">
+                          preflight <%= hub_preflight_text(project.activation_preflight) %>
+                        </span>
+                        <span class="muted event-meta mono"><%= project.detail.poll_eligibility.next_due_at || project.detail.poll_eligibility.backoff_until || "暂无" %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span>intake <%= hub_count(project.detail.candidate_intake.counts, "candidate_count") %> / planned <%= hub_count(project.detail.dispatch_planning.counts, "planned_count") %></span>
+                        <span class="muted event-meta">applied <%= hub_count(project.detail.dispatch_application.counts, "applied_count") %> · start unknown <%= hub_count(project.detail.worker_start.counts, "unknown_count") %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span>running <%= project.detail.lifecycle.counts.running %> · unknown <%= project.detail.lifecycle.counts.unknown %></span>
+                        <span class="muted event-meta">writeback pending <%= project.detail.writeback.counts.pending %> · unknown <%= project.detail.writeback.counts.unknown %> · manual <%= project.detail.writeback.counts.manual_attention %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= hub_attention_text(project) %></span>
+                        <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
+                          <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <% end %>
+
         <section class="section-card">
           <div class="section-header">
             <div>
@@ -457,6 +594,90 @@ defmodule SymphonyElixirWeb.DashboardLive do
       _ -> state
     end
   end
+
+  defp hub_device?(payload) do
+    is_map(payload) and is_map(Map.get(payload, :hub_device_observability))
+  end
+
+  defp hub_scheduler_badge_class("scheduled"), do: "state-badge state-badge-warning"
+  defp hub_scheduler_badge_class("running"), do: "state-badge state-badge-active"
+  defp hub_scheduler_badge_class("coalesced"), do: "state-badge state-badge-warning"
+  defp hub_scheduler_badge_class("failed"), do: "state-badge state-badge-danger"
+  defp hub_scheduler_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_scheduler_status(%{enabled: false}), do: "scheduler disabled"
+  defp hub_scheduler_status(%{status: status}) when is_binary(status), do: "scheduler #{status}"
+  defp hub_scheduler_status(_scheduler), do: "scheduler unknown"
+
+  defp hub_status_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :project_status_counts, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_migration_count(payload, migration_state) do
+    payload
+    |> get_in([:hub_device_observability, :projects])
+    |> List.wrap()
+    |> Enum.count(&(Map.get(&1, :migration_state) == migration_state))
+  end
+
+  defp hub_project_badge_class(status) do
+    case status do
+      "running" -> "state-badge state-badge-active"
+      "ready_to_poll" -> "state-badge state-badge-active"
+      "backoff" -> "state-badge state-badge-warning"
+      "blocked" -> "state-badge state-badge-danger"
+      "manual_attention" -> "state-badge state-badge-danger"
+      "config_invalid" -> "state-badge state-badge-danger"
+      "legacy_only" -> "state-badge state-badge-muted"
+      _status -> "state-badge state-badge-muted"
+    end
+  end
+
+  defp hub_project_status("ready_to_poll"), do: "ready"
+  defp hub_project_status("manual_attention"), do: "manual attention"
+  defp hub_project_status("config_invalid"), do: "config error"
+  defp hub_project_status("legacy_only"), do: "legacy-only"
+  defp hub_project_status(status) when is_binary(status), do: status
+  defp hub_project_status(_status), do: "unknown"
+
+  defp hub_recent_provider_failures(%{recent_failure_classes: failures}) when is_list(failures) and failures != [] do
+    failures
+    |> Enum.take(3)
+    |> Enum.join(", ")
+  end
+
+  defp hub_recent_provider_failures(_governance), do: "暂无 recent provider failure"
+
+  defp hub_poll_text(%{allow_poll: true}), do: "poll ready"
+
+  defp hub_poll_text(%{reason: reason}) when is_binary(reason) and reason != "" do
+    "poll #{reason}"
+  end
+
+  defp hub_poll_text(_poll), do: "poll unknown"
+
+  defp hub_preflight_text(nil), do: "not checked"
+  defp hub_preflight_text(%{status: status}) when is_binary(status), do: status
+  defp hub_preflight_text(_preflight), do: "unknown"
+
+  defp hub_count(counts, key) when is_map(counts) do
+    Map.get(counts, key) || Map.get(counts, String.to_atom(key), 0)
+  rescue
+    ArgumentError -> Map.get(counts, key, 0)
+  end
+
+  defp hub_count(_counts, _key), do: 0
+
+  defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
+  defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"
+  defp hub_attention_text(%{status: "blocked"}), do: "blocked"
+  defp hub_attention_text(%{status: "backoff"}), do: "backoff"
+  defp hub_attention_text(_project), do: "暂无"
 
   defp stage_conflict_text(%{local_stage: local_stage, provider_stage: provider_stage}) do
     "#{local_stage || "unknown"} -> #{provider_stage || "unknown"}"

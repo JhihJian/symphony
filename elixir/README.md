@@ -461,11 +461,22 @@ last/next tick times, duration, reason, coalesced/error counts, per-project due/
 summary, provider executor mode (`skeleton`, `real_candidate_scan`, or `real_writeback`), candidate
 counts, writeback executor supported/rejected operations, pending/succeeded/failed/unknown/manual
 attention counts, per-project writeback pressure, recent safe error categories, error
-class/backoff/manual attention summaries, and skipped reasons while omitting provider tokens, API keys,
-authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
-provider response bodies, full comment/PR bodies, and raw hook/app-server output.
-The terminal dashboard only adds a compact Hub mode line with project count, config error count,
-provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
+class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
+adds the operator-oriented device summary: scheduler enabled/disabled/queued/running/coalesced
+state and next-tick reason, project status counts, provider queue/backoff/circuit/recent-failure
+pressure, active attempts, pending start intents, workspace leases, unreleased capacity, writeback
+conflict/unknown/manual-attention/provider-lookup state, activation preflight blocks/unknowns,
+lifecycle unknown/manual-attention state, and summary errors. Each project in
+`hub_device_observability.projects` also includes a `detail` block for safe identity/provider scope,
+migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
+candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation, and
+writeback completed/retryable/unknown/manual-attention/dangerous-replay state.
+The Live Dashboard renders the same Hub device overview and project detail table when this Hub
+summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
+All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
+values, raw env/raw config, raw provider responses, raw systemd output, raw hook/app-server output,
+full prompts, full transcripts, provider body text, full comment/PR bodies, and exception stack
+traces.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -617,12 +628,16 @@ and conflict/manual-attention counts.
 The projection is safe for logs, `/api/v1/state`, and future Dashboard snapshots. It accepts
 atom-key or string-key snapshots without dynamically creating atoms, preserves unknown map keys as
 strings, and redacts provider tokens, API keys, authorization/cookie fields, secret env values, raw
-provider config, full prompts, full transcripts, and full comment/PR body text. When an
-orchestrator snapshot contains `hub_device_observability`, the presenter exposes the sanitized
-projection in `/api/v1/state`; snapshots without that field keep the existing legacy API shape.
-This is not a full Dashboard page, Hub scheduler, provider executor, or service migration. The
-legacy `symphony@project.service` direct poll/writeback path remains the default until a later
-explicit Hub integration opts into routing and ownership.
+provider config, full prompts, full transcripts, full comment/PR body text, raw provider responses,
+raw systemd output, raw hook/app-server output, and exception stack traces. If one project summary
+is malformed, missing expected fields, or carries an incompatible version, only that project is
+marked with `summary_error`/manual attention; the overall API/Dashboard payload remains available.
+When an orchestrator snapshot contains `hub_device_observability`, the presenter exposes the
+sanitized projection in `/api/v1/state` and the Live Dashboard renders the Hub device and project
+detail sections. Snapshots without that field keep the existing legacy API and Dashboard shape.
+This is not a Hub scheduler, provider executor, migration command, or service migration. The legacy
+`symphony@project.service` direct poll/writeback path remains the default until an explicit Hub
+integration opts into routing and ownership.
 
 `SymphonyElixir.Hub.DispatchBoundary` adds the Hub atomic dispatch / run context baseline for #74.
 It is also a pure model API. `build_context/3` turns a candidate issue into a stable dispatch

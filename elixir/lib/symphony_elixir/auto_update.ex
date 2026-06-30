@@ -545,21 +545,25 @@ defmodule SymphonyElixir.AutoUpdate do
 
   defp mise_executable do
     case Enum.find(mise_candidates(), &executable_file?/1) do
-      nil -> {:error, %{message: "mise executable not found. Expected it in PATH or ~/.local/bin/mise."}}
-      path -> {:ok, path}
+      nil ->
+        {:error, %{message: "mise executable not found. Expected it in PATH, ~/.local/bin/mise, or ~/.local/share/mise/bin/mise."}}
+
+      path ->
+        {:ok, path}
     end
   end
 
   defp mise_candidates do
     [
       System.find_executable("mise"),
-      home_mise_path()
+      home_mise_path([".local", "bin", "mise"]),
+      home_mise_path([".local", "share", "mise", "bin", "mise"])
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
 
-  defp home_mise_path do
+  defp home_mise_path(segments) do
     home =
       System.get_env("HOME") ||
         try do
@@ -569,7 +573,7 @@ defmodule SymphonyElixir.AutoUpdate do
         end
 
     if is_binary(home) and home != "" do
-      Path.join([home, ".local", "bin", "mise"])
+      Path.join([home | segments])
     end
   end
 

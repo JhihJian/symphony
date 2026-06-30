@@ -301,6 +301,25 @@ pre,
   padding: 1.15rem;
 }
 
+.hub-overview-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 1rem;
+}
+
+.hub-summary-panel {
+  min-width: 0;
+  padding: 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-muted);
+}
+
+.hub-project-table {
+  min-width: 1100px;
+}
+
 .section-header {
   display: flex;
   justify-content: space-between;
