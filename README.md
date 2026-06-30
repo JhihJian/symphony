@@ -151,6 +151,14 @@ last check time, and conflict/manual-attention counts. This guardrail is not an 
 tool and does not stop, disable, or replace existing `symphony@project.service` instances; operators
 must resolve or explicitly account for ownership conflicts before marking a project safe for Hub
 management.
+Passing `--hub-activation-probe host-service` to the explicit Hub entrypoint enables the first
+read-only local probe baseline. It checks the user-level `symphony@<project>.service` status,
+legacy project config under `~/.config/symphony/projects/<project>/`, systemd-template env hints,
+safe `WORKFLOW.md` / `TRACKER.yaml` summaries, runtime/log/state path ownership, and local listening
+Dashboard/API ports, then feeds the sanitized result into the same preflight summary shown in
+`/api/v1/state`. Probe failures, unreadable config, unavailable systemd, or unavailable port checks
+become per-project `unknown_manual_attention`; they do not crash the Hub tick and do not auto-migrate
+or mutate legacy services.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
@@ -192,6 +200,10 @@ into the first real worker handoff adapter, which starts through the existing wo
 writes the safe ack/failure back to the ledger. Lifecycle reconciliation is likewise driven by a
 controlled result source and remains safe-summary based. This entrypoint is opt-in only; the legacy
 `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services stay unchanged.
+For a local activation dry run, use
+`./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --port <port>`
+and inspect `hub_activation_preflight` in `/api/v1/state`; this command gathers evidence only and
+does not stop, disable, restart, delete, or migrate `symphony@<project>.service`.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

@@ -18,6 +18,12 @@ workspace/runtime/log/state 路径、Dashboard/API 端口或 instance registry o
 Hub 默认只阻断该项目的 Hub poll、dispatch、worker_start 和 writeback，并在 `/api/v1/state` /
 device observability 中给出脱敏 reason/source；其他无冲突项目继续运行。这个 guardrail 不会自动
 `stop`、`disable`、迁移或删除 `symphony@<project>.service`，需要人工处理 legacy owner 或做明确的风险确认。
+显式传入 `--hub-activation-probe host-service` 时，Hub 会启用第一版真实本机只读探测：读取
+用户级 `symphony@<project>.service` active/enabled/failed/unknown 状态、legacy config 目录
+`~/.config/symphony/projects/<project>/` 下的 `env`、`WORKFLOW.md`、`TRACKER.yaml` 安全摘要、
+systemd-template runtime/log/state 约定和本机 Dashboard/API 端口监听情况。systemd 不可用、
+配置不可读、端口探测不可用或单项目探测失败会让对应项目进入 unknown/manual attention，不会让
+Hub tick 崩溃，也不会影响其他项目。
 如果需要试运行 Hub runtime poll tick 骨架，可以手动执行
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口会加载注册表、生成 poll plan、
 通过 Hub provider request 边界执行一轮可控的 candidate-scan tick、记录 poll attempt/result fact，
@@ -27,6 +33,20 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
 合并而不是并发执行。默认骨架 executor 不迁移 GitHub/GitLab/Linear legacy adapter、
 不派发 agent、不停止各项目自己的 poll loop。本文档的 systemd template 仍使用
 `--tracker-config <TRACKER.yaml> <WORKFLOW.md>`，不会自动改成 Hub mode。
+如果只是想在迁移前查看本机接管风险，可以使用：
+
+```bash
+./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --hub-config /path/to/HUB.yaml \
+  --hub-activation-probe host-service \
+  --port 21000
+
+curl -sS http://127.0.0.1:21000/api/v1/state | jq '.hub_activation_preflight'
+```
+
+这个命令只生成脱敏证据摘要，不会停止、disable、restart、delete 或迁移任何
+`symphony@<project>.service`。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
 边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在

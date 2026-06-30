@@ -2,6 +2,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Hub.{
+    HostServiceProbe,
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
@@ -1331,6 +1332,89 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "host service activation probe opt-in feeds runtime preflight and API safe summary" do
+    root = tmp_root("hub-runtime-host-service-probe")
+    hub_path = Path.join(root, "HUB.yaml")
+    legacy_config_root = Path.join(root, "legacy-config")
+
+    try do
+      alpha_workspace = Path.join([root, "workspaces", "alpha"])
+      beta_workspace = Path.join([root, "workspaces", "beta"])
+
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: alpha_workspace, server_port: 20_001)
+      write_project!(root, "beta", tracker_kind: "memory", workspace_root: beta_workspace, server_port: 20_002)
+
+      write_legacy_project!(legacy_config_root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: alpha_workspace,
+        server_port: 20_001
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :HostServiceProbeRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         activation_probe:
+           HostServiceProbe.build_fun(
+             config_root: legacy_config_root,
+             runtime_root: Path.join(root, "runtime"),
+             deps: %{
+               file_regular?: &File.regular?/1,
+               file_dir?: &File.dir?/1,
+               read_file: &File.read/1,
+               systemctl_show: fn
+                 "symphony@alpha.service" -> {:ok, "ActiveState=active\nSubState=running\nResult=success\n"}
+                 "symphony@beta.service" -> {:ok, "ActiveState=inactive\nSubState=dead\nResult=success\n"}
+               end,
+               systemctl_enabled: fn _service -> {:ok, "disabled"} end,
+               listening_ports: fn -> {:ok, [20_001]} end
+             }
+           )},
+        id: :hub_runtime_host_service_probe
+      )
+
+      assert %{poll_tick: %{selected_count: 1, result_counts: %{"success" => 1}}} =
+               Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan, %{project_id: "beta"}}, 1_000
+      refute_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 100
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      projects = Map.new(snapshot.hub_activation_preflight.projects, &{&1.project_id, &1})
+      assert projects["alpha"].status == "blocked_conflict"
+      assert projects["alpha"].probe_source == "host_service_probe"
+      assert projects["alpha"].blocked_operations == ["poll", "dispatch", "worker_start", "writeback"]
+      assert projects["beta"].status == "safe_to_manage"
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      payload_projects = Map.new(payload.hub_activation_preflight.projects, &{&1.project_id, &1})
+      assert payload_projects["alpha"].status == "blocked_conflict"
+      assert payload_projects["beta"].status == "safe_to_manage"
+
+      safe_text = inspect({snapshot.hub_activation_preflight, payload.hub_activation_preflight})
+      refute safe_text =~ alpha_workspace
+      refute safe_text =~ legacy_config_root
+      refute safe_text =~ "SECRET_TOKEN"
+      refute safe_text =~ "should-not-leak"
+      refute safe_text =~ "ActiveState="
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "candidate intake marks active attempt and workspace conflicts while applying only safe candidates" do
     root = tmp_root("hub-runtime-candidate-intake-conflicts")
     hub_path = Path.join(root, "HUB.yaml")
@@ -1957,6 +2041,18 @@ defmodule SymphonyElixir.HubRuntimeTest do
     project_dir = Path.join(root, project_id)
     File.mkdir_p!(project_dir)
     write_workflow_file!(Path.join(project_dir, "WORKFLOW.md"), overrides)
+  end
+
+  defp write_legacy_project!(config_root, project_id, overrides) do
+    project_dir = Path.join(config_root, project_id)
+    File.mkdir_p!(project_dir)
+    write_workflow_file!(Path.join(project_dir, "WORKFLOW.md"), overrides)
+
+    File.write!(Path.join(project_dir, "env"), """
+    SYMPHONY_PORT=#{Keyword.fetch!(overrides, :server_port)}
+    SYMPHONY_LOGS_ROOT=#{Path.join(config_root, project_id <> "-logs")}
+    SECRET_TOKEN=should-not-leak
+    """)
   end
 
   defp writeback_project(project_id, writebacks) do

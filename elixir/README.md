@@ -416,6 +416,16 @@ exposed as `hub_activation_preflight`, `hub_runtime.activation_preflight`, and p
 `activation_preflight` in device observability with blocked operation types, reason/source codes,
 checked time, probe source, and conflict/manual-attention counts. This is a #74 migration
 guardrail, not an automatic tool to stop, disable, replace, or delete `symphony@project.service`.
+Passing `--hub-activation-probe host-service` to the Hub entrypoint installs
+`SymphonyElixir.Hub.HostServiceProbe` as that injected probe. It reads local, read-only evidence from
+the user-level `symphony@<project>.service`, legacy config under
+`~/.config/symphony/projects/<project>/env`, `WORKFLOW.md`, `TRACKER.yaml`, systemd-template
+runtime/log/state path conventions, and local Dashboard/API listening ports. The resulting summary
+is still sanitized before it reaches `hub_activation_preflight` or `/api/v1/state`: raw env,
+secrets, raw systemd output, raw config, provider bodies, prompts, transcripts, and exception stacks
+are not exposed. Unavailable systemd, unreadable config, parse failures, unavailable port checks, or
+single-project probe failures become per-project unknown/manual-attention blockers instead of
+crashing the Hub runtime or optimistically passing.
 When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
 tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
 tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
@@ -430,7 +440,7 @@ executor and default start handoff are skeleton boundaries and do not migrate th
 GitHub/GitLab/Linear adapters. The opt-in real candidate-scan executor uses those adapters only for
 project-local reads behind Hub governance. The opt-in real writeback executor covers only the safe
 subset above; it does not migrate all dynamic tools, PR creation, ordinary append comments, legacy
-polling, or legacy service ownership.
+polling, legacy service ownership, or systemd unit lifecycle.
 The lifecycle reconciliation source is likewise injectable and
 safe-summary based. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.

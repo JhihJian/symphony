@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
+    HostServiceProbe,
     PollCoordinator,
     ProjectRegistry,
     ProviderExecutor,
@@ -140,6 +141,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   def clear_activation_probe do
     Application.delete_env(:symphony_elixir, @activation_probe_env_key)
     :ok
+  end
+
+  @spec set_host_service_activation_probe(keyword()) :: :ok
+  def set_host_service_activation_probe(opts \\ []) when is_list(opts) do
+    set_activation_probe(HostServiceProbe.build_fun(opts))
   end
 
   @spec set_worker_lifecycle_result_source(WorkerLifecycleReconciliation.result_source()) :: :ok
