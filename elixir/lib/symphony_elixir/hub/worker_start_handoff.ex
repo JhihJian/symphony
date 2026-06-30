@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   hooks, or write tracker/provider state.
   """
 
-  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, CutoverGate, DispatchBoundary, RuntimeLedger, SafeSummary}
 
   @version 1
   @terminal_start_intent_statuses ["acknowledged", "failed", "cancelled"]
@@ -51,6 +51,11 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
       |> ActivationPreflight.to_snapshot()
 
+    cutover_gate =
+      opts
+      |> Keyword.get(:cutover_gate)
+      |> CutoverGate.observability_snapshot()
+
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
     registry_projects = registry_projects_by_id(registry)
     initial_replay = RuntimeLedger.replay(initial_ledger)
@@ -58,7 +63,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
     {results, ledger, ledger_changed?} =
       Enum.reduce(requests, {[], initial_ledger, false}, fn request, {results, ledger, ledger_changed?} ->
-        {result, ledger, changed?} = process_request(request, ledger, starter, activation_preflight, now)
+        {result, ledger, changed?} = process_request(request, ledger, starter, activation_preflight, cutover_gate, now)
         {[result | results], ledger, ledger_changed? or changed?}
       end)
 
@@ -189,8 +194,17 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     end)
   end
 
-  defp process_request(request, ledger, starter, activation_preflight, now) do
+  defp process_request(request, ledger, starter, activation_preflight, cutover_gate, now) do
     cond do
+      cutover_block = cutover_gate_block(cutover_gate, request.project_id) ->
+        result = %{
+          status: "skipped",
+          reason: "cutover_gate_blocked",
+          error_summary: optional_string(cutover_block, :message) || "Cutover gate blocked worker start"
+        }
+
+        {result_summary(request, result, "skipped", false), ledger, false}
+
       activation_block = ActivationPreflight.block_reason(activation_preflight, request.project_id, :worker_start) ->
         result = %{
           status: "skipped",
@@ -240,6 +254,9 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
         end
     end
   end
+
+  defp cutover_gate_block(nil, _project_id), do: nil
+  defp cutover_gate_block(cutover_gate, project_id), do: CutoverGate.block_reason(cutover_gate, project_id, :worker_start)
 
   defp apply_ack_result(ledger, request, result, now) do
     ack =

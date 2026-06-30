@@ -14,7 +14,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   alias SymphonyElixir.Config
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
-  alias SymphonyElixir.Hub.{ProviderGovernance, ProviderScope}
+  alias SymphonyElixir.Hub.{CutoverGate, ProviderGovernance, ProviderScope, SafeSummary}
   alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker.Memory
@@ -33,7 +33,8 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   end
 
   defp execute_candidate_scan(request, opts) do
-    with :ok <- validate_provider_kind(request.provider_kind),
+    with :ok <- cutover_gate(request, opts),
+         :ok <- validate_provider_kind(request.provider_kind),
          {:ok, registry} <- registry(opts),
          {:ok, project} <- registry_project(registry, request.project_id),
          :ok <- validate_project_scope(request, project),
@@ -56,6 +57,9 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         }
       )
     else
+      {:cutover_blocked, reason} ->
+        cutover_blocked_result(request, reason)
+
       {:unsupported_provider, provider_kind} ->
         ProviderGovernance.result(request, :permanent_failure,
           error_class: :validation,
@@ -89,6 +93,38 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
     ProviderGovernance.result(request, :permanent_failure,
       error_class: :validation,
       result_summary: failure_summary(request, :unsupported_operation, operation_kind)
+    )
+  end
+
+  defp cutover_gate(request, opts) do
+    case Keyword.get(opts, :cutover_gate) do
+      gate when is_map(gate) ->
+        case CutoverGate.block_reason(gate, request.project_id, :poll) do
+          nil -> :ok
+          reason -> {:cutover_blocked, reason}
+        end
+
+      _gate ->
+        :ok
+    end
+  end
+
+  defp cutover_blocked_result(request, reason) do
+    ProviderGovernance.result(request, :permanent_failure,
+      error_class: :conflict,
+      result_summary: %{
+        boundary: "hub_real_candidate_scan_executor",
+        executor: "real_candidate_scan",
+        provider_io: false,
+        error: "cutover_gate_blocked",
+        reason: safe_reason(value(reason, :reason) || :cutover_gate_blocked),
+        status: safe_reason(value(reason, :status)),
+        blocked_operations: list_value(reason, :blocked_operations),
+        allowed_operations: list_value(reason, :allowed_operations),
+        required_operator_actions: list_value(reason, :required_operator_actions),
+        sources: list_value(reason, :sources),
+        cutover_gate: SafeSummary.sanitize_map(value(reason, :cutover_gate) || %{}, output_keys: :preserve)
+      }
     )
   end
 

@@ -84,7 +84,19 @@ defmodule SymphonyElixir.HubActivationPlanTest do
 
     stale =
       ActivationPlan.build(
-        readiness(%{projects: [readiness_project("ready", "ready_for_hub_management", evidence: %{stable_fact: "changed"})]}),
+        readiness(%{
+          projects: [
+            readiness_project("ready", "ready_for_hub_management",
+              evidence: %{
+                activation_preflight: %{
+                  status: "blocked_conflict",
+                  safe_to_manage: false,
+                  reason: "legacy_service_active"
+                }
+              }
+            )
+          ]
+        }),
         [project("ready", "github:owner/repo")],
         overview(),
         now: ~U[2026-06-28 09:00:00Z],
@@ -103,6 +115,19 @@ defmodule SymphonyElixir.HubActivationPlanTest do
     assert stale_project.status == "ack_stale"
     assert stale_project.operator_acknowledgement.status == "stale"
     assert stale_project.operator_acknowledgement.stale_reasons == ["plan_id_mismatch"]
+  end
+
+  test "ignores malformed readiness evidence when building stable plan fingerprint" do
+    summary =
+      ActivationPlan.build(
+        readiness(%{projects: [readiness_project("ready", "ready_for_hub_management", evidence: "not-a-map")]}),
+        [project("ready", "github:owner/repo")],
+        overview(),
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    assert [%{plan_id: plan_id, evidence: "not-a-map"}] = summary.projects
+    assert is_binary(plan_id)
   end
 
   test "detects acknowledgement conflicts malformed unsupported and manual attention statuses" do

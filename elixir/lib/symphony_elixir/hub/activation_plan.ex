@@ -139,7 +139,7 @@ defmodule SymphonyElixir.Hub.ActivationPlan do
             required_acknowledgements: Enum.map(required_acknowledgements, & &1.code),
             blocking_reasons: fingerprint_reasons(blocking),
             advisory_reasons: fingerprint_reasons(advisory),
-            evidence: fingerprint_evidence(sanitize_value(value(plan, :evidence) || %{}))
+            evidence: stable_plan_evidence(sanitize_value(value(plan, :evidence) || %{}))
           }),
       proposed_next_state: normalize_proposed_next_state(value(plan, :proposed_next_state), decision),
       acknowledgement_required: value(plan, :acknowledgement_required) == true,
@@ -242,7 +242,7 @@ defmodule SymphonyElixir.Hub.ActivationPlan do
         required_acknowledgements: Enum.map(required_acknowledgements, & &1.code),
         blocking_reasons: fingerprint_reasons(blocking),
         advisory_reasons: fingerprint_reasons(advisory),
-        evidence: fingerprint_evidence(evidence),
+        evidence: stable_plan_evidence(evidence),
         hub_runtime: runtime_fingerprint(hub_runtime)
       })
 
@@ -838,6 +838,67 @@ defmodule SymphonyElixir.Hub.ActivationPlan do
   defp fingerprint_evidence(value) when is_list(value), do: Enum.map(value, &fingerprint_evidence/1)
   defp fingerprint_evidence(value), do: value
 
+  defp stable_plan_evidence(evidence) when is_map(evidence) do
+    %{
+      "activation_preflight" =>
+        evidence
+        |> value(:activation_preflight)
+        |> take_fingerprint_keys([
+          "status",
+          "safe_to_manage",
+          "reason",
+          "probe_source",
+          "blocked_operations",
+          "conflict_count",
+          "manual_attention_count",
+          "detected_legacy_ownership_count",
+          "unknown_probe_result_count"
+        ]),
+      "config" =>
+        evidence
+        |> value(:config)
+        |> take_fingerprint_keys(["config_fingerprint", "snapshot_version", "load_error"]),
+      "hub_runtime" => stable_runtime_evidence(value(evidence, :hub_runtime)),
+      "registry" =>
+        evidence
+        |> value(:registry)
+        |> take_fingerprint_keys(["dispatch_enabled", "migration_state"])
+    }
+    |> fingerprint_evidence()
+  end
+
+  defp stable_plan_evidence(_evidence), do: %{}
+
+  defp stable_runtime_evidence(runtime) when is_map(runtime) do
+    %{
+      "mode" => value(runtime, :mode),
+      "read_only" => value(runtime, :read_only),
+      "scheduler_enabled" => value(runtime, :scheduler_enabled),
+      "provider_executor" => executor_fingerprint_evidence(value(runtime, :provider_executor)),
+      "writeback_executor" => executor_fingerprint_evidence(value(runtime, :writeback_executor)),
+      "worker_starter" => take_fingerprint_keys(value(runtime, :worker_starter), ["mode", "worker_start"]),
+      "activation_probe" => take_fingerprint_keys(value(runtime, :activation_probe), ["mode", "source", "host_service_probe"])
+    }
+  end
+
+  defp stable_runtime_evidence(_runtime), do: %{}
+
+  defp executor_fingerprint_evidence(executor) do
+    take_fingerprint_keys(executor, [
+      "mode",
+      "provider_io",
+      "supported_operations",
+      "supported_logical_actions",
+      "rejected_operations"
+    ])
+  end
+
+  defp take_fingerprint_keys(map, keys) when is_map(map) do
+    Map.new(keys, fn key -> {key, value(map, key)} end)
+  end
+
+  defp take_fingerprint_keys(_map, keys), do: Map.new(keys, &{&1, nil})
+
   defp fingerprint_reasons(reasons) do
     Enum.map(reasons, fn reason ->
       Map.update(reason, :evidence, %{}, &fingerprint_evidence/1)
@@ -963,6 +1024,10 @@ defmodule SymphonyElixir.Hub.ActivationPlan do
       {:ok, value} -> value
       :error -> Map.get(map, Atom.to_string(key))
     end
+  end
+
+  defp value(map, key) when is_map(map) and is_binary(key) do
+    Map.get(map, key)
   end
 
   defp value(_map, _key), do: nil

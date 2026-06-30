@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverGate,
     ProviderGovernance,
     ProviderScope,
     RuntimeLedger,
@@ -40,6 +41,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   @spec execute(ProviderGovernance.request(), keyword()) :: ProviderGovernance.result()
   def execute(request, opts \\ []) when is_map(request) and is_list(opts) do
     with :ok <- validate_operation_kind(request),
+         :ok <- cutover_gate(request, opts),
          :ok <- activation_preflight(request, opts),
          {:ok, pending_fact} <- pending_fact(request, opts),
          {:ok, decision} <- WritebackProcessor.decide(runtime_ledger(opts), pending_fact),
@@ -54,6 +56,9 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
 
       {:activation_blocked, reason} ->
         activation_blocked_result(request, reason)
+
+      {:cutover_blocked, reason} ->
+        cutover_blocked_result(request, reason)
 
       {:decision_blocked, decision} ->
         blocked_decision_result(request, decision)
@@ -134,6 +139,19 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   end
 
   defp validate_operation_kind(%{operation_kind: operation_kind}), do: {:unsupported_operation, operation_kind}
+
+  defp cutover_gate(request, opts) do
+    case Keyword.get(opts, :cutover_gate) do
+      gate when is_map(gate) ->
+        case CutoverGate.block_reason(gate, request.project_id, :writeback) do
+          nil -> :ok
+          reason -> {:cutover_blocked, reason}
+        end
+
+      _gate ->
+        :ok
+    end
+  end
 
   defp activation_preflight(request, opts) do
     case Keyword.get(opts, :activation_preflight) do
@@ -434,6 +452,25 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
         status: safe_reason(value(reason, :status)),
         blocked_operations: list_value(reason, :blocked_operations),
         sources: list_value(reason, :sources)
+      }
+    )
+  end
+
+  defp cutover_blocked_result(request, reason) do
+    ProviderGovernance.result(request, :permanent_failure,
+      error_class: :conflict,
+      result_summary: %{
+        boundary: "hub_real_writeback_executor",
+        executor: "real_writeback",
+        provider_io: false,
+        error: "cutover_gate_blocked",
+        reason: safe_reason(value(reason, :reason) || :cutover_gate_blocked),
+        status: safe_reason(value(reason, :status)),
+        blocked_operations: list_value(reason, :blocked_operations),
+        allowed_operations: list_value(reason, :allowed_operations),
+        required_operator_actions: list_value(reason, :required_operator_actions),
+        sources: list_value(reason, :sources),
+        cutover_gate: SafeSummary.sanitize_map(value(reason, :cutover_gate) || %{}, output_keys: :preserve)
       }
     )
   end

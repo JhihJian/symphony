@@ -1437,9 +1437,9 @@ Runtime entrypoint:
 - `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
   `hub_runtime`, `hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
   `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
-  `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`
-  when a Hub snapshot is present. Legacy snapshots without Hub fields SHOULD keep the existing API
-  shape.
+  `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, `hub_cutover_gate`, and
+  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
+  SHOULD keep the existing API shape.
 - `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
   summaries when Hub mode is explicitly enabled. The overview SHOULD summarize scheduler/tick state
   and wait/coalescing reason, project status counts (`legacy_only`, `hub_ready`/ready,
@@ -1447,9 +1447,10 @@ Runtime entrypoint:
   pressure (queue, quota/backoff/circuit, unsupported provider/operation, recent failure), active
   attempts, pending start intents, unknown lifecycle results, workspace leases, unreleased capacity,
   writeback conflicts/unknown non-idempotent/provider lookup/manual attention, activation preflight
-  blocks/unknowns, and per-project summary errors. Each project detail SHOULD expose safe identity,
-  provider scope, migration/ownership status, config snapshot version or fingerprint, activation
-  preflight reason, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
+  blocks/unknowns, cutover gate allowed/blocked/manual-attention counts, and per-project summary
+  errors. Each project detail SHOULD expose safe identity, provider scope, migration/ownership
+  status, config snapshot version or fingerprint, activation preflight reason, cutover gate decision,
+  poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
   candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
   and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
   MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
@@ -1514,6 +1515,36 @@ Runtime entrypoint:
   writeback MUST continue to be governed by activation preflight, the legacy ownership guardrail,
   provider governance, runtime ledger, executor mode, workspace leases, lifecycle reconciliation, and
   any existing safety checks.
+- Hub-compatible implementations SHOULD expose a serializable cutover gate decision after the
+  activation plan / acknowledgement boundary and before Hub-owned real actions. The gate MUST be
+  per project and safe for Dashboard/API display. It SHOULD include `project_id`, safe
+  provider/tracker scope, migration state, activation plan id/fingerprint, operator acknowledgement
+  status, readiness decision, activation preflight status, probe/source summary, scheduler mode,
+  provider executor mode, writeback executor mode, worker starter mode, allowed operations, blocked
+  operations, blocking/advisory reasons, required operator action codes, safe evidence, and a stable
+  decision such as `not_applicable`, `blocked`, `manual_attention`, `staged_ready`, or `allowed`.
+- Cutover gate allowed operations SHOULD be limited to explicit Hub-owned operation types such as
+  `poll`, `dispatch`, `worker_start`, and `writeback`. A project MUST NOT be allowed for a real
+  operation unless the project is explicitly `hub_managed`, the operator acknowledgement is accepted
+  and matches the current activation plan/fingerprint, migration readiness is consistent with Hub
+  management, activation preflight is safe, legacy ownership conflicts are absent, and the relevant
+  executor/starter mode supports that operation. Missing, stale, conflicting, malformed, or
+  unsupported acknowledgement input; blocked or unknown preflight/probe evidence; provider scope,
+  workspace, runtime path, port, instance owner, or legacy service conflicts; project summary build
+  failure; and executor/starter mode mismatches MUST block or require manual attention for the
+  affected project and operation.
+- When the gate allows one or more operations, implementations SHOULD produce a read-only staged
+  ownership record or equivalent audit summary bound to the current project scope, activation plan
+  fingerprint, acknowledgement, preflight/probe evidence, executor/starter modes, and allowed
+  operation set. The record MUST NOT be a persistent migration transaction and MUST NOT mutate
+  `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, provider state, legacy services, or
+  project configuration. If any bound input changes, a previous staged ownership record MUST NOT be
+  silently reused as evidence for the new input set.
+- Hub-owned side-effect paths MUST consume the cutover gate before real provider reads, dispatch
+  plan application that creates pending start intents, real worker start handoff, and real
+  writeback provider I/O. A gate block MUST prevent the corresponding side effect while preserving a
+  safe blocked/skipped result. The block MUST be isolated to the affected project and MUST NOT crash
+  the Hub tick, Dashboard/API response, safe summaries, or execution of unrelated projects.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

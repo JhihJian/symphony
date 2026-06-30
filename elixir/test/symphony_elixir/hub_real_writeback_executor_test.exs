@@ -238,6 +238,36 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
     end
   end
 
+  test "cutover gate blocks real writeback before provider I/O" do
+    root = tmp_root("hub-real-writeback-cutover-gate")
+    test_pid = self()
+
+    try do
+      project = write_memory_project!(root, "alpha") |> Map.put(:migration_state, "hub_managed")
+      routed = routed_call!("tracker_issue", "set_status", %{issue_id: "129", state: "in_progress"}, "alpha", "memory")
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          cutover_gate: cutover_gate("alpha", "blocked", blocked_operations: ["writeback"], reasons: ["operator_acknowledgement_missing"]),
+          tracker_update_issue_state: fn issue_id, state ->
+            send(test_pid, {:unexpected_provider_call, issue_id, state})
+            :ok
+          end
+        )
+
+      assert result.status == :permanent_failure
+      assert result.error_class == :conflict
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.error == "cutover_gate_blocked"
+      assert "writeback" in result.result_summary.blocked_operations
+      refute_received {:unexpected_provider_call, _issue_id, _state}
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "maps provider failures, unsupported providers, and unsafe operations to governed safe results" do
     root = tmp_root("hub-real-writeback-failures")
 
@@ -642,6 +672,25 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
         provider_scope_key: provider_scope_key,
         provider_scope: provider_scope
       }
+    }
+  end
+
+  defp cutover_gate(project_id, decision, opts) do
+    %{
+      projects: [
+        %{
+          project_id: project_id,
+          migration_state: "hub_managed",
+          decision: decision,
+          allowed_operations: Keyword.get(opts, :allowed_operations, []),
+          blocked_operations: Keyword.get(opts, :blocked_operations, ["poll", "dispatch", "worker_start", "writeback"]),
+          blocking_reasons:
+            opts
+            |> Keyword.get(:reasons, [])
+            |> Enum.map(&%{code: &1, source: "cutover_gate", level: "blocking"}),
+          required_operator_actions: [%{code: "accept_activation_plan"}]
+        }
+      ]
     }
   end
 

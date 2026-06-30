@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   the legacy `symphony@project.service` single-project path.
   """
 
-  alias SymphonyElixir.Hub.ActivationPlan
+  alias SymphonyElixir.Hub.{ActivationPlan, CutoverGate}
 
   @version 1
   @project_statuses [
@@ -151,6 +151,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       source_map(sources, [:worker_lifecycle_reconciliation, :hub_worker_lifecycle_reconciliation])
 
     writeback = source_map(sources, [:writeback, :hub_writeback])
+    cutover_gate = source_map(sources, [:cutover_gate, :hub_cutover_gate])
     provider_queue = provider_queue_summary(sources, poll_coordination)
     legacy_projects = list_value(sources, :legacy_projects)
     managed_project_ids = managed_project_ids(sources, opts)
@@ -167,6 +168,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         worker_start_handoff |> list_value(:results) |> Enum.map(&required_string(&1, :project_id)),
         worker_start_handoff |> list_value(:pending_start_intents) |> Enum.map(&required_string(&1, :project_id)),
         worker_lifecycle_reconciliation |> list_value(:results) |> Enum.map(&required_string(&1, :project_id)),
+        cutover_gate |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         Enum.map(legacy_projects, &required_string(&1, :project_id))
       ]
       |> List.flatten()
@@ -186,7 +188,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       dispatch_planning: dispatch_planning,
       dispatch_plan_application: dispatch_plan_application,
       worker_start_handoff: worker_start_handoff,
-      worker_lifecycle_reconciliation: worker_lifecycle_reconciliation
+      worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
+      cutover_gate: cutover_gate
     }
 
     projects =
@@ -217,6 +220,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       status_counts: status_counts(projects),
       migration_readiness: migration_readiness_summary(projects, overview, now),
       activation_plan: %{},
+      cutover_gate: cutover_gate,
       migration_boundary: migration_boundary_summary(sources),
       provider_queue: sanitize_value(provider_queue),
       projects: projects,
@@ -225,6 +229,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
 
     projection
     |> attach_activation_plan_summary(opts)
+    |> attach_cutover_gate_summary(opts)
     |> to_snapshot()
   end
 
@@ -264,6 +269,19 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       |> attach_project_readiness(migration_readiness.projects)
       |> attach_project_activation_plans(activation_plan.projects)
 
+    cutover_gate =
+      cutover_gate_snapshot(
+        value(projection, :cutover_gate),
+        migration_readiness,
+        activation_plan,
+        projects,
+        overview,
+        generated_at
+      )
+
+    projects = attach_project_cutover_gates(projects, cutover_gate.projects)
+    overview = Map.put(overview, :cutover_gate, cutover_gate_overview_snapshot(cutover_gate))
+
     %{
       version: positive_integer(value(projection, :version)) || @version,
       generated_at: generated_at,
@@ -272,6 +290,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       status_counts: status_counts(projects),
       migration_readiness: migration_readiness,
       activation_plan: activation_plan,
+      cutover_gate: cutover_gate,
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
       provider_queue: sanitize_value(value(projection, :provider_queue) || %{}),
       projects: projects,
@@ -467,6 +486,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       detail: detail_snapshot(value(project, :detail)),
       migration_readiness: migration_readiness_project_snapshot(value(project, :migration_readiness)),
       activation_plan: activation_plan_project_snapshot(value(project, :activation_plan)),
+      cutover_gate: cutover_gate_project_snapshot(value(project, :cutover_gate)),
       summary_error: summary_error_snapshot(value(project, :summary_error)),
       backpressure_reasons: reason_snapshots(list_value(project, :backpressure_reasons))
     }
@@ -491,6 +511,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       capacity_workspace: capacity_workspace_overview_snapshot(value(overview, :capacity_workspace)),
       writeback: writeback_overview_snapshot(value(overview, :writeback)),
       activation_preflight: activation_preflight_overview_snapshot(value(overview, :activation_preflight)),
+      cutover_gate: cutover_gate_overview_snapshot(value(overview, :cutover_gate)),
       lifecycle: lifecycle_overview_snapshot(value(overview, :lifecycle)),
       manual_attention: manual_attention_overview_snapshot(value(overview, :manual_attention)),
       summary_errors: sanitize_list(value(overview, :summary_errors))
@@ -587,6 +608,26 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     Map.put(projection, :activation_plan, activation_plan)
   end
 
+  defp attach_cutover_gate_summary(projection, _opts) do
+    cutover_gate =
+      if is_map(value(projection, :cutover_gate)) and list_value(value(projection, :cutover_gate), :projects) != [] do
+        CutoverGate.to_snapshot(value(projection, :cutover_gate))
+      else
+        CutoverGate.build(
+          %{
+            generated_at: value(projection, :generated_at),
+            overview: value(projection, :overview),
+            projects: list_value(projection, :projects),
+            migration_readiness: value(projection, :migration_readiness),
+            activation_plan: value(projection, :activation_plan)
+          },
+          now: value(projection, :generated_at)
+        )
+      end
+
+    Map.put(projection, :cutover_gate, cutover_gate)
+  end
+
   defp activation_plan_snapshot(activation_plan, migration_readiness, projects, overview) do
     project_plans =
       projects
@@ -616,6 +657,56 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   end
 
   defp activation_plan_project_snapshot(_plan), do: nil
+
+  defp cutover_gate_snapshot(cutover_gate, migration_readiness, activation_plan, projects, overview, generated_at) do
+    project_gates =
+      projects
+      |> Enum.map(&value(&1, :cutover_gate))
+      |> Enum.filter(&is_map/1)
+
+    cond do
+      is_map(cutover_gate) and list_value(cutover_gate, :projects) != [] ->
+        CutoverGate.to_snapshot(cutover_gate)
+
+      project_gates != [] ->
+        CutoverGate.to_snapshot(%{
+          generated_at: generated_at,
+          projects: project_gates
+        })
+
+      true ->
+        CutoverGate.build(
+          %{
+            generated_at: generated_at,
+            overview: overview,
+            projects: projects,
+            migration_readiness: migration_readiness,
+            activation_plan: activation_plan
+          },
+          now: generated_at
+        )
+    end
+  end
+
+  defp cutover_gate_project_snapshot(nil), do: nil
+
+  defp cutover_gate_project_snapshot(gate) when is_map(gate) do
+    summary = CutoverGate.to_snapshot(%{projects: [gate]})
+    Enum.find(summary.projects, &(required_string(&1, :project_id) == required_string(gate, :project_id)))
+  end
+
+  defp cutover_gate_project_snapshot(_gate), do: nil
+
+  defp attach_project_cutover_gates(projects, cutover_gates) do
+    gates_by_project =
+      cutover_gates
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    Enum.map(projects, fn project ->
+      Map.put(project, :cutover_gate, Map.get(gates_by_project, project.project_id))
+    end)
+  end
 
   defp hub_runtime_readiness_snapshot(runtime, scheduler) do
     runtime = hub_runtime_overview_snapshot(runtime || %{})
@@ -1641,6 +1732,28 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
 
   defp activation_preflight_overview_snapshot(_preflight), do: activation_preflight_overview_snapshot(%{})
 
+  defp cutover_gate_overview_snapshot(gate) when is_map(gate) do
+    counts = value(gate, :counts) || %{}
+
+    %{
+      status: safe_status(value(gate, :status)) |> blank_to_default("not_applicable"),
+      project_count: non_negative_integer(value(counts, :project_count)) || length(list_value(gate, :projects)),
+      allowed_count: non_negative_integer(value(counts, :allowed_count)) || 0,
+      staged_ready_count: non_negative_integer(value(counts, :staged_ready_count)) || 0,
+      blocked_count: non_negative_integer(value(counts, :blocked_count)) || 0,
+      manual_attention_count: non_negative_integer(value(counts, :manual_attention_count)) || 0,
+      not_applicable_count: non_negative_integer(value(counts, :not_applicable_count)) || 0,
+      staged_ownership_record_count:
+        non_negative_integer(value(counts, :staged_ownership_record_count)) ||
+          length(list_value(gate, :staged_ownership_records)),
+      blocked_operations: cutover_gate_blocked_operations(gate),
+      allowed_operations: cutover_gate_allowed_operations(gate),
+      decision_counts: sanitize_value(value(counts, :decisions) || %{})
+    }
+  end
+
+  defp cutover_gate_overview_snapshot(_gate), do: cutover_gate_overview_snapshot(%{})
+
   defp lifecycle_overview_snapshot(lifecycle) when is_map(lifecycle) do
     %{
       counts: lifecycle_count_snapshot(value(lifecycle, :counts)),
@@ -2178,6 +2291,22 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       blocked_operations: projects |> Enum.flat_map(&string_list(value(&1, :blocked_operations))) |> Enum.uniq() |> Enum.sort(),
       reason_counts: projects |> Enum.map(&(optional_string(&1, :reason) || safe_status(value(&1, :status)))) |> reason_count_snapshot()
     }
+  end
+
+  defp cutover_gate_blocked_operations(gate) do
+    gate
+    |> list_value(:projects)
+    |> Enum.flat_map(&string_list(value(&1, :blocked_operations)))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp cutover_gate_allowed_operations(gate) do
+    gate
+    |> list_value(:projects)
+    |> Enum.flat_map(&string_list(value(&1, :allowed_operations)))
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp lifecycle_overview(projects, _runtime) do

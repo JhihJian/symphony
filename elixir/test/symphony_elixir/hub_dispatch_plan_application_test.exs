@@ -109,6 +109,26 @@ defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
     assert RuntimeLedger.replay(ledger).projects == []
   end
 
+  test "cutover gate blocks planned intent application before ledger mutation" do
+    registry = registry([project("alpha", migration_state: "hub_managed")])
+    intake = CandidateIntake.build(registry, [source("alpha", [%{id: "123", identifier: "ALPHA-123"}])], now: @now)
+    plan = DispatchPlanning.build(registry, intake, now: @now)
+
+    cutover_gate = cutover_gate("alpha", "blocked", blocked_operations: ["dispatch"], reasons: ["operator_acknowledgement_missing"])
+
+    {ledger, application} =
+      DispatchPlanApplication.apply_plan(registry, plan, RuntimeLedger.new(),
+        now: @now,
+        cutover_gate: cutover_gate
+      )
+
+    assert application.counts.applied_count == 0
+    assert application.counts.blocked_count == 1
+    assert application.reason_counts == %{"cutover_gate_blocked" => 1}
+    assert [%{outcomes: [%{status: "blocked", reason: "cutover_gate_blocked"}]}] = application.projects
+    assert RuntimeLedger.replay(ledger).projects == []
+  end
+
   test "sanitizes application summary and pending start intent metadata" do
     registry = registry([project("alpha")])
 
@@ -201,6 +221,25 @@ defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
         result_summary: %{candidates: candidates}
       },
       attempt: %{attempt_id: "poll-attempt-#{project_id}"}
+    }
+  end
+
+  defp cutover_gate(project_id, decision, opts) do
+    %{
+      projects: [
+        %{
+          project_id: project_id,
+          migration_state: "hub_managed",
+          decision: decision,
+          allowed_operations: Keyword.get(opts, :allowed_operations, []),
+          blocked_operations: Keyword.get(opts, :blocked_operations, ["poll", "dispatch", "worker_start", "writeback"]),
+          blocking_reasons:
+            opts
+            |> Keyword.get(:reasons, [])
+            |> Enum.map(&%{code: &1, source: "cutover_gate", level: "blocking"}),
+          required_operator_actions: [%{code: "accept_activation_plan"}]
+        }
+      ]
     }
   end
 end

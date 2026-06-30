@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   `SymphonyElixir.Orchestrator` poll loop.
   """
 
-  alias SymphonyElixir.Hub.{ActivationPreflight, ProviderGovernance, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, CutoverGate, ProviderGovernance, SafeSummary}
 
   @version 1
   @default_poll_interval_ms 30_000
@@ -33,7 +33,8 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     :circuit_open,
     :scope_concurrency,
     :provider_unavailable,
-    :activation_preflight_blocked
+    :activation_preflight_blocked,
+    :cutover_gate_blocked
   ]
   @type fact :: %{
           required(:fact_type) => atom(),
@@ -104,6 +105,11 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
       |> ActivationPreflight.to_snapshot()
 
+    cutover_gate =
+      opts
+      |> Keyword.get(:cutover_gate)
+      |> CutoverGate.observability_snapshot()
+
     queue =
       opts
       |> Keyword.get(:queue, ProviderGovernance.new_queue())
@@ -115,6 +121,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       projects
       |> Enum.map(&base_entry(&1, input_facts, now))
       |> apply_activation_preflight(activation_preflight)
+      |> apply_cutover_gate(cutover_gate)
 
     {planned_entries, planned_queue, poll_order} =
       base_entries
@@ -307,6 +314,31 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
         entry
       end
     end)
+  end
+
+  defp apply_cutover_gate(entries, nil), do: entries
+
+  defp apply_cutover_gate(entries, cutover_gate) do
+    Enum.map(entries, fn entry ->
+      if entry.eligibility.eligible? == true and entry.eligibility.reason == :ready do
+        apply_cutover_gate_to_ready_entry(entry, cutover_gate)
+      else
+        entry
+      end
+    end)
+  end
+
+  defp apply_cutover_gate_to_ready_entry(entry, cutover_gate) do
+    case CutoverGate.block_reason(cutover_gate, entry.project_id, :poll) do
+      nil ->
+        entry
+
+      reason ->
+        entry
+        |> Map.put(:allow_poll, false)
+        |> Map.put(:eligibility, eligibility(false, :cutover_gate_blocked, safe_optional_string(reason, :message) || "cutover gate blocked poll"))
+        |> Map.put(:governance, %{cutover_gate: reason})
+    end
   end
 
   defp apply_activation_preflight_to_ready_entry(entry, activation_preflight) do
