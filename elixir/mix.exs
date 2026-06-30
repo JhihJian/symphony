@@ -1,0 +1,144 @@
+defmodule SymphonyElixir.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :symphony_elixir,
+      version: "0.1.0",
+      elixir: "~> 1.19",
+      compilers: [:phoenix_live_view] ++ Mix.compilers(),
+      start_permanent: Mix.env() == :prod,
+      test_coverage: [
+        summary: [
+          threshold: 100
+        ],
+        ignore_modules: [
+          SymphonyElixir.Config,
+          SymphonyElixir.Linear.Client,
+          SymphonyElixir.SpecsCheck,
+          SymphonyElixir.Orchestrator,
+          SymphonyElixir.Orchestrator.State,
+          SymphonyElixir.AutoUpdate,
+          SymphonyElixir.AgentRunner,
+          SymphonyElixir.CLI,
+          SymphonyElixir.Codex.AppServer,
+          SymphonyElixir.Codex.DynamicTool,
+          SymphonyElixir.GitHub.Client,
+          SymphonyElixir.GitHub.PullRequest,
+          SymphonyElixir.Hub.ActivationPreflight,
+          SymphonyElixir.Hub.CandidateIntake,
+          SymphonyElixir.Hub.DispatchBoundary,
+          SymphonyElixir.Hub.DispatchPlanApplication,
+          SymphonyElixir.Hub.DispatchPlanning,
+          SymphonyElixir.Hub.DeviceObservability,
+          SymphonyElixir.Hub.HostServiceProbe,
+          SymphonyElixir.Hub.IssueRef,
+          SymphonyElixir.Hub.PollCoordinator,
+          SymphonyElixir.Hub.ProjectRegistry,
+          SymphonyElixir.Hub.ProviderGovernance,
+          SymphonyElixir.Hub.ProviderScope,
+          SymphonyElixir.Hub.ProviderToolRouting,
+          SymphonyElixir.Hub.RealCandidateScanExecutor,
+          SymphonyElixir.Hub.RealWritebackExecutor,
+          SymphonyElixir.Hub.RealWorkerStarter,
+          SymphonyElixir.Hub.Runtime,
+          SymphonyElixir.Hub.RuntimeLedger,
+          SymphonyElixir.Hub.SafeSummary,
+          SymphonyElixir.Hub.WorkerLifecycleReconciliation,
+          SymphonyElixir.Hub.WorkerStartHandoff,
+          SymphonyElixir.Hub.WritebackProcessor,
+          SymphonyElixir.HttpServer,
+          SymphonyElixir.InstanceRegistry,
+          SymphonyElixir.PullRequest,
+          SymphonyElixir.PullRequest.Unsupported,
+          SymphonyElixir.StatusDashboard,
+          SymphonyElixir.TrackerConfig,
+          SymphonyElixir.LogFile,
+          SymphonyElixir.Workspace,
+          SymphonyElixir.Workflow,
+          SymphonyElixir.Workflow.Definition,
+          SymphonyElixir.WorkflowStore,
+          SymphonyElixirWeb.DashboardLive,
+          SymphonyElixirWeb.Endpoint,
+          SymphonyElixirWeb.ErrorHTML,
+          SymphonyElixirWeb.ErrorJSON,
+          SymphonyElixirWeb.AdminInstanceController,
+          SymphonyElixirWeb.AdminInstancesLive,
+          SymphonyElixirWeb.Layouts,
+          SymphonyElixirWeb.ObservabilityApiController,
+          SymphonyElixirWeb.Presenter,
+          SymphonyElixirWeb.StaticAssetController,
+          SymphonyElixirWeb.StaticAssets,
+          SymphonyElixirWeb.Router,
+          SymphonyElixirWeb.Router.Helpers
+        ]
+      ],
+      test_ignore_filters: [
+        "test/support/e2e_support.exs",
+        "test/support/snapshot_support.exs",
+        "test/support/test_support.exs"
+      ],
+      dialyzer: [
+        plt_add_apps: [:mix]
+      ],
+      escript: escript(),
+      aliases: aliases(),
+      deps: deps()
+    ]
+  end
+
+  # Run "mix help compile.app" to learn about applications.
+  def application do
+    [
+      mod: {SymphonyElixir.Application, []},
+      extra_applications: [:logger]
+    ]
+  end
+
+  # Run "mix help deps" to learn about dependencies.
+  defp deps do
+    [
+      {:bandit, "~> 1.8"},
+      {:floki, ">= 0.30.0", only: :test},
+      {:lazy_html, ">= 0.1.0", only: :test},
+      {:phoenix, "~> 1.8.0"},
+      {:phoenix_html, "~> 4.2"},
+      {:phoenix_live_view, "~> 1.1.0"},
+      {:req, "~> 0.5"},
+      {:jason, "~> 1.4"},
+      {:yaml_elixir, "~> 2.12"},
+      {:solid, "~> 1.2"},
+      {:ecto, "~> 3.13"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
+    ]
+  end
+
+  defp aliases do
+    [
+      setup: ["deps.get"],
+      build: ["escript.build"],
+      lint: ["specs.check", "credo --strict #{credo_refactor_baseline()}"]
+    ]
+  end
+
+  defp credo_refactor_baseline do
+    [
+      "Credo.Check.Refactor.CyclomaticComplexity",
+      "Credo.Check.Refactor.FunctionArity",
+      "Credo.Check.Refactor.Nesting",
+      "Credo.Check.Refactor.RedundantWithClauseResult"
+    ]
+    |> Enum.join(",")
+    |> then(&"--ignore-checks #{&1}")
+  end
+
+  defp escript do
+    [
+      app: nil,
+      main_module: SymphonyElixir.CLI,
+      name: "symphony",
+      path: "bin/symphony"
+    ]
+  end
+end
