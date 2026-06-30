@@ -9,6 +9,7 @@ defmodule SymphonyElixirWeb.Presenter do
     ActivationPreflight,
     CandidateIntake,
     CutoverGate,
+    CutoverOperationAudit,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -45,6 +46,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_scheduler(snapshot)
         |> maybe_put_hub_activation_preflight(snapshot)
         |> maybe_put_hub_cutover_gate(snapshot)
+        |> maybe_put_hub_cutover_operation_audit(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -123,6 +125,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverGate.observability_snapshot(hub_cutover_gate) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_gate, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_operation_audit(payload, snapshot) do
+    hub_cutover_operation_audit =
+      Map.get(snapshot, :hub_cutover_operation_audit) ||
+        Map.get(snapshot, "hub_cutover_operation_audit")
+
+    case CutoverOperationAudit.observability_snapshot(hub_cutover_operation_audit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_operation_audit, safe_snapshot)
     end
   end
 

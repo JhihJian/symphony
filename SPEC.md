@@ -1545,6 +1545,32 @@ Runtime entrypoint:
   writeback provider I/O. A gate block MUST prevent the corresponding side effect while preserving a
   safe blocked/skipped result. The block MUST be isolated to the affected project and MUST NOT crash
   the Hub tick, Dashboard/API response, safe summaries, or execution of unrelated projects.
+- Hub-compatible implementations SHOULD expose an explicit, serialized cutover operation request /
+  dry-run audit boundary after the activation plan and cutover gate. A request SHOULD bind
+  `project_id`, safe provider/tracker scope, requested operations, activation plan id/fingerprint,
+  cutover gate decision or staged ownership record evidence, request source, requested timestamp,
+  request id/fingerprint, a safe project snapshot, and only safe operator intent codes or note
+  digest. It MUST NOT store full prompts, full provider/comment/PR bodies, credentials, raw config,
+  raw env, or secret-bearing values.
+- The dry-run audit evaluator MUST consume current safe summaries, including migration readiness,
+  activation plan/acknowledgement, activation preflight, host/service probe evidence, cutover gate,
+  executor/starter mode, runtime state, and project snapshot. It SHOULD report each requested
+  operation as `would_allow`, `would_block`, `manual_attention`, or `unsupported`, with stable
+  reason codes, required operator action codes, safe evidence, and an explicit `dry_run_only` flag.
+  A request MUST NOT override the cutover gate; if the current gate blocks an operation, the audit
+  MUST preserve that block and gate reason.
+- Malformed requests, unknown projects, unknown operations, unsupported sources, stale or mismatched
+  activation plan/gate/staged-record evidence, and stale safe project snapshots MUST be blocked,
+  unsupported, or require manual attention instead of being optimistically accepted. Failure to
+  evaluate one project's request MUST NOT affect other project audits, Hub ticks, Dashboard/API
+  responses, or safe summaries.
+- Dry-run audit MUST NOT perform provider I/O, start workers, create runtime ledger pending start
+  intents or attempts, create writeback facts, update provider issues/PRs/comments/status, operate
+  systemd, stop/disable/restart/delete legacy services, or modify `HUB.yaml`, `WORKFLOW.md`,
+  `TRACKER.yaml`, systemd units, or project configuration. Dashboard/API summaries SHOULD expose
+  device-level counts such as `no_request`, `dry_run_ready`, `blocked`, `manual_attention`,
+  `unsupported`, and `summary_error`; projects without an explicit request MUST show a
+  non-misleading no-request state rather than pending migration or execution.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

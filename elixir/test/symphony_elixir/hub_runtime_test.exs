@@ -246,6 +246,128 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "Hub snapshot and state API expose safe cutover operation dry-run audit" do
+    root = tmp_root("hub-runtime-cutover-operation-audit")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      activation_probe = %{
+        projects: [
+          %{
+            project_id: "alpha",
+            status: "safe_to_manage",
+            safe_to_manage: true,
+            reason: "hub_managed_no_conflict",
+            probe_source: "host_service_probe",
+            checked_at: "2026-06-28T09:00:00Z",
+            detected_legacy_ownership: [],
+            unknown_probe_results: []
+          }
+        ]
+      }
+
+      assert :ok = Runtime.validate_config(hub_path)
+      {:ok, loaded_registry} = ProjectRegistry.load(hub_path)
+
+      base_snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:00:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:00:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "scheduled"}
+        )
+
+      [base_project] = base_snapshot.hub_device_observability.projects
+      plan_id = base_project.activation_plan.plan_id
+
+      ack = %{
+        project_id: "alpha",
+        plan_id: plan_id,
+        source: "operator-file",
+        created_at: "2026-06-28T09:01:00Z",
+        acknowledged_action_codes: ["confirm_hub_executor_modes"]
+      }
+
+      ready_snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:04:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:04:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "scheduled"},
+          operator_acknowledgements: [ack]
+        )
+
+      [ready_project] = ready_snapshot.hub_device_observability.projects
+      gate = ready_project.cutover_gate
+
+      request = %{
+        request_id: "cutover-dry-run-alpha",
+        project_id: "alpha",
+        provider_scope: %{kind: "memory", provider_scope_key: "memory:alpha"},
+        requested_operations: ["writeback"],
+        activation_plan_id: ready_project.activation_plan.plan_id,
+        cutover_gate_decision: gate.decision,
+        cutover_gate_fingerprint: gate.staged_ownership_record.record_id,
+        staged_ownership_record_id: gate.staged_ownership_record.record_id,
+        source: "operator-file",
+        requested_at: "2026-06-28T09:03:00Z",
+        operator_intent: %{action_codes: ["run_read_only_dry_run"], note: "full prompt / token should not leak"},
+        safe_project_snapshot: %{
+          migration_state: ready_project.migration_state,
+          status: ready_project.status,
+          provider_scope_key: ready_project.provider.provider_scope_key,
+          config_fingerprint: ready_project.detail.config.config_fingerprint
+        }
+      }
+
+      snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:04:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:04:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "scheduled"},
+          operator_acknowledgements: [ack],
+          cutover_operation_requests: [request]
+        )
+
+      assert snapshot.hub_cutover_operation_audit.status == "dry_run_ready"
+      assert snapshot.hub_runtime.cutover_operation_audit.counts.request_count == 1
+      assert snapshot.hub_device_observability.cutover_operation_audit.counts.dry_run_ready_count == 1
+      [project] = snapshot.hub_device_observability.projects
+      assert project.cutover_operation_audit.request.request_id == "cutover-dry-run-alpha"
+      assert [%{decision: "would_allow", dry_run_only: true, operation: "writeback"}] = project.cutover_operation_audit.operation_results
+
+      runtime_name = Module.concat(__MODULE__, :CutoverOperationAuditSnapshot)
+
+      start_supervised!(
+        {__MODULE__.StaticSnapshot, name: runtime_name, snapshot: snapshot},
+        id: :hub_runtime_cutover_operation_audit_snapshot
+      )
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_cutover_operation_audit.counts.request_count == 1
+      assert payload.hub_device_observability.overview.cutover_operation_audit.request_count == 1
+
+      safe_text = inspect(payload)
+      refute safe_text =~ "full prompt"
+      refute safe_text =~ "should not leak"
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "Hub snapshot and state API expose safe writeback executor pressure" do
     root = tmp_root("hub-runtime-writeback-summary")
     hub_path = Path.join(root, "HUB.yaml")

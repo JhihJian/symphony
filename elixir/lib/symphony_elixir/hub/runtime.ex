@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     ActivationPreflight,
     CandidateIntake,
     CutoverGate,
+    CutoverOperationAudit,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -37,6 +38,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @worker_start_starter_env_key :hub_worker_start_starter
   @activation_probe_env_key :hub_activation_probe
   @operator_acknowledgements_env_key :hub_operator_acknowledgements
+  @cutover_operation_requests_env_key :hub_cutover_operation_requests
   @worker_lifecycle_result_source_env_key :hub_worker_lifecycle_result_source
   @poll_fact_limit 200
   @scheduler_min_delay_ms 10
@@ -60,6 +62,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
           required(:activation_probe) => map() | function() | nil,
           required(:operator_acknowledgements) => term(),
+          required(:cutover_operation_requests) => term(),
           required(:cutover_gate) => map(),
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
@@ -159,10 +162,36 @@ defmodule SymphonyElixir.Hub.Runtime do
     :ok
   end
 
+  @spec set_cutover_operation_requests(term()) :: :ok
+  def set_cutover_operation_requests(requests) do
+    Application.put_env(:symphony_elixir, @cutover_operation_requests_env_key, requests)
+    :ok
+  end
+
+  @spec clear_cutover_operation_requests() :: :ok
+  def clear_cutover_operation_requests do
+    Application.delete_env(:symphony_elixir, @cutover_operation_requests_env_key)
+    :ok
+  end
+
+  @spec load_cutover_operation_requests(Path.t()) :: :ok | {:error, String.t()}
+  def load_cutover_operation_requests(path) when is_binary(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, requests} <- decode_hub_json_or_yaml(content, path) do
+      set_cutover_operation_requests(requests)
+    else
+      {:error, reason} when is_atom(reason) ->
+        {:error, "Hub cutover operation request file not found: #{path} (#{reason})"}
+
+      {:error, reason} ->
+        {:error, "Failed to load Hub cutover operation request file #{path}: #{inspect(reason)}"}
+    end
+  end
+
   @spec load_operator_acknowledgements(Path.t()) :: :ok | {:error, String.t()}
   def load_operator_acknowledgements(path) when is_binary(path) do
     with {:ok, content} <- File.read(path),
-         {:ok, acknowledgements} <- decode_operator_acknowledgements(content, path) do
+         {:ok, acknowledgements} <- decode_hub_json_or_yaml(content, path) do
       set_operator_acknowledgements(acknowledgements)
     else
       {:error, reason} when is_atom(reason) ->
@@ -217,6 +246,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   @spec operator_acknowledgements() :: term()
   def operator_acknowledgements do
     Application.get_env(:symphony_elixir, @operator_acknowledgements_env_key)
+  end
+
+  @spec cutover_operation_requests() :: term()
+  def cutover_operation_requests do
+    Application.get_env(:symphony_elixir, @cutover_operation_requests_env_key)
   end
 
   @spec config_path() :: Path.t() | nil
@@ -305,6 +339,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
       activation_probe = Keyword.get(opts, :activation_probe, activation_probe())
       operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements, operator_acknowledgements())
+      cutover_operation_requests = Keyword.get(opts, :cutover_operation_requests, cutover_operation_requests())
       worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
 
@@ -327,6 +362,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           cutover_gate: cutover_gate,
           activation_probe: activation_probe,
           operator_acknowledgements: operator_acknowledgements,
+          cutover_operation_requests: cutover_operation_requests,
           provider_queue: provider_queue,
           provider_executor: provider_executor,
           worker_start_starter: worker_start_starter,
@@ -350,6 +386,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         worker_start_starter: worker_start_starter,
         activation_probe: activation_probe,
         operator_acknowledgements: operator_acknowledgements,
+        cutover_operation_requests: cutover_operation_requests,
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
@@ -484,6 +521,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_dispatch_plan_application",
              "hub_worker_start_handoff",
              "hub_worker_lifecycle_reconciliation",
+             "hub_cutover_operation_audit",
              "hub_device_observability"
            ],
            poll_tick: tick_summary
@@ -517,6 +555,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     worker_start_starter = Keyword.get(opts, :worker_start_starter)
     activation_probe = Keyword.get(opts, :activation_probe)
     operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements)
+    cutover_operation_requests = Keyword.get(opts, :cutover_operation_requests)
 
     activation_preflight =
       Keyword.get(opts, :activation_preflight) ||
@@ -568,17 +607,19 @@ defmodule SymphonyElixir.Hub.Runtime do
     scheduler = normalize_scheduler(Keyword.get(opts, :scheduler), poll_plan, runtime_ledger, worker_start_handoff, worker_lifecycle_reconciliation, now)
     writeback = writeback_summary(runtime_ledger, provider_queue, provider_executor)
 
+    runtime_observability =
+      hub_runtime_observability(
+        read_only: Keyword.get(opts, :read_only, false),
+        provider_executor: provider_executor,
+        activation_probe: activation_probe,
+        activation_preflight: activation_preflight,
+        worker_start_starter: worker_start_starter
+      )
+
     device_observability =
       DeviceObservability.build(
         %{
-          hub_runtime:
-            hub_runtime_observability(
-              read_only: Keyword.get(opts, :read_only, false),
-              provider_executor: provider_executor,
-              activation_probe: activation_probe,
-              activation_preflight: activation_preflight,
-              worker_start_starter: worker_start_starter
-            ),
+          hub_runtime: runtime_observability,
           registry: registry,
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
@@ -601,6 +642,26 @@ defmodule SymphonyElixir.Hub.Runtime do
     counts = counts(registry, device_observability)
     registry_summary = registry_summary(registry)
     cutover_gate = CutoverGate.to_snapshot(cutover_gate || device_observability.cutover_gate)
+
+    cutover_operation_audit =
+      CutoverOperationAudit.build(
+        %{
+          generated_at: now,
+          hub_runtime: runtime_observability,
+          projects: device_observability.projects,
+          migration_readiness: device_observability.migration_readiness,
+          activation_plan: device_observability.activation_plan,
+          activation_preflight: activation_preflight,
+          cutover_gate: cutover_gate
+        },
+        now: now,
+        requests: cutover_operation_requests
+      )
+
+    device_observability =
+      device_observability
+      |> Map.put(:cutover_operation_audit, cutover_operation_audit)
+      |> DeviceObservability.to_snapshot()
 
     %{
       running: [],
@@ -627,6 +688,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         activation_probe: activation_probe_summary(activation_probe, activation_preflight),
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
+        cutover_operation_audit: cutover_operation_audit,
         writeback: writeback,
         scheduler: scheduler,
         poll_tick: tick,
@@ -642,6 +704,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_scheduler: scheduler,
       hub_activation_preflight: activation_preflight,
       hub_cutover_gate: cutover_gate,
+      hub_cutover_operation_audit: cutover_operation_audit,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -675,10 +738,10 @@ defmodule SymphonyElixir.Hub.Runtime do
     end
   end
 
-  defp decode_operator_acknowledgements(content, path) when is_binary(content) do
+  defp decode_hub_json_or_yaml(content, path) when is_binary(content) do
     cond do
       String.trim(content) == "" ->
-        {:ok, %{"acknowledgements" => []}}
+        {:ok, %{}}
 
       Path.extname(path) == ".json" ->
         Jason.decode(content)
@@ -861,6 +924,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_gate: state.cutover_gate,
         activation_probe: state.activation_probe,
         operator_acknowledgements: state.operator_acknowledgements,
+        cutover_operation_requests: state.cutover_operation_requests,
         provider_queue: provider_queue,
         provider_executor: state.provider_executor,
         worker_start_starter: state.worker_start_starter,
@@ -942,6 +1006,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         "hub_dispatch_plan_application",
         "hub_worker_start_handoff",
         "hub_worker_lifecycle_reconciliation",
+        "hub_cutover_operation_audit",
         "hub_device_observability"
       ]
     }
@@ -1088,6 +1153,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_gate: state.cutover_gate,
         activation_probe: state.activation_probe,
         operator_acknowledgements: state.operator_acknowledgements,
+        cutover_operation_requests: state.cutover_operation_requests,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
         worker_start_starter: state.worker_start_starter,
@@ -1365,6 +1431,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       "hub_dispatch_plan_application",
       "hub_worker_start_handoff",
       "hub_worker_lifecycle_reconciliation",
+      "hub_cutover_operation_audit",
       "hub_device_observability"
     ]
   end
