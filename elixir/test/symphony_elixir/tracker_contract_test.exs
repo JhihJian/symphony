@@ -157,6 +157,77 @@ defmodule SymphonyElixir.TrackerContractTest do
     assert {:error, {:unmapped_provider_state, "External"}} = Memory.read_issue_stage(unmapped_issue)
   end
 
+  test "memory tracker can isolate configured issues by project settings" do
+    root = Path.join(System.tmp_dir!(), "symphony-memory-projects-#{System.unique_integer([:positive])}")
+    alpha_issue = issue("alpha-issue", "MEM-A", "Ready")
+    beta_issue = issue("beta-issue", "MEM-B", "Ready")
+    legacy_issue = issue("legacy-issue", "MEM-L", "Ready")
+
+    try do
+      alpha_settings = write_memory_project_settings!(root, "alpha")
+      beta_settings = write_memory_project_settings!(root, "beta")
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [legacy_issue])
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [alpha_issue, %{id: "ignored"}],
+        "beta" => [beta_issue],
+        "broken" => {:error, :memory_project_failed},
+        "non_list" => :not_a_list
+      })
+
+      assert {:ok, [^alpha_issue]} =
+               Config.with_settings(alpha_settings, fn -> Memory.fetch_candidate_issues() end)
+
+      assert {:ok, [^beta_issue]} =
+               Config.with_settings(beta_settings, fn -> Memory.fetch_issues_by_states(["ready"]) end)
+
+      assert {:ok, [^beta_issue]} =
+               Config.with_settings(beta_settings, fn -> Memory.fetch_issue_states_by_ids(["beta-issue"]) end)
+
+      broken_settings = write_memory_project_settings!(root, "broken")
+
+      assert {:error, :memory_project_failed} =
+               Config.with_settings(broken_settings, fn -> Memory.fetch_candidate_issues() end)
+
+      assert {:error, :memory_project_failed} =
+               Config.with_settings(broken_settings, fn -> Memory.fetch_issues_by_states(["ready"]) end)
+
+      assert {:error, :memory_project_failed} =
+               Config.with_settings(broken_settings, fn -> Memory.fetch_issue_states_by_ids(["broken"]) end)
+
+      non_list_settings = write_memory_project_settings!(root, "non_list")
+      assert {:ok, []} = Config.with_settings(non_list_settings, fn -> Memory.fetch_candidate_issues() end)
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "memory tracker falls back to legacy issues when project identity is unavailable" do
+    memory_issue = issue("memory-issue", "MEM-F", "Ready")
+    linear_issue = issue("linear-issue", "LIN-F", "Ready")
+    empty_workspace_issue = issue("empty-workspace-issue", "MEM-E", "Ready")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    memory_settings = Config.settings!()
+    linear_settings = %{memory_settings | tracker: %{memory_settings.tracker | kind: "linear"}}
+    empty_workspace_settings = %{memory_settings | workspace: %{memory_settings.workspace | root: ""}}
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [linear_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{"symphony_workspaces" => [memory_issue]})
+
+    assert {:ok, [^linear_issue]} = Config.with_settings(linear_settings, fn -> Memory.fetch_candidate_issues() end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [empty_workspace_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{})
+
+    assert {:ok, [^empty_workspace_issue]} =
+             Config.with_settings(empty_workspace_settings, fn -> Memory.fetch_candidate_issues() end)
+
+    TrackerConfig.set_tracker_file_path("/tmp/symphony-missing-tracker-#{System.unique_integer([:positive])}.yaml")
+    assert {:ok, [^empty_workspace_issue]} = Memory.fetch_candidate_issues()
+  end
+
   test "stage-state helper covers adapter mapping edge cases" do
     ready_issue = issue("issue-ready", "MEM-7", "Ready")
 
@@ -702,6 +773,21 @@ defmodule SymphonyElixir.TrackerContractTest do
         "stage_states" => stage_states(overrides, opts)
       }
     }
+  end
+
+  defp write_memory_project_settings!(root, project_id) do
+    project_root = Path.join(root, project_id)
+    workflow_path = Path.join(project_root, "WORKFLOW.md")
+    File.mkdir_p!(project_root)
+
+    write_workflow_file!(workflow_path,
+      tracker_kind: "memory",
+      tracker_project_slug: project_id,
+      workspace_root: Path.join([root, "workspaces", project_id])
+    )
+
+    {:ok, settings} = Config.settings_from_files(workflow_path, Path.join(project_root, "TRACKER.yaml"))
+    settings
   end
 
   defp linear_tracker_config(overrides \\ %{}, opts \\ []) do

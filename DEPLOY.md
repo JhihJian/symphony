@@ -20,6 +20,12 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
 合并而不是并发执行。默认骨架 executor 不迁移 GitHub/GitLab/Linear legacy adapter、
 不派发 agent、不停止各项目自己的 poll loop。本文档的 systemd template 仍使用
 `--tracker-config <TRACKER.yaml> <WORKFLOW.md>`，不会自动改成 Hub mode。
+如果手动试运行 Hub 并传入
+`--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
+边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在
+`/api/v1/state` 中暴露 executor 模式、候选计数、错误分类、backoff/manual attention 等安全摘要。
+该 opt-in 只覆盖候选读取，不实现 provider 写回、dynamic tools 路由迁移、真实 agent 派发，也不会改变
+`symphony@project.service` 多实例部署的默认行为。
 
 ## 快速安装
 

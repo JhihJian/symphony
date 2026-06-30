@@ -1195,6 +1195,33 @@ Runtime entrypoint:
 - A Hub poll tick runtime skeleton MUST route candidate scans through provider governance rather
   than direct per-project polling. Its default provider executor MAY be a no-legacy-adapter skeleton,
   but tests SHOULD be able to inject a provider executor that returns governed results.
+- A Hub runtime MAY provide an explicit opt-in real candidate-scan provider executor, for example
+  `--hub-provider-executor real-candidate-scan`. The default without that opt-in MUST remain the
+  skeleton executor, and legacy single-project runtime behavior MUST remain unchanged.
+- A real candidate-scan executor MUST handle only `candidate_scan` or the implementation's
+  equivalent read-only operation. Non-candidate operations such as writeback, status update, comment
+  upsert, PR creation, dynamic tools, or provider writes MUST return unsupported, permanent failure,
+  manual attention, or another explicit non-success result rather than being implemented
+  opportunistically.
+- A real candidate-scan executor MUST resolve the request's `project_id` and provider scope against
+  the Hub registry and load that project's own `WORKFLOW.md` and `TRACKER.yaml` semantics for the
+  read. It MUST NOT rely on a process-global legacy `Config.settings!()` or reuse another project's
+  token, repository/project number, provider scope, label/state mapping, assignee, or required-label
+  configuration.
+- A single project's provider/config failure MUST be mapped to that project's governed result and
+  scope state/backoff/manual-attention summary. It MUST NOT crash the entire Hub tick or contaminate
+  another project/scope.
+- Real candidate-scan results MUST normalize provider issues into safe candidate summaries
+  containing at least `project_id`, provider kind, provider scope key, provider-local issue
+  id/number/key or identifier, URL/title or equivalent safe summary, current provider-visible
+  stage/state, and source request/result/poll correlation. Full issue/comment/PR bodies, raw
+  provider responses, raw GraphQL/REST payloads, credentials, authorization/cookie values, secret
+  env values, and raw config MUST NOT be retained in result summaries or observable snapshots.
+- Real candidate-scan result classification SHOULD map successful reads to `success`, rate limit,
+  quota, or abuse responses to `rate_limited` with retry/backoff data when available, network
+  timeouts and provider 5xx responses to `retryable_failure`, auth/config/not-found/validation
+  problems to `permanent_failure`, and unknown/ambiguous side-effect results to a non-success
+  unknown/manual-attention class.
 - A Hub candidate intake boundary SHOULD normalize provider candidate-scan summaries into
   provider-neutral records keyed by `project_id`, provider scope, IssueRef or equivalent issue key,
   and source poll request/result correlation. It SHOULD accept atom-key and string-key input, isolate
@@ -1329,6 +1356,10 @@ Compatibility boundary:
   requests through an injectable provider executor and record normalized results, but it MUST NOT
   require existing legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated
   until an explicit Hub integration enables that path.
+- A real Hub candidate-scan executor, when explicitly enabled, is only a read-path integration for
+  governed candidate intake. It does not imply Hub provider writeback execution, dynamic tool
+  routing, durable provider queues, cross-process locking, or migration of legacy
+  `symphony@project.service` polling.
 - Hub candidate intake MAY consume safe candidate-scan result summaries and produce
   ready-for-dispatch-evaluation or skipped-candidate summaries, including project-level counts and
   reasons such as invalid candidate, duplicate active attempt, workspace busy, project paused,

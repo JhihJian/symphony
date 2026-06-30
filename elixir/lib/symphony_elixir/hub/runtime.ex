@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     ProjectRegistry,
     ProviderExecutor,
     ProviderGovernance,
+    RealCandidateScanExecutor,
     RuntimeLedger,
     WorkerLifecycleReconciliation,
     WorkerStartHandoff
@@ -28,6 +29,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   @env_key :hub_config_file_path
   @scheduler_env_key :hub_scheduler_enabled
+  @provider_executor_env_key :hub_provider_executor
   @worker_start_starter_env_key :hub_worker_start_starter
   @worker_lifecycle_result_source_env_key :hub_worker_lifecycle_result_source
   @poll_fact_limit 200
@@ -100,6 +102,18 @@ defmodule SymphonyElixir.Hub.Runtime do
     :ok
   end
 
+  @spec set_provider_executor(module() | function() | nil) :: :ok
+  def set_provider_executor(executor) when is_atom(executor) or is_function(executor, 2) or is_nil(executor) do
+    Application.put_env(:symphony_elixir, @provider_executor_env_key, executor)
+    :ok
+  end
+
+  @spec clear_provider_executor() :: :ok
+  def clear_provider_executor do
+    Application.delete_env(:symphony_elixir, @provider_executor_env_key)
+    :ok
+  end
+
   @spec set_worker_start_starter(WorkerStartHandoff.starter()) :: :ok
   def set_worker_start_starter(starter) when is_atom(starter) or is_function(starter, 2) or is_nil(starter) do
     Application.put_env(:symphony_elixir, @worker_start_starter_env_key, starter)
@@ -127,6 +141,15 @@ defmodule SymphonyElixir.Hub.Runtime do
   @spec worker_lifecycle_result_source() :: WorkerLifecycleReconciliation.result_source()
   def worker_lifecycle_result_source do
     Application.get_env(:symphony_elixir, @worker_lifecycle_result_source_env_key)
+  end
+
+  @spec provider_executor() :: module() | function()
+  def provider_executor do
+    case Application.get_env(:symphony_elixir, @provider_executor_env_key) do
+      nil -> ProviderExecutor
+      executor when is_atom(executor) or is_function(executor, 2) -> executor
+      _invalid -> ProviderExecutor
+    end
   end
 
   @spec worker_start_starter() :: WorkerStartHandoff.starter()
@@ -217,11 +240,13 @@ defmodule SymphonyElixir.Hub.Runtime do
 
       tick = idle_tick(loaded_at)
       scheduler = new_scheduler(Keyword.get(opts, :scheduler_enabled, scheduler_enabled?()), loaded_at)
+      provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
 
       initial_snapshot =
         build_snapshot(config_path, loaded_at, registry,
           now: loaded_at,
           provider_queue: provider_queue,
+          provider_executor: provider_executor,
           runtime_ledger: runtime_ledger,
           candidate_intake: candidate_intake,
           dispatch_planning: dispatch_planning,
@@ -238,7 +263,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         registry: registry,
         poll_facts: [],
         provider_queue: provider_queue,
-        provider_executor: Keyword.get(opts, :provider_executor, ProviderExecutor),
+        provider_executor: provider_executor,
         worker_start_starter: Keyword.get(opts, :worker_start_starter, worker_start_starter()),
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
         runtime_ledger: runtime_ledger,
@@ -387,6 +412,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     now = Keyword.get(opts, :now, generated_at)
     provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
     poll_facts = Keyword.get(opts, :poll_facts, [])
+    provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
     tick = normalize_tick(Keyword.get(opts, :tick))
     runtime_ledger = Keyword.get(opts, :runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
     candidate_intake = Keyword.get(opts, :candidate_intake, CandidateIntake.empty(registry, now: now, runtime_ledger: runtime_ledger))
@@ -456,6 +482,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         loaded_at: iso8601(loaded_at),
         generated_at: iso8601(now),
         counts: counts,
+        provider_executor: provider_executor_summary(provider_executor),
         scheduler: scheduler,
         poll_tick: tick,
         candidate_intake: CandidateIntake.tick_summary(candidate_intake),
@@ -519,7 +546,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
         {result, queue} =
           request
-          |> execute_provider_request(state.provider_executor, requested_at)
+          |> execute_provider_request(state.provider_executor, requested_at, state.registry, state.config_path)
           |> normalize_provider_result(request, queue)
 
         finished_at = DateTime.utc_now()
@@ -601,6 +628,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         poll_facts: poll_facts,
         provider_queue: provider_queue,
+        provider_executor: state.provider_executor,
         runtime_ledger: runtime_ledger,
         candidate_intake: candidate_intake,
         dispatch_planning: dispatch_planning,
@@ -808,6 +836,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         poll_facts: state.poll_facts,
         provider_queue: state.provider_queue,
+        provider_executor: state.provider_executor,
         runtime_ledger: state.runtime_ledger,
         candidate_intake: state.candidate_intake,
         dispatch_planning: state.dispatch_planning,
@@ -1082,19 +1111,73 @@ defmodule SymphonyElixir.Hub.Runtime do
     ]
   end
 
-  defp execute_provider_request(nil, _executor, _started_at) do
+  defp provider_executor_summary(ProviderExecutor) do
+    %{
+      mode: "skeleton",
+      executor: "default_skeleton",
+      provider_io: false,
+      candidate_scan: "accepted_without_provider_io"
+    }
+  end
+
+  defp provider_executor_summary(RealCandidateScanExecutor) do
+    %{
+      mode: "real_candidate_scan",
+      executor: "real_candidate_scan",
+      provider_io: true,
+      supported_operations: ["candidate_scan"]
+    }
+  end
+
+  defp provider_executor_summary(executor) when is_atom(executor) do
+    %{
+      mode: "custom_module",
+      executor: inspect(executor),
+      provider_io: "unknown"
+    }
+  end
+
+  defp provider_executor_summary(executor) when is_function(executor, 2) do
+    %{
+      mode: "custom_function",
+      executor: "anonymous_function",
+      provider_io: "unknown"
+    }
+  end
+
+  defp provider_executor_summary(_executor) do
+    %{
+      mode: "invalid",
+      executor: "invalid",
+      provider_io: false
+    }
+  end
+
+  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path) do
     {:error, :missing_provider_request}
   end
 
-  defp execute_provider_request(request, executor, started_at) when is_function(executor, 2) do
-    safe_execute_provider_request(fn -> executor.(request, started_at: started_at) end)
+  defp execute_provider_request(request, executor, started_at, registry, config_path) when is_function(executor, 2) do
+    safe_execute_provider_request(fn ->
+      executor.(request,
+        started_at: started_at,
+        registry: registry,
+        hub_config_path: config_path
+      )
+    end)
   end
 
-  defp execute_provider_request(request, executor, started_at) when is_atom(executor) do
-    safe_execute_provider_request(fn -> executor.execute(request, started_at: started_at) end)
+  defp execute_provider_request(request, executor, started_at, registry, config_path) when is_atom(executor) do
+    safe_execute_provider_request(fn ->
+      executor.execute(request,
+        started_at: started_at,
+        registry: registry,
+        hub_config_path: config_path
+      )
+    end)
   end
 
-  defp execute_provider_request(_request, _executor, _started_at) do
+  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path) do
     {:error, :invalid_provider_executor}
   end
 

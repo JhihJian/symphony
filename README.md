@@ -117,6 +117,16 @@ lifecycle counts, reason counts, workspace release/retention counts, and per-pro
 without raw prompts, transcripts, provider bodies, hook/app-server output, tokens, cookies, or raw
 config. This remains a reconciliation baseline, not a Hub-owned scheduler, worker supervisor,
 provider writeback executor, durable store, or legacy service migration.
+Hub provider execution now has two explicit modes. The default remains the skeleton executor, which
+records governed candidate-scan results without calling real provider APIs. Passing
+`--hub-provider-executor real-candidate-scan` to Hub mode opts into the first real read executor:
+only `candidate_scan` operations are handled, each request reloads the matching registry project's
+own `WORKFLOW.md` and `TRACKER.yaml`, calls the existing tracker read adapter for that project
+behind `ProviderGovernance`, and returns only safe candidate summaries for `CandidateIntake`.
+Unsupported provider kinds, non-candidate operations, project config/auth failures, rate limits, and
+retryable provider errors are mapped back to governed result classes and per-scope backoff/manual
+attention summaries. This does not migrate provider writeback, dynamic tools, legacy
+`symphony@project.service`, or non-Hub runtime behavior.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
