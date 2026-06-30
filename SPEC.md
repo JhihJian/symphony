@@ -696,9 +696,25 @@ Observability:
 
 Hub-compatible implementations MAY define a device-level observability projection that folds the
 safe Hub model summaries from project registry, provider governance, poll coordination, runtime
-ledger replay, dispatch boundary, and writeback processing into one Dashboard/API-safe snapshot.
-This projection is a read model only. It does not implement a Dashboard page, provider executor,
+ledger replay, dispatch boundary, worker start/lifecycle reconciliation, and writeback processing
+into one Dashboard/API-safe snapshot. This projection is a read model only. It may back a
+human-readable Dashboard/API detail entry, but it does not implement provider execution, a durable
 Hub scheduler loop, database, distributed lock, or migration from legacy services.
+
+Device overview fields SHOULD include:
+
+- Hub runtime/mode status and generated time
+- scheduler enabled/running/queued/coalesced status, last tick summary, next tick time, and next
+  wait/skip/coalescing reason
+- project status counts
+- provider queue/backpressure/quota/backoff/circuit/recent-failure/manual-attention summary
+- capacity and workspace summaries, including active attempts, pending start intents, active leases,
+  retained workspaces, and unreleased capacity indicators
+- writeback summary, including pending/succeeded/failed/unknown/manual-attention counts, intent
+  conflicts, provider lookup required, unknown non-idempotent results, and dangerous replay refusals
+- activation preflight and lifecycle summaries, including blocked/unknown/manual-attention,
+  legacy ownership, unknown probe, lost/unknown lifecycle, and retained workspace counts
+- summary error entries for individual projects whose detail summary could not be built
 
 Device summary fields SHOULD include:
 
@@ -712,11 +728,16 @@ Project entries SHOULD include:
 - `project_id`, optional display name, and migration state such as `legacy_only`, `hub_ready`, or
   `hub_managed`
 - a safe project status such as `running`, `idle`, `ready_to_poll`, `backoff`, `paused`, `blocked`,
-  `manual_attention`, `legacy_only`, or `config_invalid`
+  `waiting_capacity`, `manual_attention`, `legacy_only`, or `config_invalid`
+- safe identity/config fields such as provider kind, provider scope key, config snapshot version,
+  fingerprint, loaded time, and config status/error
 - provider kind, provider scope key, and safe provider scope summary
 - provider queue/quota/backoff/circuit summary
 - poll coordination fields such as eligibility, `next_due_at`, `backoff_until`, last poll summary,
   and governance decision/backpressure
+- candidate intake, dispatch planning/application, worker start handoff, and lifecycle
+  reconciliation summaries with per-project counts, reason counts, pending/unresolved/manual
+  attention counts, and compact safe recent entries
 - runtime ledger replay fields such as active attempts, pending start intents, active workspace
   leases, retry/backoff, blocked candidates, conflicts, and manual-attention diagnostics
 - writeback pending/succeeded/failed/unknown/manual-attention summary
@@ -736,6 +757,10 @@ Safety:
 - Implementations MUST NOT dynamically create atoms from untrusted string-key snapshots while
   restoring or sanitizing a device projection. Unknown keys SHOULD remain strings or be discarded by
   an explicit allow-list.
+- If one project detail summary cannot be built because fields are missing, a source summary is
+  incompatible, or a source explicitly marks a summary error, that project SHOULD be represented as
+  `manual_attention` with a safe `summary_error`; the whole device projection, API response, or
+  Dashboard MUST NOT fail because of that one project.
 - Presence of this projection MUST NOT imply that Hub has taken over all provider poll loops or
   writeback paths. Legacy single-project `symphony@project.service` instances remain compatible
   unless a later migration explicitly opts into Hub ownership.
@@ -1513,9 +1538,11 @@ Compatibility boundary:
   scheduler loop, cross-process worker supervisor, provider writeback executor, durable database/WAL,
   or migration of legacy single-project worker lifecycle ownership.
 - Hub device observability MAY expose a single safe projection for Dashboard/API consumers that
-  summarizes project registry, provider governance, poll coordination, dispatch/runtime ledger, and
-  writeback/manual-attention state. This projection MUST remain a read model and MUST NOT imply that
-  legacy single-project provider polling or writeback has been replaced.
+  summarizes project registry, scheduler/tick state, provider governance, poll coordination,
+  dispatch/runtime ledger, worker start/lifecycle reconciliation, activation preflight, and
+  writeback/manual-attention state. The Dashboard/API MAY render this as a device overview and
+  per-project detail view. This projection MUST remain a read model and MUST NOT imply that legacy
+  single-project provider polling or writeback has been replaced.
 - Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
   `TRACKER.yaml` MUST remain compatible.
 

@@ -492,6 +492,9 @@ defmodule SymphonyElixir.Hub.Runtime do
         activation_preflight: activation_preflight
       )
 
+    registry_summary = registry_summary(registry)
+    scheduler = normalize_scheduler(Keyword.get(opts, :scheduler), poll_plan, runtime_ledger, worker_start_handoff, worker_lifecycle_reconciliation, now)
+
     device_observability =
       DeviceObservability.build(
         %{
@@ -499,15 +502,20 @@ defmodule SymphonyElixir.Hub.Runtime do
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
           activation_preflight: activation_preflight,
+          scheduler: scheduler,
+          tick: tick,
+          candidate_intake: candidate_intake,
+          dispatch_planning: dispatch_planning,
+          dispatch_plan_application: dispatch_plan_application,
+          worker_start_handoff: worker_start_handoff,
           worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
-          migration_boundary: migration_boundary()
+          migration_boundary: migration_boundary(),
+          hub_runtime: %{mode: "hub", generated_at: iso8601(now)}
         },
         now: now
       )
 
     counts = counts(registry, device_observability)
-    registry_summary = registry_summary(registry)
-    scheduler = normalize_scheduler(Keyword.get(opts, :scheduler), poll_plan, runtime_ledger, worker_start_handoff, worker_lifecycle_reconciliation, now)
 
     %{
       running: [],
