@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
+  alias SymphonyElixir.Hub.DeviceObservability
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -793,6 +794,130 @@ defmodule SymphonyElixir.ExtensionsTest do
              json_response(conn, 202)
   end
 
+  test "phoenix observability api exposes safe Hub device overview and project detail summaries" do
+    projection =
+      DeviceObservability.build(
+        %{
+          registry: %{
+            projects: [
+              hub_registry_project("alpha", "github:o/r", snapshot_version: 7),
+              hub_registry_project("legacy", "github:o/r", migration_state: "legacy_only")
+            ]
+          },
+          poll_coordination: %{
+            projects: [
+              %{project_id: "alpha", allow_poll: false, eligibility: %{reason: "rate_limited"}, provider_scope_key: "github:o/r"},
+              %{project_id: "legacy", allow_poll: false, eligibility: %{reason: "legacy_ownership"}, provider_scope_key: "github:o/r"}
+            ],
+            provider_queue: %{
+              pending_count: 1,
+              provider_scopes: [
+                %{provider_scope_key: "github:o/r", state: %{quota: %{remaining: 0}, backoff_until: "2026-06-28T09:05:00Z"}}
+              ],
+              pending: [%{project_id: "alpha", provider_scope_key: "github:o/r", operation_kind: "candidate_scan"}],
+              recent_results: [
+                %{
+                  project_id: "alpha",
+                  provider_scope_key: "github:o/r",
+                  status: "retryable_failure",
+                  result_summary: %{error: "provider_error", reason: "github_api_status:503", authorization: "Bearer hidden"}
+                }
+              ]
+            }
+          },
+          runtime_ledger: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                counts: %{manual_attention: 1},
+                active_attempts: [],
+                pending_start_intents: [%{issue_key: "alpha:github:o/r:1", intent_id: "s1", status: :unknown}],
+                workspace_leases: [%{issue_key: "alpha:github:o/r:1", status: :active}],
+                writebacks: %{
+                  counts: %{pending: 0, succeeded: 1, failed: 0, unknown: 1, manual_attention: 1},
+                  unknown: [%{intent_key: "w1", result_status: "unknown", replay_policy: "non_idempotent"}],
+                  manual_attention: [%{intent_key: "w1", manual_attention_reason: "unknown_pr_create_requires_provider_lookup"}]
+                },
+                conflicts: [%{code: :writeback_intent_conflict}],
+                manual_attention: [%{code: :writeback_unknown_manual_attention}]
+              }
+            ]
+          },
+          activation_preflight: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                status: "blocked_conflict",
+                reason: "legacy ownership conflict",
+                conflict_count: 1,
+                detected_legacy_ownership: [%{source: "service"}]
+              }
+            ]
+          },
+          candidate_intake: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{candidate_count: 2, eligible_count: 1}}]
+          },
+          dispatch_planning: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{planned_count: 1}}]
+          },
+          dispatch_plan_application: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{applied_count: 1}}]
+          },
+          worker_start_handoff: %{
+            status: "completed",
+            results: [%{project_id: "alpha", status: "unknown", issue_key: "alpha:github:o/r:1"}],
+            unresolved_start_intents: [%{project_id: "alpha", issue_key: "alpha:github:o/r:1", intent_id: "s1"}]
+          },
+          worker_lifecycle_reconciliation: %{
+            status: "completed",
+            results: [%{project_id: "alpha", status: "unknown", workspace_action: "retained"}]
+          },
+          scheduler: %{enabled: true, status: "waiting", next_reason: "provider_backoff"},
+          tick: %{status: "completed", selected_count: 1},
+          hub_runtime: %{mode: "hub"}
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    orchestrator_name = Module.concat(__MODULE__, :HubObservabilityApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(%{hub_device_observability: projection})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    payload = json_response(get(build_conn(), "/api/v1/state"), 200)
+    hub = payload["hub_device_observability"]
+
+    assert hub["overview"]["hub"]["runtime_enabled"] == true
+    assert hub["overview"]["scheduler"]["enabled"] == true
+    assert hub["overview"]["scheduler"]["next_reason"] == "provider_backoff"
+    assert hub["overview"]["provider_governance"]["pending_count"] == 1
+    assert hub["overview"]["writeback"]["provider_lookup_required_count"] == 1
+    assert hub["overview"]["activation_preflight"]["blocked_count"] == 1
+
+    projects = Map.new(hub["projects"], &{&1["project_id"], &1})
+    assert projects["alpha"]["identity"]["provider_scope_key"] == "github:o/r"
+    assert projects["alpha"]["config"]["snapshot_version"] == "7"
+    assert projects["alpha"]["activation_preflight"]["status"] == "blocked_conflict"
+    assert projects["alpha"]["candidate_intake"]["counts"]["candidate_count"] == 2
+    assert projects["alpha"]["dispatch_planning"]["counts"]["planned_count"] == 1
+    assert projects["alpha"]["dispatch_application"]["counts"]["applied_count"] == 1
+    assert projects["alpha"]["start_handoff"]["unresolved_count"] == 1
+    assert projects["legacy"]["migration_state"] == "legacy_only"
+
+    safe_text = inspect(payload)
+    refute safe_text =~ "github_api_status"
+    refute safe_text =~ "Bearer hidden"
+    refute safe_text =~ "authorization"
+  end
+
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
     unavailable_orchestrator = Module.concat(__MODULE__, :UnavailableOrchestrator)
     start_test_endpoint(orchestrator: unavailable_orchestrator, snapshot_timeout_ms: 5)
@@ -969,6 +1094,105 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_eventually(fn ->
       render(view) =~ "agent message content streaming: structured update"
     end)
+  end
+
+  test "dashboard liveview renders Hub device and project details when Hub summary is present" do
+    projection =
+      DeviceObservability.build(
+        %{
+          registry: %{projects: [hub_registry_project("alpha", "github:o/r", snapshot_version: 7)]},
+          poll_coordination: %{
+            projects: [
+              %{project_id: "alpha", allow_poll: false, eligibility: %{reason: "rate_limited"}, provider_scope_key: "github:o/r"}
+            ],
+            provider_queue: %{
+              pending_count: 1,
+              provider_scopes: [%{provider_scope_key: "github:o/r", state: %{quota: %{remaining: 0}}}],
+              pending: [%{project_id: "alpha", provider_scope_key: "github:o/r"}]
+            }
+          },
+          runtime_ledger: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                counts: %{manual_attention: 1},
+                active_attempts: [],
+                pending_start_intents: [%{issue_key: "alpha:github:o/r:1", intent_id: "s1", status: :unknown}],
+                workspace_leases: [],
+                writebacks: %{
+                  counts: %{pending: 0, succeeded: 1, failed: 0, unknown: 1, manual_attention: 1},
+                  unknown: [%{intent_key: "w1", result_status: "unknown", replay_policy: "non_idempotent"}],
+                  manual_attention: [%{intent_key: "w1", manual_attention_reason: "unknown_pr_create_requires_provider_lookup"}]
+                },
+                manual_attention: [%{code: :writeback_unknown_manual_attention}]
+              }
+            ]
+          },
+          activation_preflight: %{
+            projects: [%{project_id: "alpha", status: "blocked_conflict", reason: "legacy ownership conflict"}]
+          },
+          candidate_intake: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{candidate_count: 2, eligible_count: 1}}]
+          },
+          dispatch_planning: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{planned_count: 1}}]
+          },
+          dispatch_plan_application: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{applied_count: 1}}]
+          },
+          worker_start_handoff: %{
+            status: "completed",
+            results: [%{project_id: "alpha", status: "unknown", issue_key: "alpha:github:o/r:1"}],
+            unresolved_start_intents: [%{project_id: "alpha", issue_key: "alpha:github:o/r:1", intent_id: "s1"}]
+          },
+          worker_lifecycle_reconciliation: %{status: "completed", results: [%{project_id: "alpha", status: "unknown"}]},
+          scheduler: %{enabled: true, status: "waiting", next_reason: "provider_backoff"},
+          hub_runtime: %{mode: "hub"}
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    orchestrator_name = Module.concat(__MODULE__, :HubDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(%{hub_device_observability: projection})
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "Hub 设备总览"
+    assert html =~ "Hub 项目明细"
+    assert html =~ "provider_backoff"
+    assert html =~ "alpha"
+    assert html =~ "github:o/r"
+    assert html =~ "preflight blocked_conflict"
+    assert html =~ "intake 2 / eligible 1"
+    assert html =~ "dispatch 1 / applied 1"
+    assert html =~ "unknown 1 / manual 1"
+    refute html =~ "github_api_status"
+  end
+
+  test "dashboard liveview omits Hub device details for legacy snapshots" do
+    legacy_orchestrator_name = Module.concat(__MODULE__, :LegacyDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: legacy_orchestrator_name,
+        snapshot: static_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: legacy_orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, legacy_html} = live(build_conn(), "/")
+    refute legacy_html =~ "Hub 设备总览"
+    refute legacy_html =~ "Hub 项目明细"
+    refute legacy_html =~ "hub managed"
   end
 
   test "dashboard liveview renders an unavailable state without crashing" do
@@ -1281,6 +1505,36 @@ defmodule SymphonyElixir.ExtensionsTest do
       rate_limits: %{"primary" => %{"remaining" => 11}}
     }
   end
+
+  defp static_snapshot(extra) when is_map(extra), do: Map.merge(static_snapshot(), extra)
+
+  defp hub_registry_project(project_id, scope_key, opts) do
+    [kind, scope] = String.split(scope_key, ":", parts: 2)
+
+    %{
+      project_id: project_id,
+      name: String.capitalize(project_id),
+      status: :ready,
+      migration_state: Keyword.get(opts, :migration_state),
+      dispatch_enabled: true,
+      tracker_summary: %{
+        kind: kind,
+        provider_scope_key: scope_key,
+        provider_scope: provider_scope(kind, scope)
+      },
+      runtime_summary: %{max_concurrent_agents: 2},
+      config_snapshot_version: Keyword.get(opts, :snapshot_version),
+      fingerprint: "#{project_id}-fingerprint",
+      loaded_at: ~U[2026-06-28 08:55:00Z]
+    }
+  end
+
+  defp provider_scope("github", owner_repo) do
+    [owner, repo] = String.split(owner_repo, "/", parts: 2)
+    %{owner: owner, repo: repo}
+  end
+
+  defp provider_scope(_kind, scope), do: %{scope: scope}
 
   defp wait_for_bound_port do
     assert_eventually(fn ->

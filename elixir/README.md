@@ -465,7 +465,8 @@ class/backoff/manual attention summaries, and skipped reasons while omitting pro
 authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
 provider response bodies, full comment/PR bodies, and raw hook/app-server output.
 The terminal dashboard only adds a compact Hub mode line with project count, config error count,
-provider scope count, and poll tick capability; it is not a complete Hub dashboard page.
+provider scope count, and poll tick capability. The Web Dashboard at `/` is the human-readable Hub
+detail entry when `hub_device_observability` is present.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue
@@ -601,28 +602,35 @@ includes `hub_poll_coordination`, the observability presenter exposes the saniti
 `SymphonyElixir.Hub.DeviceObservability` adds the #74 device-level observability / migration
 boundary baseline. It is a pure projection API: `build/2` accepts safe Hub model summaries such as
 project registry snapshots, provider governance queue summaries, poll coordination observability,
-runtime ledger replay, dispatch summaries, writeback observability, and optional legacy project
-markers, then returns one Dashboard/API-safe device view. The projection includes device counts
-(`project_count`, active agent count, max agent capacity, provider scope count), per-project status
-(`running`, `idle`, `ready_to_poll`, `backoff`, `paused`, `blocked`, `manual_attention`,
-`legacy_only`, or `config_invalid`), provider queue/quota/backoff/circuit summaries, poll
-eligibility and next due time, active workspace/attempt/start-intent facts, writeback
-unknown/manual-attention/conflict facts, and backpressure reasons such as provider rate limit,
-queue pressure, project pause/backoff, workspace occupied, active attempt exists, writeback unknown,
-activation preflight blocked, and manual attention. When a Hub runtime provides
+runtime ledger replay, candidate intake, dispatch summaries, worker start/lifecycle reconciliation,
+writeback observability, and optional legacy project markers, then returns one Dashboard/API-safe
+device view. The projection includes device counts (`project_count`, active agent count, max agent
+capacity, provider scope count), an `overview` for Hub runtime/scheduler/tick state, project status
+counts, provider queue/backpressure, capacity/workspace pressure, writeback/manual-attention,
+activation preflight, and lifecycle risk, plus per-project status (`running`, `idle`,
+`ready_to_poll`, `waiting_capacity`, `backoff`, `paused`, `blocked`, `manual_attention`,
+`legacy_only`, or `config_invalid`). Project details include safe identity/config fields, provider
+scope, poll eligibility and next due time, candidate intake, dispatch planning/application, worker
+start handoff, lifecycle reconciliation, active workspace/attempt/start-intent facts, writeback
+unknown/manual-attention/conflict facts, and backpressure reasons such as provider rate limit, queue
+pressure, project pause/backoff, workspace occupied, active attempt exists, activation preflight
+blocked, writeback unknown, and manual attention. When a Hub runtime provides
 `hub_activation_preflight`, each project also includes the sanitized preflight status, blocked
 operations, probe source, checked time, detected legacy ownership summary, unknown probe results,
-and conflict/manual-attention counts.
+and conflict/manual-attention counts. If one project's summary is explicitly marked as failed,
+missing, or incompatible, the projection isolates that project as `manual_attention` with a safe
+`summary_error` instead of failing the whole API or Dashboard.
 
 The projection is safe for logs, `/api/v1/state`, and future Dashboard snapshots. It accepts
 atom-key or string-key snapshots without dynamically creating atoms, preserves unknown map keys as
 strings, and redacts provider tokens, API keys, authorization/cookie fields, secret env values, raw
 provider config, full prompts, full transcripts, and full comment/PR body text. When an
 orchestrator snapshot contains `hub_device_observability`, the presenter exposes the sanitized
-projection in `/api/v1/state`; snapshots without that field keep the existing legacy API shape.
-This is not a full Dashboard page, Hub scheduler, provider executor, or service migration. The
-legacy `symphony@project.service` direct poll/writeback path remains the default until a later
-explicit Hub integration opts into routing and ownership.
+projection in `/api/v1/state`; snapshots without that field keep the existing legacy API shape. The
+Live Dashboard at `/` renders the same projection as a Hub device overview and Hub project detail
+table only when the Hub summary is present. This is not a Hub scheduler, provider executor, or
+service migration. The legacy `symphony@project.service` direct poll/writeback path remains the
+default until a later explicit Hub integration opts into routing and ownership.
 
 `SymphonyElixir.Hub.DispatchBoundary` adds the Hub atomic dispatch / run context baseline for #74.
 It is also a pure model API. `build_context/3` turns a candidate issue into a stable dispatch
@@ -846,7 +854,13 @@ The observability UI now runs on a minimal Phoenix stack:
 
 The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
-detail links.
+detail links. When the process is explicitly running Hub mode, or the snapshot already contains
+`hub_device_observability`, the same page also renders a Hub device overview and Hub project detail
+table. That Hub section shows scheduler/tick status and next wait reason, project status counts,
+provider queue/backpressure, capacity/workspace pressure, writeback/manual-attention and activation
+preflight summaries, plus each project's migration state, safe provider/config identity, poll
+eligibility, intake/dispatch/start/lifecycle counts, and writeback state. Legacy non-Hub snapshots
+do not render this section and are not labelled Hub-managed.
 
 The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
 the current `WORKFLOW.md` directly, renders stage nodes and outcome-labelled transitions, marks

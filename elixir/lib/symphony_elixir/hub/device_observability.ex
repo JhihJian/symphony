@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     "running",
     "idle",
     "ready_to_poll",
+    "waiting_capacity",
     "backoff",
     "paused",
     "blocked",
@@ -43,7 +44,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   @sensitive_value_patterns [
     ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
     ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript)\b/i,
-    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
+    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/,
+    ~r/\b[a-z0-9_]+_api_status:\d{3}\b/i
   ]
 
   @type projection :: map()
@@ -58,6 +60,16 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     runtime = source_map(sources, [:runtime_ledger, :dispatch_boundary, :hub_dispatch_boundary, :runtime])
     activation_preflight = source_map(sources, [:activation_preflight, :hub_activation_preflight])
     provider_queue = provider_queue_summary(sources, poll_coordination)
+    scheduler = source_map(sources, [:scheduler, :hub_scheduler])
+    tick = source_map(sources, [:tick, :poll_tick, :hub_poll_tick])
+    candidate_intake = source_map(sources, [:candidate_intake, :hub_candidate_intake])
+    dispatch_planning = source_map(sources, [:dispatch_planning, :hub_dispatch_planning])
+    dispatch_plan_application = source_map(sources, [:dispatch_plan_application, :hub_dispatch_plan_application])
+    worker_start_handoff = source_map(sources, [:worker_start_handoff, :hub_worker_start_handoff])
+
+    worker_lifecycle_reconciliation =
+      source_map(sources, [:worker_lifecycle_reconciliation, :hub_worker_lifecycle_reconciliation])
+
     legacy_projects = list_value(sources, :legacy_projects)
     managed_project_ids = managed_project_ids(sources, opts)
 
@@ -67,6 +79,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         poll_coordination |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         runtime |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         activation_preflight |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
+        candidate_intake |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
+        dispatch_planning |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
+        dispatch_plan_application |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         Enum.map(legacy_projects, &required_string(&1, :project_id))
       ]
       |> List.flatten()
@@ -74,23 +89,44 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       |> Enum.uniq()
       |> Enum.sort()
 
+    project_sources = %{
+      registry: registry,
+      poll_coordination: poll_coordination,
+      runtime: runtime,
+      activation_preflight: activation_preflight,
+      provider_queue: provider_queue,
+      candidate_intake: candidate_intake,
+      dispatch_planning: dispatch_planning,
+      dispatch_plan_application: dispatch_plan_application,
+      worker_start_handoff: worker_start_handoff,
+      worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
+      legacy_projects: legacy_projects,
+      managed_project_ids: managed_project_ids
+    }
+
     projects =
       Enum.map(project_ids, fn project_id ->
-        project_projection(
-          project_id,
-          registry,
-          poll_coordination,
-          runtime,
-          activation_preflight,
-          provider_queue,
-          legacy_projects,
-          managed_project_ids
-        )
+        safe_project_projection(project_id, project_sources)
       end)
+
+    overview =
+      overview_summary(
+        projects,
+        sources,
+        scheduler,
+        tick,
+        provider_queue,
+        candidate_intake,
+        dispatch_planning,
+        dispatch_plan_application,
+        worker_start_handoff,
+        worker_lifecycle_reconciliation
+      )
 
     projection = %{
       version: @version,
       generated_at: now,
+      overview: overview,
       device: device_summary(projects, registry, poll_coordination, provider_queue, sources, opts),
       status_counts: status_counts(projects),
       migration_boundary: migration_boundary_summary(sources),
@@ -115,6 +151,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     %{
       version: positive_integer(value(projection, :version)) || @version,
       generated_at: iso8601(value(projection, :generated_at)) || DateTime.utc_now() |> DateTime.to_iso8601(),
+      overview: overview_snapshot(value(projection, :overview), projects),
       device: device_snapshot(value(projection, :device), projects),
       status_counts: status_counts(projects),
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
@@ -158,6 +195,11 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
          runtime,
          activation_preflight,
          provider_queue,
+         candidate_intake,
+         dispatch_planning,
+         dispatch_plan_application,
+         worker_start_handoff,
+         worker_lifecycle_reconciliation,
          legacy_projects,
          managed_project_ids
        ) do
@@ -167,6 +209,42 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     preflight_project = find_project(activation_preflight, project_id)
     legacy_project = Enum.find(legacy_projects, &(required_string(&1, :project_id) == project_id))
 
+    if reason = project_summary_error_reason(registry_project, poll_project, runtime_project, preflight_project) do
+      summary_error_project(project_id, reason)
+    else
+      project_projection_from_parts(
+        project_id,
+        registry_project,
+        poll_project,
+        runtime_project,
+        preflight_project,
+        provider_queue,
+        candidate_intake,
+        dispatch_planning,
+        dispatch_plan_application,
+        worker_start_handoff,
+        worker_lifecycle_reconciliation,
+        legacy_project,
+        managed_project_ids
+      )
+    end
+  end
+
+  defp project_projection_from_parts(
+         project_id,
+         registry_project,
+         poll_project,
+         runtime_project,
+         preflight_project,
+         provider_queue,
+         candidate_intake,
+         dispatch_planning,
+         dispatch_plan_application,
+         worker_start_handoff,
+         worker_lifecycle_reconciliation,
+         legacy_project,
+         managed_project_ids
+       ) do
     migration_state =
       migration_state(
         project_id,
@@ -191,11 +269,19 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       project_id: project_id,
       name: project_name(registry_project, poll_project, legacy_project),
       status: nil,
+      summary_error: nil,
+      identity: identity_summary(project_id, registry_project, poll_project, legacy_project),
+      config: config_summary(registry_project),
       migration_state: migration_state,
       dispatch_enabled: dispatch_enabled?(registry_project, legacy_project),
       provider: provider_summary(registry_project, poll_project, runtime_project),
       poll: poll_summary(poll_project),
       provider_queue: project_queue,
+      candidate_intake: project_stage_summary(candidate_intake, project_id),
+      dispatch_planning: project_stage_summary(dispatch_planning, project_id),
+      dispatch_application: project_stage_summary(dispatch_plan_application, project_id),
+      start_handoff: start_handoff_summary(worker_start_handoff, project_id),
+      lifecycle_reconciliation: lifecycle_reconciliation_summary(worker_lifecycle_reconciliation, project_id),
       runtime: runtime_summary,
       activation_preflight: activation_preflight_summary(preflight_project),
       writebacks: writeback_summary,
@@ -231,6 +317,108 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     |> project_snapshot()
   end
 
+  defp safe_project_projection(project_id, sources) do
+    project_projection(
+      project_id,
+      sources.registry,
+      sources.poll_coordination,
+      sources.runtime,
+      sources.activation_preflight,
+      sources.provider_queue,
+      sources.candidate_intake,
+      sources.dispatch_planning,
+      sources.dispatch_plan_application,
+      sources.worker_start_handoff,
+      sources.worker_lifecycle_reconciliation,
+      sources.legacy_projects,
+      sources.managed_project_ids
+    )
+  rescue
+    _error ->
+      summary_error_project(project_id, "exception")
+  catch
+    _kind, _reason ->
+      summary_error_project(project_id, "throw")
+  end
+
+  defp summary_error_project(project_id, reason) do
+    project_snapshot(%{
+      project_id: project_id,
+      status: "manual_attention",
+      summary_error: %{
+        status: "manual_attention",
+        reason: "project_summary_#{default_status(reason, "unavailable")}",
+        message: "Hub project summary could not be built"
+      },
+      identity: %{project_id: project_id},
+      migration_state: "hub_ready",
+      dispatch_enabled: false,
+      manual_attention: [
+        %{
+          level: :error,
+          code: :hub_project_summary_error,
+          project_id: project_id,
+          message: "Hub project summary could not be built"
+        }
+      ],
+      backpressure_reasons: [
+        %{
+          reason: "manual_attention",
+          source: "device_observability",
+          project_id: project_id,
+          detail: "project_summary_error"
+        }
+      ]
+    })
+  end
+
+  defp project_summary_error_reason(sources) when is_list(sources) do
+    Enum.find_value(sources, &project_summary_error_reason/1)
+  end
+
+  defp project_summary_error_reason(nil), do: nil
+
+  defp project_summary_error_reason(source) when is_map(source) do
+    cond do
+      map_value(source, :summary_error) ->
+        optional_string(value(source, :summary_error), :reason) || "summary_error"
+
+      safe_status(value(source, :summary_status)) in ["error", "summary_error", "incompatible"] ->
+        optional_string(source, :summary_reason) || safe_status(value(source, :summary_status))
+
+      safe_status(value(source, :summary_state)) in ["error", "summary_error", "incompatible"] ->
+        optional_string(source, :summary_reason) || safe_status(value(source, :summary_state))
+
+      incompatible_summary_version?(value(source, :summary_version)) ->
+        "incompatible_snapshot_version"
+
+      incompatible_summary_version?(value(source, :observability_version)) ->
+        "incompatible_snapshot_version"
+
+      true ->
+        nil
+    end
+  end
+
+  defp project_summary_error_reason(_source), do: nil
+
+  defp project_summary_error_reason(registry_project, poll_project, runtime_project, preflight_project) do
+    project_summary_error_reason([registry_project, poll_project, runtime_project, preflight_project])
+  end
+
+  defp incompatible_summary_version?(nil), do: false
+  defp incompatible_summary_version?(""), do: false
+  defp incompatible_summary_version?(version) when is_integer(version), do: version > @version
+
+  defp incompatible_summary_version?(version) when is_binary(version) do
+    case Integer.parse(version) do
+      {number, ""} -> number > @version
+      _parse -> false
+    end
+  end
+
+  defp incompatible_summary_version?(_version), do: false
+
   defp project_snapshot(project) when is_map(project) do
     project_id = required_string(project, :project_id)
 
@@ -238,11 +426,19 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       project_id: project_id,
       name: optional_string(project, :name),
       status: normalize_project_status(value(project, :status)),
+      summary_error: summary_error_snapshot(value(project, :summary_error)),
+      identity: identity_snapshot(value(project, :identity), project_id),
+      config: config_snapshot(value(project, :config)),
       migration_state: normalize_migration_state(value(project, :migration_state)),
       dispatch_enabled: truthy?(value(project, :dispatch_enabled)),
       provider: provider_snapshot(value(project, :provider)),
       poll: poll_snapshot(value(project, :poll)),
       provider_queue: provider_queue_project_snapshot(value(project, :provider_queue)),
+      candidate_intake: stage_snapshot(value(project, :candidate_intake)),
+      dispatch_planning: stage_snapshot(value(project, :dispatch_planning)),
+      dispatch_application: stage_snapshot(value(project, :dispatch_application)),
+      start_handoff: stage_snapshot(value(project, :start_handoff)),
+      lifecycle_reconciliation: stage_snapshot(value(project, :lifecycle_reconciliation)),
       runtime: runtime_snapshot(value(project, :runtime)),
       activation_preflight: activation_preflight_project_snapshot(value(project, :activation_preflight)),
       writebacks: writeback_snapshot(value(project, :writebacks)),
@@ -265,6 +461,56 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   end
 
   defp provider_snapshot(_provider), do: provider_snapshot(%{})
+
+  defp summary_error_snapshot(nil), do: nil
+
+  defp summary_error_snapshot(error) when is_map(error) do
+    %{
+      status: optional_string(error, :status) || "manual_attention",
+      reason: optional_string(error, :reason) || "summary_unavailable",
+      message: optional_string(error, :message) || "Hub project summary could not be built"
+    }
+  end
+
+  defp summary_error_snapshot(_error), do: summary_error_snapshot(%{})
+
+  defp identity_snapshot(identity, project_id) when is_map(identity) do
+    %{
+      project_id: optional_string(identity, :project_id) || project_id,
+      name: optional_string(identity, :name),
+      provider_kind: optional_string(identity, :provider_kind),
+      provider_scope_key: optional_string(identity, :provider_scope_key),
+      service: optional_string(identity, :service)
+    }
+  end
+
+  defp identity_snapshot(_identity, project_id), do: identity_snapshot(%{project_id: project_id}, project_id)
+
+  defp config_snapshot(config) when is_map(config) do
+    %{
+      snapshot_version: optional_string(config, :snapshot_version),
+      fingerprint: optional_string(config, :fingerprint),
+      loaded_at: iso8601(value(config, :loaded_at)),
+      status: default_status(value(config, :status), "unknown"),
+      error: optional_string(config, :error)
+    }
+  end
+
+  defp config_snapshot(_config), do: config_snapshot(%{})
+
+  defp stage_snapshot(stage) when is_map(stage) do
+    %{
+      status: default_status(value(stage, :status), "unknown"),
+      counts: sanitize_value(value(stage, :counts) || %{}),
+      reason_counts: sanitize_value(value(stage, :reason_counts) || value(stage, :skipped_reasons) || %{}),
+      pending_count: non_negative_integer(value(stage, :pending_count)) || 0,
+      unresolved_count: non_negative_integer(value(stage, :unresolved_count)) || 0,
+      manual_attention_count: non_negative_integer(value(stage, :manual_attention_count)) || 0,
+      recent: sanitize_list(value(stage, :recent))
+    }
+  end
+
+  defp stage_snapshot(_stage), do: stage_snapshot(%{})
 
   defp poll_snapshot(poll) when is_map(poll) do
     %{
@@ -346,6 +592,140 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     }
   end
 
+  defp overview_snapshot(overview, projects) when is_map(overview) do
+    %{
+      hub: hub_overview_snapshot(value(overview, :hub)),
+      scheduler: scheduler_snapshot(value(overview, :scheduler)),
+      project_status_counts: status_counts(projects),
+      provider_governance: provider_governance_snapshot(value(overview, :provider_governance)),
+      capacity: capacity_overview_snapshot(value(overview, :capacity)),
+      workspace: workspace_overview_snapshot(value(overview, :workspace)),
+      writeback: writeback_overview_snapshot(value(overview, :writeback)),
+      activation_preflight: activation_preflight_overview_snapshot(value(overview, :activation_preflight)),
+      lifecycle: lifecycle_overview_snapshot(value(overview, :lifecycle)),
+      manual_attention: manual_attention_overview_snapshot(value(overview, :manual_attention)),
+      summary_errors: sanitize_list(value(overview, :summary_errors))
+    }
+  end
+
+  defp overview_snapshot(_overview, projects) do
+    overview_snapshot(%{project_status_counts: status_counts(projects)}, projects)
+  end
+
+  defp hub_overview_snapshot(hub) when is_map(hub) do
+    %{
+      runtime_enabled: truthy?(value(hub, :runtime_enabled)),
+      mode: optional_string(hub, :mode) || "legacy",
+      project_count: non_negative_integer(value(hub, :project_count)) || 0,
+      generated_at: iso8601(value(hub, :generated_at))
+    }
+  end
+
+  defp hub_overview_snapshot(_hub), do: hub_overview_snapshot(%{})
+
+  defp scheduler_snapshot(scheduler) when is_map(scheduler) do
+    %{
+      enabled: truthy?(value(scheduler, :enabled)),
+      status: default_status(value(scheduler, :status), "unknown"),
+      running: truthy?(value(scheduler, :running) || value(scheduler, :running?)),
+      queued: truthy?(value(scheduler, :queued)),
+      coalesced: truthy?(value(scheduler, :coalesced)),
+      next_tick_at: iso8601(value(scheduler, :next_tick_at)),
+      next_reason: safe_status(value(scheduler, :next_reason)),
+      last_tick: sanitize_value(value(scheduler, :last_tick) || %{}),
+      poll_tick: sanitize_value(value(scheduler, :poll_tick) || %{})
+    }
+  end
+
+  defp scheduler_snapshot(_scheduler), do: scheduler_snapshot(%{})
+
+  defp provider_governance_snapshot(governance) when is_map(governance) do
+    %{
+      pending_count: non_negative_integer(value(governance, :pending_count)) || 0,
+      running_count: non_negative_integer(value(governance, :running_count)) || 0,
+      provider_scopes_count: non_negative_integer(value(governance, :provider_scopes_count)) || 0,
+      queue_pressure: truthy?(value(governance, :queue_pressure)),
+      quota_or_backoff_count: non_negative_integer(value(governance, :quota_or_backoff_count)) || 0,
+      circuit_open_count: non_negative_integer(value(governance, :circuit_open_count)) || 0,
+      unsupported_count: non_negative_integer(value(governance, :unsupported_count)) || 0,
+      recent_failure_count: non_negative_integer(value(governance, :recent_failure_count)) || 0,
+      manual_attention_count: non_negative_integer(value(governance, :manual_attention_count)) || 0,
+      reasons: sanitize_value(value(governance, :reasons) || %{})
+    }
+  end
+
+  defp provider_governance_snapshot(_governance), do: provider_governance_snapshot(%{})
+
+  defp capacity_overview_snapshot(capacity) when is_map(capacity) do
+    %{
+      active_attempt_count: non_negative_integer(value(capacity, :active_attempt_count)) || 0,
+      pending_start_intent_count: non_negative_integer(value(capacity, :pending_start_intent_count)) || 0,
+      waiting_capacity_count: non_negative_integer(value(capacity, :waiting_capacity_count)) || 0,
+      unreleased_capacity_count: non_negative_integer(value(capacity, :unreleased_capacity_count)) || 0
+    }
+  end
+
+  defp capacity_overview_snapshot(_capacity), do: capacity_overview_snapshot(%{})
+
+  defp workspace_overview_snapshot(workspace) when is_map(workspace) do
+    %{
+      lease_count: non_negative_integer(value(workspace, :lease_count)) || 0,
+      retained_count: non_negative_integer(value(workspace, :retained_count)) || 0
+    }
+  end
+
+  defp workspace_overview_snapshot(_workspace), do: workspace_overview_snapshot(%{})
+
+  defp writeback_overview_snapshot(writeback) when is_map(writeback) do
+    %{
+      pending_count: non_negative_integer(value(writeback, :pending_count)) || 0,
+      succeeded_count: non_negative_integer(value(writeback, :succeeded_count)) || 0,
+      failed_count: non_negative_integer(value(writeback, :failed_count)) || 0,
+      unknown_count: non_negative_integer(value(writeback, :unknown_count)) || 0,
+      manual_attention_count: non_negative_integer(value(writeback, :manual_attention_count)) || 0,
+      conflict_count: non_negative_integer(value(writeback, :conflict_count)) || 0,
+      provider_lookup_required_count: non_negative_integer(value(writeback, :provider_lookup_required_count)) || 0,
+      unknown_non_idempotent_count: non_negative_integer(value(writeback, :unknown_non_idempotent_count)) || 0,
+      dangerous_replay_rejected_count: non_negative_integer(value(writeback, :dangerous_replay_rejected_count)) || 0
+    }
+  end
+
+  defp writeback_overview_snapshot(_writeback), do: writeback_overview_snapshot(%{})
+
+  defp activation_preflight_overview_snapshot(preflight) when is_map(preflight) do
+    %{
+      blocked_count: non_negative_integer(value(preflight, :blocked_count)) || 0,
+      unknown_count: non_negative_integer(value(preflight, :unknown_count)) || 0,
+      manual_attention_count: non_negative_integer(value(preflight, :manual_attention_count)) || 0,
+      legacy_ownership_count: non_negative_integer(value(preflight, :legacy_ownership_count)) || 0,
+      probe_unknown_count: non_negative_integer(value(preflight, :probe_unknown_count)) || 0
+    }
+  end
+
+  defp activation_preflight_overview_snapshot(_preflight), do: activation_preflight_overview_snapshot(%{})
+
+  defp lifecycle_overview_snapshot(lifecycle) when is_map(lifecycle) do
+    %{
+      running_count: non_negative_integer(value(lifecycle, :running_count)) || 0,
+      unknown_count: non_negative_integer(value(lifecycle, :unknown_count)) || 0,
+      lost_count: non_negative_integer(value(lifecycle, :lost_count)) || 0,
+      manual_attention_count: non_negative_integer(value(lifecycle, :manual_attention_count)) || 0,
+      retained_workspace_count: non_negative_integer(value(lifecycle, :retained_workspace_count)) || 0
+    }
+  end
+
+  defp lifecycle_overview_snapshot(_lifecycle), do: lifecycle_overview_snapshot(%{})
+
+  defp manual_attention_overview_snapshot(manual_attention) when is_map(manual_attention) do
+    %{
+      total_count: non_negative_integer(value(manual_attention, :total_count)) || 0,
+      project_ids: string_list(value(manual_attention, :project_ids)),
+      reasons: sanitize_value(value(manual_attention, :reasons) || %{})
+    }
+  end
+
+  defp manual_attention_overview_snapshot(_manual_attention), do: manual_attention_overview_snapshot(%{})
+
   defp normalize_activation_preflight_status(status) do
     case safe_status(status) do
       "" -> "unknown_manual_attention"
@@ -403,6 +783,337 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       provider_scopes_count: provider_scopes_count(projects, poll_coordination, provider_queue)
     }
   end
+
+  defp overview_summary(
+         projects,
+         sources,
+         scheduler,
+         tick,
+         provider_queue,
+         candidate_intake,
+         dispatch_planning,
+         dispatch_plan_application,
+         worker_start_handoff,
+         worker_lifecycle_reconciliation
+       ) do
+    %{
+      hub: %{
+        runtime_enabled: hub_runtime_enabled?(sources, projects),
+        mode: hub_mode(sources),
+        project_count: length(projects),
+        generated_at: value(sources, :generated_at)
+      },
+      scheduler: scheduler_overview(sources, scheduler, tick),
+      provider_governance: provider_governance_overview(provider_queue),
+      capacity: capacity_overview(projects, dispatch_planning, dispatch_plan_application, worker_start_handoff),
+      workspace: workspace_overview(projects),
+      writeback: writeback_overview(projects),
+      activation_preflight: activation_preflight_overview(projects),
+      lifecycle: lifecycle_overview(projects, worker_lifecycle_reconciliation),
+      manual_attention: manual_attention_overview(projects),
+      summary_errors: summary_errors(projects),
+      candidate_intake: stage_topline(candidate_intake),
+      dispatch_planning: stage_topline(dispatch_planning),
+      dispatch_application: stage_topline(dispatch_plan_application),
+      start_handoff: stage_topline(worker_start_handoff),
+      lifecycle_reconciliation: stage_topline(worker_lifecycle_reconciliation)
+    }
+  end
+
+  defp hub_runtime_enabled?(sources, projects) do
+    hub_runtime = value(sources, :hub_runtime) || %{}
+
+    hub_mode(sources) == "hub" or
+      value(hub_runtime, :mode) == "hub" or
+      value(sources, :runtime_enabled) == true or
+      projects != []
+  end
+
+  defp hub_mode(sources) do
+    hub_runtime = value(sources, :hub_runtime) || %{}
+    optional_string(hub_runtime, :mode) || optional_string(sources, :mode) || "hub"
+  end
+
+  defp scheduler_overview(sources, scheduler, tick) do
+    hub_runtime = value(sources, :hub_runtime) || %{}
+    runtime_scheduler = map_value(hub_runtime, :scheduler)
+    scheduler = scheduler || runtime_scheduler || %{}
+    tick = tick || map_value(hub_runtime, :poll_tick) || %{}
+
+    %{
+      enabled: value(scheduler, :enabled) == true,
+      status: value(scheduler, :status),
+      running: value(scheduler, :running?) == true,
+      queued: value(scheduler, :queued) == true,
+      coalesced: value(scheduler, :coalesced) == true,
+      next_tick_at: value(scheduler, :next_tick_at),
+      next_reason: value(scheduler, :next_reason) || poll_tick_wait_reason(tick),
+      last_tick: value(scheduler, :last_tick) || %{},
+      poll_tick: tick_topline(tick)
+    }
+  end
+
+  defp poll_tick_wait_reason(tick) do
+    case safe_status(value(tick, :status)) do
+      "idle" -> "idle"
+      "running" -> "running"
+      "completed" -> "completed"
+      status when status != "" -> status
+      _status -> nil
+    end
+  end
+
+  defp tick_topline(tick) do
+    %{
+      status: default_status(value(tick, :status), "idle"),
+      running: truthy?(value(tick, :running) || value(tick, :running?)),
+      selected_count: non_negative_integer(value(tick, :selected_count)) || 0,
+      result_counts: sanitize_value(value(tick, :result_counts) || %{})
+    }
+  end
+
+  defp provider_governance_overview(provider_queue) do
+    provider_scopes = list_value(provider_queue, :provider_scopes)
+    pending = list_value(provider_queue, :pending)
+    running = list_value(provider_queue, :running)
+    recent_results = list_value(provider_queue, :recent_results)
+    backpressure = list_value(provider_queue, :backpressure)
+    unsupported = Enum.filter(pending ++ running ++ recent_results ++ backpressure, &unsupported_provider_entry?/1)
+
+    quota_or_backoff_count =
+      Enum.count(provider_scopes, fn scope ->
+        state = map_value(scope, :state) || %{}
+        quota_remaining_zero?(value(state, :quota) || %{}) or future_time?(value(state, :backoff_until))
+      end)
+
+    circuit_open_count =
+      Enum.count(provider_scopes, fn scope ->
+        state = map_value(scope, :state) || %{}
+        safe_status(value(state, :circuit_state)) == "open"
+      end)
+
+    recent_failure_count =
+      Enum.count(recent_results, fn result ->
+        status = safe_status(value(result, :status) || value(result, :result_status))
+        status in ["failed", "failure", "retryable_failure", "permanent_failure", "rate_limited", "error"]
+      end)
+
+    reasons =
+      (Enum.map(backpressure, &default_status(value(&1, :reason), "backpressure")) ++
+         Enum.map(unsupported, fn _entry -> "unsupported_provider_operation" end))
+      |> Enum.reject(&blank?/1)
+      |> Enum.frequencies()
+      |> Map.new()
+
+    %{
+      pending_count: non_negative_integer(value(provider_queue, :pending_count)) || length(pending),
+      running_count: non_negative_integer(value(provider_queue, :running_count)) || length(running),
+      provider_scopes_count: length(provider_scopes),
+      queue_pressure: pending != [] or Enum.any?(backpressure, &(safe_status(value(&1, :reason)) == "scope_concurrency")),
+      quota_or_backoff_count: quota_or_backoff_count,
+      circuit_open_count: circuit_open_count,
+      unsupported_count: length(unsupported),
+      recent_failure_count: recent_failure_count,
+      manual_attention_count: Enum.count(backpressure ++ recent_results, &truthy?(value(&1, :manual_attention))),
+      reasons: reasons
+    }
+  end
+
+  defp unsupported_provider_entry?(entry) do
+    reason = safe_status(value(entry, :reason) || value(entry, :error_class) || value(entry, :status))
+    operation = safe_status(value(entry, :operation_kind) || value(entry, :operation))
+
+    String.contains?(reason, "unsupported") or
+      String.contains?(operation, "unsupported")
+  end
+
+  defp capacity_overview(projects, dispatch_planning, dispatch_plan_application, worker_start_handoff) do
+    waiting_capacity_count =
+      Enum.count(projects, &(&1.status == "waiting_capacity")) +
+        count_reason(projects, "queue_pressure") +
+        count_reason(projects, "project_capacity_full") +
+        count_reason(projects, "global_capacity_full")
+
+    planning_capacity_count = stage_count(dispatch_planning, :capacity_unavailable_count) || 0
+
+    %{
+      active_attempt_count:
+        Enum.reduce(projects, 0, fn project, count ->
+          count + length(project.runtime.active_attempts)
+        end),
+      pending_start_intent_count:
+        stage_count(dispatch_plan_application, :pending_start_intent_count) ||
+          stage_count(worker_start_handoff, :pending_start_intent_count) ||
+          Enum.reduce(projects, 0, fn project, count -> count + length(project.runtime.pending_start_intents) end),
+      waiting_capacity_count: max(waiting_capacity_count, planning_capacity_count),
+      unreleased_capacity_count:
+        Enum.reduce(projects, 0, fn project, count ->
+          lifecycle = project.runtime.lifecycle
+          count + length(lifecycle.retained_workspace) + length(project.runtime.workspace_leases)
+        end)
+    }
+  end
+
+  defp workspace_overview(projects) do
+    Enum.reduce(projects, %{lease_count: 0, retained_count: 0}, fn project, totals ->
+      lifecycle = project.runtime.lifecycle
+
+      totals
+      |> Map.update!(:lease_count, &(&1 + length(project.runtime.workspace_leases)))
+      |> Map.update!(:retained_count, &(&1 + length(lifecycle.retained_workspace)))
+    end)
+  end
+
+  defp writeback_overview(projects) do
+    Enum.reduce(projects, writeback_overview_snapshot(%{}), fn project, totals ->
+      counts = project.writebacks.counts
+
+      all_writebacks =
+        project.writebacks.pending ++
+          project.writebacks.failed ++ project.writebacks.unknown ++ project.writebacks.manual_attention
+
+      conflicts = project.conflicts
+
+      totals
+      |> Map.update!(:pending_count, &(&1 + counts.pending))
+      |> Map.update!(:succeeded_count, &(&1 + counts.succeeded))
+      |> Map.update!(:failed_count, &(&1 + counts.failed))
+      |> Map.update!(:unknown_count, &(&1 + counts.unknown))
+      |> Map.update!(:manual_attention_count, &(&1 + counts.manual_attention))
+      |> Map.update!(:conflict_count, &(&1 + writeback_conflict_count(conflicts)))
+      |> Map.update!(:provider_lookup_required_count, &(&1 + reason_match_count(all_writebacks, "provider_lookup")))
+      |> Map.update!(
+        :unknown_non_idempotent_count,
+        &(&1 + reason_match_count(all_writebacks, "unknown_non_idempotent"))
+      )
+      |> Map.update!(:dangerous_replay_rejected_count, &(&1 + dangerous_replay_count(all_writebacks)))
+    end)
+  end
+
+  defp writeback_conflict_count(conflicts) do
+    Enum.count(conflicts, fn conflict ->
+      code = safe_status(value(conflict, :code) || value(conflict, :reason))
+      String.contains?(code, "writeback") and String.contains?(code, "conflict")
+    end)
+  end
+
+  defp reason_match_count(entries, fragment) do
+    Enum.count(entries, fn entry ->
+      reason =
+        safe_status(value(entry, :reason) || value(entry, :manual_attention_reason) || value(entry, :error_summary))
+
+      String.contains?(reason, fragment)
+    end)
+  end
+
+  defp dangerous_replay_count(entries) do
+    Enum.count(entries, fn entry ->
+      reason =
+        safe_status(value(entry, :reason) || value(entry, :manual_attention_reason) || value(entry, :error_summary))
+
+      replay_policy = safe_status(value(entry, :replay_policy))
+
+      String.contains?(reason, "dangerous") or
+        String.contains?(reason, "not_replayable") or
+        (safe_status(value(entry, :result_status)) == "unknown" and replay_policy == "non_idempotent")
+    end)
+  end
+
+  defp activation_preflight_overview(projects) do
+    Enum.reduce(projects, activation_preflight_overview_snapshot(%{}), fn project, totals ->
+      preflight = project.activation_preflight
+
+      totals
+      |> Map.update!(:blocked_count, &(&1 + if(preflight && preflight.status == "blocked_conflict", do: 1, else: 0)))
+      |> Map.update!(:unknown_count, &(&1 + if(preflight && preflight.status == "unknown_manual_attention", do: 1, else: 0)))
+      |> Map.update!(:manual_attention_count, &(&1 + if(preflight, do: preflight.manual_attention_count, else: 0)))
+      |> Map.update!(:legacy_ownership_count, &(&1 + if(preflight, do: length(preflight.detected_legacy_ownership), else: 0)))
+      |> Map.update!(:probe_unknown_count, &(&1 + if(preflight, do: length(preflight.unknown_probe_results), else: 0)))
+    end)
+  end
+
+  defp lifecycle_overview(projects, worker_lifecycle_reconciliation) do
+    from_projects =
+      Enum.reduce(projects, lifecycle_overview_snapshot(%{}), fn project, totals ->
+        counts = project.runtime.lifecycle.counts
+
+        totals
+        |> Map.update!(:running_count, &(&1 + counts.running))
+        |> Map.update!(:unknown_count, &(&1 + counts.unknown))
+        |> Map.update!(:lost_count, &(&1 + counts.lost))
+        |> Map.update!(:manual_attention_count, &(&1 + counts.manual_attention))
+        |> Map.update!(:retained_workspace_count, &(&1 + counts.retained_workspace))
+      end)
+
+    counts = value(worker_lifecycle_reconciliation, :counts) || %{}
+    running_count = non_negative_integer(value(counts, :running_count)) || 0
+    unknown_count = non_negative_integer(value(counts, :unknown_count)) || 0
+    lost_count = non_negative_integer(value(counts, :lost_count)) || 0
+    manual_attention_count = non_negative_integer(value(counts, :manual_attention_count)) || 0
+    retained_workspace_count = non_negative_integer(value(counts, :retained_workspace_count)) || 0
+
+    %{
+      from_projects
+      | running_count: max(from_projects.running_count, running_count),
+        unknown_count: max(from_projects.unknown_count, unknown_count),
+        lost_count: max(from_projects.lost_count, lost_count),
+        manual_attention_count: max(from_projects.manual_attention_count, manual_attention_count),
+        retained_workspace_count: max(from_projects.retained_workspace_count, retained_workspace_count)
+    }
+  end
+
+  defp manual_attention_overview(projects) do
+    attention_projects =
+      Enum.filter(projects, fn project ->
+        project.status == "manual_attention" or project.manual_attention != [] or project.summary_error != nil
+      end)
+
+    reasons =
+      projects
+      |> Enum.flat_map(& &1.backpressure_reasons)
+      |> Enum.filter(&(&1.reason == "manual_attention" or String.contains?(&1.reason, "unknown")))
+      |> Enum.map(& &1.reason)
+      |> Enum.frequencies()
+
+    %{
+      total_count: length(attention_projects),
+      project_ids: Enum.map(attention_projects, & &1.project_id),
+      reasons: reasons
+    }
+  end
+
+  defp summary_errors(projects) do
+    projects
+    |> Enum.filter(& &1.summary_error)
+    |> Enum.map(fn project ->
+      %{project_id: project.project_id, reason: project.summary_error.reason, message: project.summary_error.message}
+    end)
+  end
+
+  defp stage_topline(stage) when is_map(stage) do
+    %{
+      status: default_status(value(stage, :status), "unknown"),
+      counts: sanitize_value(value(stage, :counts) || %{}),
+      reason_counts: sanitize_value(value(stage, :reason_counts) || value(stage, :skipped_reasons) || %{})
+    }
+  end
+
+  defp stage_topline(_stage), do: stage_topline(%{})
+
+  defp count_reason(projects, reason) do
+    Enum.count(projects, fn project ->
+      Enum.any?(project.backpressure_reasons, &(&1.reason == reason))
+    end)
+  end
+
+  defp stage_count(stage, key) when is_map(stage) do
+    stage
+    |> value(:counts)
+    |> value(key)
+    |> non_negative_integer()
+  end
+
+  defp stage_count(_stage, _key), do: nil
 
   defp active_agent_count(projects) do
     Enum.reduce(projects, 0, fn project, total ->
@@ -509,6 +1220,160 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     optional_string(registry_project, :name) ||
       optional_string(poll_project, :name) ||
       optional_string(legacy_project, :name)
+  end
+
+  defp identity_summary(project_id, registry_project, poll_project, legacy_project) do
+    provider = provider_summary(registry_project, poll_project, nil)
+
+    %{
+      project_id: project_id,
+      name: project_name(registry_project, poll_project, legacy_project),
+      provider_kind: provider.kind,
+      provider_scope_key: provider.provider_scope_key,
+      service: optional_string(legacy_project, :service)
+    }
+  end
+
+  defp config_summary(nil), do: %{}
+
+  defp config_summary(registry_project) do
+    %{
+      snapshot_version:
+        optional_string(registry_project, :config_snapshot_version) ||
+          optional_string(registry_project, :snapshot_version) ||
+          optional_string(registry_project, :version),
+      fingerprint: optional_string(registry_project, :fingerprint),
+      loaded_at: value(registry_project, :loaded_at),
+      status: value(registry_project, :status),
+      error: optional_string(registry_project, :load_error)
+    }
+  end
+
+  defp project_stage_summary(nil, _project_id), do: stage_snapshot(%{})
+
+  defp project_stage_summary(stage, project_id) do
+    project = find_project(stage, project_id) || %{}
+    counts = value(project, :counts) || %{}
+    reason_counts = value(project, :reason_counts) || value(project, :skipped_reasons) || %{}
+
+    %{
+      status: value(stage, :status),
+      counts: counts,
+      reason_counts: reason_counts,
+      pending_count: stage_pending_count(project),
+      unresolved_count: stage_unresolved_count(counts, project),
+      manual_attention_count: stage_manual_attention_count(counts, project),
+      recent: compact_stage_entries(project)
+    }
+  end
+
+  defp start_handoff_summary(nil, _project_id), do: stage_snapshot(%{})
+
+  defp start_handoff_summary(stage, project_id) do
+    results = stage |> list_value(:results) |> Enum.filter(&(optional_string(&1, :project_id) == project_id))
+
+    pending =
+      stage
+      |> list_value(:pending_start_intents)
+      |> Enum.filter(&(optional_string(&1, :project_id) == project_id))
+
+    unresolved =
+      stage
+      |> list_value(:unresolved_start_intents)
+      |> Enum.filter(&(optional_string(&1, :project_id) == project_id))
+
+    counts = %{
+      selected_count: length(results),
+      acked_count: Enum.count(results, &(safe_status(value(&1, :status)) == "ack")),
+      failed_count: Enum.count(results, &(safe_status(value(&1, :status)) == "failed")),
+      unknown_count: Enum.count(results, &(safe_status(value(&1, :status)) == "unknown")),
+      manual_attention_count: Enum.count(results, &(safe_status(value(&1, :status)) == "manual_attention")),
+      skipped_count: Enum.count(results, &(safe_status(value(&1, :status)) == "skipped")),
+      pending_start_intent_count: length(pending),
+      unresolved_start_intent_count: length(unresolved)
+    }
+
+    %{
+      status: value(stage, :status),
+      counts: counts,
+      reason_counts: reason_counts(results),
+      pending_count: length(pending),
+      unresolved_count: length(unresolved),
+      manual_attention_count: counts.manual_attention_count,
+      recent: compact_entries(results ++ unresolved)
+    }
+  end
+
+  defp lifecycle_reconciliation_summary(nil, _project_id), do: stage_snapshot(%{})
+
+  defp lifecycle_reconciliation_summary(stage, project_id) do
+    results = stage |> list_value(:results) |> Enum.filter(&(optional_string(&1, :project_id) == project_id))
+
+    counts = %{
+      selected_count: length(results),
+      running_count: Enum.count(results, &(safe_status(value(&1, :status)) == "running")),
+      succeeded_count: Enum.count(results, &(safe_status(value(&1, :status)) == "succeeded")),
+      failed_count: Enum.count(results, &(safe_status(value(&1, :status)) == "failed")),
+      lost_count: Enum.count(results, &(safe_status(value(&1, :status)) == "lost")),
+      unknown_count: Enum.count(results, &(safe_status(value(&1, :status)) == "unknown")),
+      manual_attention_count: Enum.count(results, &(safe_status(value(&1, :status)) == "manual_attention" or truthy?(value(&1, :manual_attention)))),
+      retained_workspace_count: Enum.count(results, &(safe_status(value(&1, :workspace_action)) == "retained")),
+      released_workspace_count: Enum.count(results, &(safe_status(value(&1, :workspace_action)) == "released"))
+    }
+
+    %{
+      status: value(stage, :status),
+      counts: counts,
+      reason_counts: reason_counts(results),
+      pending_count: 0,
+      unresolved_count: counts.lost_count + counts.unknown_count + counts.manual_attention_count,
+      manual_attention_count: counts.manual_attention_count,
+      recent: compact_entries(results)
+    }
+  end
+
+  defp stage_pending_count(project) do
+    length(list_value(project, :pending_intents)) + length(list_value(project, :pending_start_intents))
+  end
+
+  defp stage_unresolved_count(counts, project) do
+    non_negative_integer(value(counts, :unresolved_count)) ||
+      non_negative_integer(value(counts, :unresolved_start_intent_count)) ||
+      length(list_value(project, :unresolved_start_intents)) ||
+      0
+  end
+
+  defp stage_manual_attention_count(counts, project) do
+    non_negative_integer(value(counts, :manual_attention_count)) ||
+      Enum.count(list_value(project, :outcomes), &(safe_status(value(&1, :status)) == "manual_attention")) ||
+      0
+  end
+
+  defp compact_stage_entries(project) do
+    project
+    |> list_value(:candidates)
+    |> Kernel.++(list_value(project, :invalid_candidates))
+    |> Kernel.++(list_value(project, :outcomes))
+    |> Kernel.++(list_value(project, :pending_intents))
+    |> Kernel.++(list_value(project, :pending_start_intents))
+    |> compact_entries()
+  end
+
+  defp compact_entries(entries) do
+    entries
+    |> Enum.take(5)
+    |> Enum.map(fn entry ->
+      %{
+        status: safe_status(value(entry, :status) || value(entry, :result_status) || value(entry, :claim_status)),
+        reason: safe_status(value(entry, :reason) || value(entry, :skipped_reason) || value(entry, :invalid_reason)),
+        issue_key: optional_string(entry, :issue_key),
+        candidate_key: optional_string(entry, :candidate_key),
+        intent_id: optional_string(entry, :intent_id) || optional_string(entry, :start_intent_id),
+        attempt_id: optional_string(entry, :attempt_id),
+        workspace_path: optional_string(entry, :workspace_path)
+      }
+    end)
+    |> sanitize_list()
   end
 
   defp migration_state(
@@ -1364,6 +2229,13 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     |> case do
       nil -> ""
       string -> string |> String.trim() |> String.downcase() |> String.replace("-", "_") |> String.replace(" ", "_")
+    end
+  end
+
+  defp default_status(value, default) do
+    case safe_status(value) do
+      "" -> default
+      status -> status
     end
   end
 

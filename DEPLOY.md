@@ -9,8 +9,13 @@
 队列、quota/backoff/circuit 和结果分类模型。它不会让本部署方式变成单进程 Hub 调度，也不会接管
 现有 poll loop、tracker fetch、写回或 dynamic tools provider 调用。
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
-它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
-`symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
+显式 Hub mode 或已有 Hub summary 时，`/api/v1/state` 会暴露 `hub_device_observability.overview`
+和 per-project detail，单实例 Dashboard `/` 也会显示 Hub 设备总览与 Hub 项目明细。它可以标记
+`legacy_only`、`hub_ready`、`hub_managed`、blocked、backoff、manual attention、waiting capacity
+等状态，并解释 scheduler/tick 等待原因、provider backpressure、capacity/workspace、preflight、
+lifecycle 和 writeback 风险，但不会替换 `symphony@project.service`，也不会把 legacy 多实例自动迁移成
+Hub mode。单个项目 summary 缺字段、版本不兼容或构建失败时只会把该项目标成 manual attention /
+summary error，不应让整个 Dashboard/API 不可用。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

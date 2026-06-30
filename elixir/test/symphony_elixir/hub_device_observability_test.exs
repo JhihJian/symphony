@@ -165,6 +165,166 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     refute safe_text =~ "cookie"
   end
 
+  test "adds device overview and project detail summaries while isolating project summary errors" do
+    projection =
+      DeviceObservability.build(
+        %{
+          registry: %{
+            projects: [
+              registry_project("alpha", "github:o/r"),
+              %{
+                project_id: "broken",
+                name: "Broken",
+                dispatch_enabled: true,
+                status: :ready,
+                tracker_summary: %{kind: "github", provider_scope_key: "github:o/r", provider_scope: %{owner: "o", repo: "r"}},
+                runtime_summary: %{max_concurrent_agents: 1},
+                fingerprint: "broken-fingerprint",
+                summary_error: %{reason: "source_projection_failed"}
+              }
+            ]
+          },
+          poll_coordination: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                allow_poll: true,
+                eligibility: %{reason: "ready"},
+                provider_scope_key: "github:o/r"
+              },
+              %{
+                project_id: "broken",
+                allow_poll: true,
+                eligibility: %{reason: "ready"},
+                provider_scope_key: "github:o/r"
+              }
+            ],
+            provider_queue: %{
+              pending_count: 1,
+              provider_scopes: [
+                %{
+                  provider_scope_key: "github:o/r",
+                  state: %{quota: %{remaining: 0}, backoff_until: "2026-06-28T09:05:00Z"}
+                }
+              ],
+              pending: [%{project_id: "alpha", provider_scope_key: "github:o/r", operation_kind: "candidate_scan"}],
+              recent_results: [
+                %{
+                  project_id: "alpha",
+                  provider_scope_key: "github:o/r",
+                  status: "retryable_failure",
+                  result_summary: %{error: "provider_error", reason: "github_api_status:503"}
+                }
+              ]
+            }
+          },
+          runtime_ledger: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                counts: %{running: 1},
+                active_attempts: [%{issue_key: "alpha:github:o/r:1", attempt_id: "a1", status: :running}],
+                pending_start_intents: [%{issue_key: "alpha:github:o/r:1", intent_id: "s1", status: :unknown}],
+                workspace_leases: [%{issue_key: "alpha:github:o/r:1", attempt_id: "a1", status: :active}],
+                writebacks: %{
+                  counts: %{pending: 1, succeeded: 1, failed: 1, unknown: 1, manual_attention: 1},
+                  unknown: [
+                    %{
+                      intent_key: "w1",
+                      result_status: "unknown",
+                      replay_policy: "non_idempotent",
+                      manual_attention_reason: "unknown_non_idempotent_writeback"
+                    }
+                  ],
+                  manual_attention: [
+                    %{intent_key: "w2", manual_attention_reason: "unknown_pr_create_requires_provider_lookup"}
+                  ]
+                },
+                conflicts: [%{code: :writeback_intent_conflict}],
+                manual_attention: [%{code: :writeback_unknown_manual_attention}]
+              }
+            ]
+          },
+          activation_preflight: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                status: "blocked_conflict",
+                reason: "legacy ownership conflict",
+                safe_to_manage: false,
+                conflict_count: 1,
+                manual_attention_count: 1,
+                detected_legacy_ownership: [%{source: "service"}],
+                unknown_probe_results: [%{source: "systemd"}]
+              }
+            ]
+          },
+          candidate_intake: %{
+            status: "completed",
+            projects: [
+              %{
+                project_id: "alpha",
+                counts: %{candidate_count: 2, eligible_count: 1},
+                skipped_reasons: %{duplicate_active_attempt: 1}
+              }
+            ]
+          },
+          dispatch_planning: %{
+            status: "completed",
+            counts: %{capacity_unavailable_count: 1},
+            projects: [%{project_id: "alpha", counts: %{planned_count: 1, capacity_unavailable_count: 1}}]
+          },
+          dispatch_plan_application: %{
+            status: "completed",
+            projects: [%{project_id: "alpha", counts: %{applied_count: 1, pending_start_intent_count: 1}}]
+          },
+          worker_start_handoff: %{
+            status: "completed",
+            results: [%{project_id: "alpha", status: "unknown", issue_key: "alpha:github:o/r:1"}],
+            unresolved_start_intents: [%{project_id: "alpha", issue_key: "alpha:github:o/r:1", intent_id: "s1"}]
+          },
+          worker_lifecycle_reconciliation: %{
+            status: "completed",
+            counts: %{unknown_count: 1, retained_workspace_count: 1},
+            results: [%{project_id: "alpha", status: "unknown", workspace_action: "retained"}]
+          },
+          scheduler: %{enabled: true, status: "waiting", next_reason: "provider_backoff", next_tick_at: "2026-06-28T09:05:00Z"},
+          tick: %{status: "completed", selected_count: 1, result_counts: %{retryable_failure: 1}},
+          hub_runtime: %{mode: "hub", generated_at: "2026-06-28T09:00:00Z"}
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    assert projection.overview.hub.runtime_enabled == true
+    assert projection.overview.scheduler.enabled == true
+    assert projection.overview.scheduler.next_reason == "provider_backoff"
+    assert projection.overview.provider_governance.pending_count == 1
+    assert projection.overview.provider_governance.quota_or_backoff_count == 1
+    assert projection.overview.provider_governance.recent_failure_count == 1
+    assert projection.overview.capacity.active_attempt_count == 1
+    assert projection.overview.capacity.pending_start_intent_count == 1
+    assert projection.overview.workspace.lease_count == 1
+    assert projection.overview.writeback.conflict_count == 1
+    assert projection.overview.writeback.provider_lookup_required_count == 1
+    assert projection.overview.writeback.unknown_non_idempotent_count == 1
+    assert projection.overview.activation_preflight.blocked_count == 1
+    assert projection.overview.activation_preflight.legacy_ownership_count == 1
+    assert projection.overview.lifecycle.unknown_count == 1
+
+    projects = Map.new(projection.projects, &{&1.project_id, &1})
+    assert count_value(projects["alpha"].candidate_intake.counts, :candidate_count) == 2
+    assert count_value(projects["alpha"].dispatch_planning.counts, :planned_count) == 1
+    assert count_value(projects["alpha"].dispatch_application.counts, :applied_count) == 1
+    assert projects["alpha"].start_handoff.unresolved_count == 1
+    assert count_value(projects["alpha"].lifecycle_reconciliation.counts, :unknown_count) == 1
+
+    assert projects["broken"].status == "manual_attention"
+    assert projects["broken"].summary_error.reason == "project_summary_source_projection_failed"
+    assert [%{"project_id" => "broken"}] = projection.overview.summary_errors
+
+    refute inspect(projection) =~ "github_api_status"
+  end
+
   test "observability presenter exposes hub device projection when present and preserves legacy shape otherwise" do
     projection =
       DeviceObservability.build(
@@ -219,6 +379,10 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     project.backpressure_reasons
     |> Enum.map(& &1.reason)
     |> Enum.sort()
+  end
+
+  defp count_value(counts, key) when is_map(counts) and is_atom(key) do
+    Map.get(counts, key) || Map.get(counts, Atom.to_string(key))
   end
 
   defp registry do
