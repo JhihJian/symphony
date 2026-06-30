@@ -241,6 +241,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   conflict <%= hub_cutover_history_count(@payload, :conflict_count) %> · malformed <%= hub_cutover_history_count(@payload, :malformed_count) %> · unsupported <%= hub_cutover_history_count(@payload, :unsupported_count) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Execution Permit</p>
+                <p class="metric-value"><%= hub_cutover_permit_status(@payload) %></p>
+                <p class="metric-detail">
+                  permits <%= hub_cutover_permit_count(@payload, :permit_count) %> · ready <%= hub_cutover_permit_count(@payload, :ready_count) %> · blocked <%= hub_cutover_permit_count(@payload, :blocked_count) %> · stale <%= hub_cutover_permit_count(@payload, :stale_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  manual <%= hub_cutover_permit_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_permit_count(@payload, :malformed_count) %> · unsupported <%= hub_cutover_permit_count(@payload, :unsupported_count) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -294,6 +305,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class={hub_cutover_history_badge_class(project.cutover_audit_history && project.cutover_audit_history.status)}>
                           history <%= hub_cutover_history_project_status(project.cutover_audit_history) %>
                         </span>
+                        <span class={hub_cutover_permit_badge_class(project.cutover_readiness_permit && project.cutover_readiness_permit.status)}>
+                          permit <%= hub_cutover_permit_project_status(project.cutover_readiness_permit) %>
+                        </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
                       </div>
@@ -342,6 +356,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={item <- hub_unresolved_cutover_items(project)} class="muted event-meta">
                           cutover <%= item.operation %> <%= item.reason_code %> / <%= item.required_operator_action_code %>
+                        </span>
+                        <span :if={project.cutover_readiness_permit} class="muted event-meta">
+                          permit ready <%= hub_cutover_permit_project_count(project, :ready_count) %> · blocked <%= hub_cutover_permit_project_count(project, :blocked_count) %> · stale <%= hub_cutover_permit_project_count(project, :stale_count) %>
+                        </span>
+                        <span :for={permit <- hub_cutover_project_permits(project)} class="muted event-meta">
+                          permit <%= permit.operation %> <%= permit.decision %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -840,6 +860,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_permit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_readiness_permit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_permit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_readiness_permit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -913,6 +951,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_history_badge_class("summary_error"), do: "state-badge state-badge-danger"
   defp hub_cutover_history_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_permit_badge_class("ready_for_execution_consideration"), do: "state-badge state-badge-active"
+  defp hub_cutover_permit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_permit_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_permit_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -930,6 +978,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_history_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_history_project_status(_history), do: "no_history"
+
+  defp hub_cutover_permit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_permit_project_status(_permit), do: "no_request"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -990,6 +1041,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_unresolved_cutover_items(_project), do: []
+
+  defp hub_cutover_permit_project_count(%{cutover_readiness_permit: %{permits: permits}}, key) when is_list(permits) do
+    decisions = %{
+      ready_count: "ready_for_execution_consideration",
+      blocked_count: "blocked",
+      stale_count: "stale",
+      manual_attention_count: "manual_attention",
+      unsupported_count: "unsupported",
+      malformed_count: "malformed"
+    }
+
+    case Map.fetch(decisions, key) do
+      {:ok, decision} -> Enum.count(permits, &(&1.decision == decision))
+      :error -> 0
+    end
+  end
+
+  defp hub_cutover_permit_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_permits(%{cutover_readiness_permit: %{permits: permits}}) when is_list(permits) do
+    Enum.take(permits, 3)
+  end
+
+  defp hub_cutover_project_permits(_project), do: []
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

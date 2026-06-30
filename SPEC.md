@@ -1438,6 +1438,7 @@ Runtime entrypoint:
   `hub_runtime`, `hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
   `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
   `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, `hub_cutover_gate`, and
+  `hub_cutover_operation_audit`, `hub_cutover_audit_history`, `hub_cutover_readiness_permit`, and
   `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
   SHOULD keep the existing API shape.
 - `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
@@ -1447,9 +1448,11 @@ Runtime entrypoint:
   pressure (queue, quota/backoff/circuit, unsupported provider/operation, recent failure), active
   attempts, pending start intents, unknown lifecycle results, workspace leases, unreleased capacity,
   writeback conflicts/unknown non-idempotent/provider lookup/manual attention, activation preflight
-  blocks/unknowns, cutover gate allowed/blocked/manual-attention counts, and per-project summary
-  errors. Each project detail SHOULD expose safe identity, provider scope, migration/ownership
-  status, config snapshot version or fingerprint, activation preflight reason, cutover gate decision,
+  blocks/unknowns, cutover gate allowed/blocked/manual-attention counts, dry-run audit request
+  counts, audit history/closeout counts, execution readiness permit ready/blocked/stale/manual/
+  unsupported/malformed counts, and per-project summary errors. Each project detail SHOULD expose
+  safe identity, provider scope, migration/ownership status, config snapshot version or fingerprint,
+  activation preflight reason, cutover gate decision, cutover request/audit/history/permit summaries,
   poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
   candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
   and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
@@ -1600,6 +1603,36 @@ Runtime entrypoint:
   missing evidence MUST NOT clear unresolved manual attention. A malformed history or closeout for
   one project MUST NOT affect other project summaries, Hub ticks, Dashboard/API responses, or
   execution of unrelated projects.
+- Hub-compatible implementations SHOULD expose a read-only cutover execution readiness permit
+  summary after the cutover gate, dry-run audit, audit history/closeout, and activation
+  acknowledgement summaries. A permit SHOULD be scoped to a current explicit request and requested
+  operation, and SHOULD bind `project_id`, safe provider scope, operation, request fingerprint,
+  activation plan id/fingerprint, acknowledgement status/fingerprint, cutover gate decision and
+  staged ownership/evidence fingerprint, dry-run audit decision, audit history/closeout currentness,
+  executor/starter modes, source, generated/evaluated time, stable permit fingerprint, and safe
+  evidence fingerprints.
+- Permit decisions SHOULD include `ready_for_execution_consideration`, `blocked`, `stale`,
+  `manual_attention`, `unsupported`, and `malformed`, with stable reason/action codes. A permit MUST
+  be ready only when the current cutover gate allows that operation, the dry-run audit is current and
+  would allow it, audit history and closeout state do not show unresolved/stale/conflicting/malformed
+  evidence, manual attention has been safely handled, activation acknowledgement still matches the
+  current plan, the executor/starter mode supports the operation, and the bound evidence
+  fingerprints have not drifted. Missing, expired, stale, conflicting, malformed, unsupported, or
+  mode-incompatible input MUST NOT be treated as ready.
+- A readiness permit MUST NOT bypass the cutover gate, activation preflight, legacy ownership
+  guardrail, provider governance, runtime ledger, worker starter, or writeback executor. Permit
+  generation MUST NOT perform provider I/O, candidate scan, dispatch plan application, worker start,
+  runtime-ledger pending-start/attempt/writeback mutation, provider writeback, systemd operations,
+  legacy service stop/disable/restart/delete, or Hub/project configuration writes. The permit is a
+  read-only pre-execution audit summary for later execution entrypoints to consume.
+- Dashboard/API summaries SHOULD expose device-level permit counts (`permit_count`, ready, blocked,
+  stale, manual attention, unsupported, malformed, no request, summary error) and project-level
+  permit decisions, reason/action codes, evidence fingerprints, source, safe timestamps, and
+  stale/conflict/malformed diagnostics. Projects without an explicit request/permit MUST show a
+  non-misleading `no_request` state rather than pending migration, execution, or legacy takeover.
+  Malformed permit/request/history/closeout/evidence input for one project MUST be isolated to that
+  project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
+  summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

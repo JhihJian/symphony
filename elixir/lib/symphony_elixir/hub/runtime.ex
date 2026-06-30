@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     CutoverAuditHistory,
     CutoverGate,
     CutoverOperationAudit,
+    CutoverReadinessPermit,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -596,6 +597,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_worker_lifecycle_reconciliation",
              "hub_cutover_operation_audit",
              "hub_cutover_audit_history",
+             "hub_cutover_readiness_permit",
              "hub_device_observability"
            ],
            poll_tick: tick_summary
@@ -709,6 +711,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           worker_start_handoff: worker_start_handoff,
           worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
           cutover_audit_history: %{},
+          cutover_readiness_permit: %{},
           writeback: writeback,
           migration_boundary: migration_boundary()
         },
@@ -746,10 +749,25 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now
       )
 
+    cutover_readiness_permit =
+      CutoverReadinessPermit.build(
+        %{
+          generated_at: now,
+          hub_runtime: runtime_observability,
+          projects: device_observability.projects,
+          activation_plan: device_observability.activation_plan,
+          cutover_gate: cutover_gate,
+          cutover_operation_audit: cutover_operation_audit,
+          cutover_audit_history: cutover_audit_history
+        },
+        now: now
+      )
+
     device_observability =
       device_observability
       |> Map.put(:cutover_operation_audit, cutover_operation_audit)
       |> Map.put(:cutover_audit_history, cutover_audit_history)
+      |> Map.put(:cutover_readiness_permit, cutover_readiness_permit)
       |> DeviceObservability.to_snapshot()
 
     %{
@@ -779,6 +797,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_gate: cutover_gate,
         cutover_operation_audit: cutover_operation_audit,
         cutover_audit_history: cutover_audit_history,
+        cutover_readiness_permit: cutover_readiness_permit,
         writeback: writeback,
         scheduler: scheduler,
         poll_tick: tick,
@@ -796,6 +815,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_cutover_gate: cutover_gate,
       hub_cutover_operation_audit: cutover_operation_audit,
       hub_cutover_audit_history: cutover_audit_history,
+      hub_cutover_readiness_permit: cutover_readiness_permit,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -1100,6 +1120,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         "hub_worker_start_handoff",
         "hub_worker_lifecycle_reconciliation",
         "hub_cutover_operation_audit",
+        "hub_cutover_audit_history",
+        "hub_cutover_readiness_permit",
         "hub_device_observability"
       ]
     }

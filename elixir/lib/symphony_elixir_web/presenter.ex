@@ -11,6 +11,7 @@ defmodule SymphonyElixirWeb.Presenter do
     CutoverAuditHistory,
     CutoverGate,
     CutoverOperationAudit,
+    CutoverReadinessPermit,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -49,6 +50,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_cutover_gate(snapshot)
         |> maybe_put_hub_cutover_operation_audit(snapshot)
         |> maybe_put_hub_cutover_audit_history(snapshot)
+        |> maybe_put_hub_cutover_readiness_permit(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -149,6 +151,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverAuditHistory.observability_snapshot(hub_cutover_audit_history) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_audit_history, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_readiness_permit(payload, snapshot) do
+    hub_cutover_readiness_permit =
+      Map.get(snapshot, :hub_cutover_readiness_permit) ||
+        Map.get(snapshot, "hub_cutover_readiness_permit")
+
+    case CutoverReadinessPermit.observability_snapshot(hub_cutover_readiness_permit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_readiness_permit, safe_snapshot)
     end
   end
 

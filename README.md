@@ -251,6 +251,19 @@ evidence fingerprints change, old closeouts show stale/conflict instead of being
 The API/Dashboard expose counts for history entries, unresolved manual attention, closed, stale,
 conflict, malformed, unsupported, and summary errors without full prompts, provider bodies, raw
 systemd output, secret env, or local private paths.
+`hub_cutover_readiness_permit` /
+`hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
+baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
+requested operation it binds the project/provider scope, request fingerprint, activation
+plan/acknowledgement fingerprint, cutover gate/staged ownership evidence, dry-run audit decision,
+audit history/closeout currentness, executor/starter mode, safe timestamps, and evidence
+fingerprints into a stable permit fingerprint and decision such as
+`ready_for_execution_consideration`, `blocked`, `stale`, `manual_attention`, `unsupported`, or
+`malformed`. A permit becomes ready only when all current evidence still matches and the relevant
+mode supports the operation. It is still an audit summary: it does not bypass the cutover gate,
+perform provider I/O, dispatch, start workers, write runtime-ledger or provider state, operate
+systemd, edit config, or take over legacy services. Projects without an explicit request keep
+`no_request`, so Dashboard/API output does not imply migration or execution is queued.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -273,7 +286,9 @@ and inspect `hub_activation_preflight`,
 `hub_device_observability.activation_plan`, `hub_cutover_gate`,
 `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`,
 `hub_device_observability.cutover_operation_audit`, `hub_cutover_audit_history`,
-`hub_device_observability.cutover_audit_history`, and the Dashboard Hub sections in `/api/v1/state`.
+`hub_device_observability.cutover_audit_history`, `hub_cutover_readiness_permit`,
+`hub_device_observability.cutover_readiness_permit`, and the Dashboard Hub sections in
+`/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.
