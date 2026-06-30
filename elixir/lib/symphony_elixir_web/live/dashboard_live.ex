@@ -197,6 +197,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   unknown preflight <%= @payload.hub_device_observability.overview.activation_preflight.unknown_project_count %> · lifecycle unknown <%= @payload.hub_device_observability.overview.lifecycle.unresolved_count %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Activation Plan / Ack</p>
+                <p class="metric-value"><%= hub_activation_plan_status(@payload) %></p>
+                <p class="metric-detail">
+                  plan-ready <%= hub_activation_plan_count(@payload, :plan_ready) %> · ack-required <%= hub_activation_plan_count(@payload, :ack_required) %> · stale <%= hub_activation_plan_count(@payload, :ack_stale) %> · conflict <%= hub_activation_plan_count(@payload, :ack_conflict) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  accepted <%= hub_activation_ack_count(@payload, :accepted) %> · missing <%= hub_activation_ack_count(@payload, :missing) %> · malformed <%= hub_activation_ack_count(@payload, :malformed) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -235,6 +246,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class={hub_readiness_badge_class(project.migration_readiness && project.migration_readiness.decision)}>
                           <%= hub_readiness_project_status(project.migration_readiness) %>
                         </span>
+                        <span class={hub_activation_plan_badge_class(project.activation_plan && project.activation_plan.status)}>
+                          plan <%= hub_activation_project_status(project.activation_plan) %>
+                        </span>
+                        <span class={hub_activation_ack_badge_class(project.activation_plan && project.activation_plan.operator_acknowledgement && project.activation_plan.operator_acknowledgement.status)}>
+                          ack <%= hub_activation_ack_status(project.activation_plan) %>
+                        </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
                       </div>
@@ -263,6 +280,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="detail-stack">
                         <span><%= hub_attention_text(project) %></span>
+                        <span :if={project.activation_plan} class="muted event-meta mono">
+                          plan <%= hub_short_plan_id(project.activation_plan) %>
+                        </span>
+                        <span :for={action <- hub_required_acknowledgements(project)} class="muted event-meta">
+                          ack <%= action.code %>
+                        </span>
                         <span :for={action <- hub_required_actions(project)} class="muted event-meta">
                           action <%= action.code %>
                         </span>
@@ -663,6 +686,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_activation_plan_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "unknown_manual_attention"
+    end
+  end
+
+  defp hub_activation_plan_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :counts, :plan_statuses, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_activation_ack_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :counts, :acknowledgement_statuses, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -691,8 +741,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_readiness_badge_class("unknown_manual_attention"), do: "state-badge state-badge-danger"
   defp hub_readiness_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_activation_plan_badge_class("plan_ready"), do: "state-badge state-badge-active"
+  defp hub_activation_plan_badge_class("already_managed"), do: "state-badge state-badge-active"
+  defp hub_activation_plan_badge_class("ack_required"), do: "state-badge state-badge-warning"
+  defp hub_activation_plan_badge_class("ack_stale"), do: "state-badge state-badge-warning"
+  defp hub_activation_plan_badge_class("ack_conflict"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class("unknown_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_activation_ack_badge_class("accepted"), do: "state-badge state-badge-active"
+  defp hub_activation_ack_badge_class("missing"), do: "state-badge state-badge-warning"
+  defp hub_activation_ack_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_activation_ack_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
+
+  defp hub_activation_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_activation_project_status(_plan), do: "unknown"
+
+  defp hub_activation_ack_status(%{operator_acknowledgement: %{status: status}}) when is_binary(status), do: status
+  defp hub_activation_ack_status(_plan), do: "missing"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -740,6 +814,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_required_actions(_project), do: []
+
+  defp hub_required_acknowledgements(%{activation_plan: %{required_acknowledgements: actions}}) when is_list(actions) do
+    Enum.take(actions, 4)
+  end
+
+  defp hub_required_acknowledgements(_project), do: []
+
+  defp hub_short_plan_id(%{plan_id: plan_id}) when is_binary(plan_id), do: String.slice(plan_id, 0, 12)
+  defp hub_short_plan_id(_plan), do: "unknown"
 
   defp hub_readiness_reasons(%{migration_readiness: %{blocking_reasons: blocking, advisory_reasons: advisory}})
        when is_list(blocking) and is_list(advisory) do

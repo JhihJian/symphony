@@ -201,6 +201,16 @@ global blocking/advisory risks, per-project blocking/advisory reasons, required 
 codes, and safe evidence references such as checked times, request/result counts, config
 fingerprints, and summary ids. Missing or incompatible project summaries degrade only that project
 to `unknown_manual_attention`; the device API and Dashboard continue to render other projects.
+It also includes `hub_device_observability.activation_plan`, a read-only activation plan /
+acknowledgement summary derived from the same safe readiness evidence. Each project gets a stable
+`plan_id`, proposed next state, required acknowledgement action codes, reasons, evidence, and
+operator acknowledgement status (`missing`, `accepted`, `stale`, `conflict`, `malformed`,
+`unsupported`, or `manual_attention`). Acknowledgements bind to `project_id` plus `plan_id`; when
+scope, migration state, executor/probe mode, reason/action codes, or evidence facts change, the old
+ack is shown as stale/conflicting instead of being silently reused. Accepted acknowledgement is only
+an audit boundary: Hub-owned poll, dispatch, worker start, and real writeback remain guarded by
+activation preflight, legacy ownership checks, provider governance, runtime ledger, executor mode,
+workspace leases, and lifecycle reconciliation.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -219,7 +229,11 @@ controlled result source and remains safe-summary based. This entrypoint is opt-
 For a local activation dry run, use
 `./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --port <port>`
 and inspect `hub_activation_preflight`,
-`hub_device_observability.migration_readiness`, and the Dashboard Hub sections in `/api/v1/state`.
+`hub_device_observability.migration_readiness`,
+`hub_device_observability.activation_plan`, and the Dashboard Hub sections in `/api/v1/state`.
+If an operator wants to record a non-executing acknowledgement, pass
+`--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
+trigger migration or config edits.
 For a read-only dry-run baseline, keep provider/writeback executors and worker starter in skeleton
 mode, set projects to `legacy_only` or `hub_ready` in `HUB.yaml`, enable the host-service probe, and
 resolve readiness actions before changing any project to `hub_managed`. `legacy_only` means Hub is

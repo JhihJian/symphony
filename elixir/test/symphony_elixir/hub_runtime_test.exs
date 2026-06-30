@@ -2,7 +2,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Hub.{
+    ActivationPreflight,
     HostServiceProbe,
+    ProjectRegistry,
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
@@ -151,6 +153,87 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
       refute Map.has_key?(legacy_payload, :hub_worker_lifecycle_reconciliation)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "Hub runtime consumes operator acknowledgement into activation plan without changing execution gates" do
+    root = tmp_root("hub-runtime-activation-ack")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_ready
+      """)
+
+      activation_probe = %{
+        projects: [
+          %{
+            project_id: "alpha",
+            status: "not_hub_managed",
+            reason: "migration_state_not_hub_managed",
+            probe_source: "host_service_probe",
+            checked_at: "2026-06-28T09:00:00Z",
+            detected_legacy_ownership: [],
+            unknown_probe_results: []
+          }
+        ]
+      }
+
+      registry = Runtime.validate_config(hub_path)
+      assert registry == :ok
+
+      {:ok, loaded_registry} = ProjectRegistry.load(hub_path)
+
+      base_snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:00:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:00:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "scheduled"}
+        )
+
+      [base_project] = base_snapshot.hub_device_observability.projects
+      plan_id = base_project.activation_plan.plan_id
+      assert base_project.activation_plan.status == "ack_required"
+
+      snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:02:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:02:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "running"},
+          operator_acknowledgements: [
+            %{
+              project_id: "alpha",
+              plan_id: plan_id,
+              source: "operator-file",
+              created_at: "2026-06-28T09:01:00Z",
+              acknowledged_action_codes: ["confirm_hub_executor_modes", "mark_hub_managed_after_checks"],
+              note: "已人工确认，不触发自动迁移"
+            }
+          ]
+        )
+
+      [project] = snapshot.hub_device_observability.projects
+
+      assert project.activation_plan.status == "plan_ready"
+      assert project.activation_plan.operator_acknowledgement.status == "accepted"
+      assert project.activation_plan.hub_owned_actions_allowed == false
+      assert snapshot.hub_runtime.operator_acknowledgements.status in ["plan_ready", "blocked"]
+      assert "activation_preflight" in project.activation_plan.hub_owned_actions_remain_guarded_by
+
+      safe_text = inspect(snapshot.hub_device_observability.activation_plan)
+      refute safe_text =~ "自动迁移"
+      refute safe_text =~ "GITHUB_TOKEN"
     after
       File.rm_rf(root)
     end
