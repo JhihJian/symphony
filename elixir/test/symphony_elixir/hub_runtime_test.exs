@@ -1,7 +1,15 @@
 defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, RealCandidateScanExecutor, Runtime, RuntimeLedger}
+  alias SymphonyElixir.Hub.{
+    ProviderExecutor,
+    ProviderGovernance,
+    RealCandidateScanExecutor,
+    RealWritebackExecutor,
+    Runtime,
+    RuntimeLedger
+  }
+
   alias SymphonyElixirWeb.Presenter
 
   test "builds Hub snapshot with ready paused and project-level config error entries" do
@@ -142,6 +150,115 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
       refute Map.has_key?(legacy_payload, :hub_worker_lifecycle_reconciliation)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "Hub snapshot and state API expose safe writeback executor pressure" do
+    root = tmp_root("hub-runtime-writeback-summary")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+      write_project!(root, "beta", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "beta"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+      """)
+
+      runtime_ledger =
+        RuntimeLedger.new(
+          projects: [
+            writeback_project("alpha", [
+              %{
+                intent_key: "alpha:memory:alpha:129:writeback:status_set:ready",
+                logical_action: "status_set",
+                operation_type: "status_set",
+                target: %{issue_id: "129", state: "in_progress", body: "plain body should not leak"},
+                replay_policy: :idempotent,
+                result_status: :pending,
+                provider_result_status: nil,
+                provider_replayable: true,
+                manual_attention: false
+              },
+              %{
+                intent_key: "alpha:memory:alpha:129:writeback:comment_append:body",
+                logical_action: "comment_append",
+                operation_type: "comment_append",
+                target: %{issue_id: "129", body: "append comment body should not leak"},
+                replay_policy: :non_idempotent,
+                result_status: :unknown,
+                provider_result_status: "unknown_result",
+                provider_replayable: false,
+                manual_attention: true,
+                manual_attention_reason: "unknown_append_comment_requires_manual_attention",
+                error_summary: "Bearer ghp_secret_token"
+              }
+            ]),
+            writeback_project("beta", [
+              %{
+                intent_key: "beta:memory:beta:77:writeback:label_add:bug",
+                logical_action: "label_add",
+                operation_type: "label_add",
+                target: %{issue_id: "77", labels: ["bug"]},
+                replay_policy: :idempotent,
+                result_status: :succeeded,
+                provider_result_status: "success",
+                provider_replayable: false,
+                manual_attention: false
+              }
+            ])
+          ]
+        )
+
+      runtime_name = Module.concat(__MODULE__, :WritebackSummaryRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: RealWritebackExecutor,
+        runtime_ledger: runtime_ledger
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_writeback_summary
+      )
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+
+      assert snapshot.hub_runtime.provider_executor.mode == "real_writeback"
+      assert "stage_writeback" in snapshot.hub_runtime.provider_executor.supported_operations
+      assert "pr_create" in snapshot.hub_runtime.provider_executor.rejected_operations
+      assert snapshot.hub_runtime.writeback.counts.pending == 1
+      assert snapshot.hub_runtime.writeback.counts.succeeded == 1
+      assert snapshot.hub_runtime.writeback.counts.unknown == 1
+      assert snapshot.hub_runtime.writeback.counts.manual_attention == 1
+
+      projects = Map.new(snapshot.hub_runtime.writeback.projects, &{&1.project_id, &1})
+      assert projects["alpha"].pending_count == 1
+      assert projects["alpha"].manual_attention_count == 1
+      assert projects["beta"].counts.succeeded == 1
+      assert [%{project_id: "alpha", error_class: "unknown_result"} | _] = snapshot.hub_runtime.writeback.recent_errors
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_runtime.writeback.counts.manual_attention == 1
+      assert payload.hub_dispatch_boundary.projects |> Enum.find(&(&1.project_id == "alpha")) |> get_in([:writebacks, :counts, :unknown]) == 1
+
+      safe_text = inspect({snapshot.hub_runtime.writeback, payload})
+      refute safe_text =~ "plain body should not leak"
+      refute safe_text =~ "append comment body should not leak"
+      refute safe_text =~ "ghp_secret_token"
+      refute safe_text =~ "Bearer"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "raw_provider"
+      refute safe_text =~ "full prompt"
+      refute safe_text =~ "transcript"
     after
       File.rm_rf(root)
     end
@@ -1697,6 +1814,21 @@ defmodule SymphonyElixir.HubRuntimeTest do
     project_dir = Path.join(root, project_id)
     File.mkdir_p!(project_dir)
     write_workflow_file!(Path.join(project_dir, "WORKFLOW.md"), overrides)
+  end
+
+  defp writeback_project(project_id, writebacks) do
+    issue_ref = memory_issue_ref(project_id, "129", "129")
+
+    %{
+      project_id: project_id,
+      issues: [
+        %{
+          issue_ref: issue_ref,
+          claim_status: :unclaimed,
+          writebacks: writebacks
+        }
+      ]
+    }
   end
 
   defp legacy_snapshot do

@@ -26,6 +26,13 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
 `/api/v1/state` 中暴露 executor 模式、候选计数、错误分类、backoff/manual attention 等安全摘要。
 该 opt-in 只覆盖候选读取，不实现 provider 写回、dynamic tools 路由迁移、真实 agent 派发，也不会改变
 `symphony@project.service` 多实例部署的默认行为。
+如果手动试运行 Hub 并传入 `--hub-provider-executor real-writeback`，Hub 只会启用第一版受控写回
+executor：在 `WritebackProcessor` 判定可执行后，处理 status/stage 写回、GitHub workpad marker
+upsert 和 GitHub label add；PR 创建、普通追加评论、冲突 intent、未知非幂等结果和 unsupported
+operation 会进入 governed manual-attention / lookup-required / permanent-failure 摘要。该 opt-in
+同样按 registry project 重新加载对应 `WORKFLOW.md` / `TRACKER.yaml`，不会使用其他项目的 repo、
+token、项目号或 stage/label 映射；单项目写回失败只影响对应 project/scope。本文档的 systemd
+template 不会默认启用该模式，也不会把 legacy 多实例写回迁移到 Hub。
 
 ## 快速安装
 
