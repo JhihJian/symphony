@@ -145,6 +145,224 @@ defmodule SymphonyElixir.HubCutoverAuditHistoryTest do
     assert projects_by_id["delta"].counts.unresolved_manual_attention_count >= 1
   end
 
+  test "current dry-run attention is not hidden by recovered history limits" do
+    projection = projection(["alpha"], acknowledgements?: false)
+    [project] = projection.projects
+
+    audit =
+      CutoverOperationAudit.build(audit_sources(projection),
+        now: @now,
+        requests: [request(project, project.cutover_gate, requested_operations: ["poll"])]
+      )
+
+    recovered_history =
+      for index <- 1..3 do
+        recovered_entry("alpha",
+          entry_id: "recovered-alpha-#{index}",
+          evaluated_at: "2026-06-30T12:0#{index}:00Z",
+          decision: "would_allow"
+        )
+      end
+
+    history =
+      CutoverAuditHistory.build(
+        %{
+          generated_at: @now,
+          cutover_operation_audit: audit,
+          history_entries: recovered_history
+        },
+        now: @now,
+        history_limit: 1,
+        project_history_limit: 1
+      )
+
+    [history_project] = history.projects
+    [current_item | _rest] = history_project.unresolved_manual_attention
+
+    assert history.limits.truncated == true
+    assert history.limits.input_history_entry_count == 4
+    assert history.counts.history_entry_count == 1
+    assert history.counts.unresolved_manual_attention_count >= 1
+    assert history.status == "unresolved_manual_attention"
+    assert history_project.status == "unresolved_manual_attention"
+    assert history_project.latest_audit.request_id == "req-alpha"
+    assert length(history_project.history_entries) == 1
+    assert current_item.request_fingerprint == history_project.latest_audit.request_fingerprint
+  end
+
+  test "closeout bound only to retained old history is stale against current attention" do
+    projection = projection(["alpha"], acknowledgements?: false)
+    [project] = projection.projects
+
+    old_audit =
+      CutoverOperationAudit.build(audit_sources(projection),
+        now: @now,
+        requests: [
+          request(project, project.cutover_gate,
+            requested_operations: ["poll"],
+            activation_plan_fingerprint: "old-plan-fingerprint"
+          )
+        ]
+      )
+
+    old_history = CutoverAuditHistory.build(%{generated_at: @now, cutover_operation_audit: old_audit}, now: @now)
+    [old_project] = old_history.projects
+    old_item = hd(old_project.unresolved_manual_attention)
+
+    current_audit =
+      CutoverOperationAudit.build(audit_sources(projection),
+        now: @now,
+        requests: [
+          request(project, project.cutover_gate,
+            requested_operations: ["poll"],
+            activation_plan_fingerprint: "current-plan-fingerprint"
+          )
+        ]
+      )
+
+    history =
+      CutoverAuditHistory.build(
+        %{
+          generated_at: @now,
+          cutover_operation_audit: current_audit,
+          history_entries: old_project.history_entries,
+          manual_attention_closeouts: [closeout(old_item)]
+        },
+        now: @now,
+        history_limit: 10,
+        project_history_limit: 10
+      )
+
+    [history_project] = history.projects
+    assert [%{status: "stale", status_reasons: reasons}] = history_project.closeouts
+    assert Enum.any?(reasons, &String.ends_with?(&1, "_fingerprint_mismatch"))
+    assert history.counts.closed_count == 0
+    assert history.counts.unresolved_manual_attention_count >= 1
+    assert history_project.unresolved_manual_attention != []
+  end
+
+  test "snapshot reuse reapplies global and per-project history limits" do
+    summary =
+      CutoverAuditHistory.to_snapshot(%{
+        generated_at: @now,
+        limits: %{
+          max_history_entries: 2,
+          max_history_entries_per_project: 1
+        },
+        projects: [
+          %{
+            project_id: "alpha",
+            history_entries: [
+              recovered_entry("alpha", entry_id: "alpha-new", evaluated_at: "2026-06-30T11:03:00Z"),
+              recovered_entry("alpha", entry_id: "alpha-old", evaluated_at: "2026-06-30T11:01:00Z")
+            ]
+          },
+          %{
+            project_id: "beta",
+            history_entries: [
+              recovered_entry("beta", entry_id: "beta-new", evaluated_at: "2026-06-30T11:04:00Z"),
+              recovered_entry("beta", entry_id: "beta-old", evaluated_at: "2026-06-30T11:02:00Z")
+            ]
+          }
+        ]
+      })
+
+    projects = Map.new(summary.projects, &{&1.project_id, &1})
+
+    assert summary.limits.truncated == true
+    assert summary.limits.input_history_entry_count == 4
+    assert summary.counts.history_entry_count == 2
+    assert length(projects["alpha"].history_entries) == 1
+    assert length(projects["beta"].history_entries) == 1
+  end
+
+  test "external history and closeout safe evidence redacts path-like and raw values" do
+    projection = projection(["alpha"], acknowledgements?: false)
+    [project] = projection.projects
+
+    audit =
+      CutoverOperationAudit.build(audit_sources(projection),
+        now: @now,
+        requests: [request(project, project.cutover_gate, requested_operations: ["poll"])]
+      )
+
+    base = CutoverAuditHistory.build(%{generated_at: @now, cutover_operation_audit: audit}, now: @now)
+    [base_project] = base.projects
+    item = hd(base_project.unresolved_manual_attention)
+
+    history =
+      CutoverAuditHistory.build(
+        %{
+          generated_at: @now,
+          cutover_operation_audit: audit,
+          history_entries: [
+            recovered_entry("alpha",
+              safe_evidence: %{
+                workspace_path: "/home/operator/symphony/workspace",
+                nested: %{
+                  local_path: "/tmp/symphony/raw.log",
+                  message: "failed while reading /home/operator/private/config"
+                },
+                raw_systemd_output: "full raw systemd output must not leak",
+                safe_marker: "kept"
+              }
+            )
+          ],
+          manual_attention_closeouts: [
+            item
+            |> closeout()
+            |> Map.put(:safe_evidence, %{
+              tracker_config_path: "/home/operator/project/TRACKER.yaml",
+              hook_output: "raw hook output must not leak",
+              safe_marker: "closeout-kept"
+            })
+          ]
+        },
+        now: @now
+      )
+
+    safe_text = inspect(history, limit: :infinity, printable_limit: :infinity)
+    refute safe_text =~ "/home/operator"
+    refute safe_text =~ "/tmp/symphony"
+    refute safe_text =~ "raw systemd output"
+    refute safe_text =~ "raw hook output"
+    assert safe_text =~ "kept"
+    assert hd(history.closeouts).safe_evidence.safe_marker == "closeout-kept"
+  end
+
+  test "malformed nested project history is isolated from other project summaries" do
+    history =
+      CutoverAuditHistory.build(
+        %{
+          generated_at: @now,
+          history_entries: %{
+            projects: [
+              %{
+                project_id: "alpha",
+                history_entries: [
+                  "not-a-map"
+                ]
+              },
+              %{
+                project_id: "beta",
+                history_entries: [
+                  recovered_entry("beta", entry_id: "beta-ok", evaluated_at: "2026-06-30T11:01:00Z")
+                ]
+              }
+            ]
+          }
+        },
+        now: @now
+      )
+
+    projects = Map.new(history.projects, &{&1.project_id, &1})
+
+    assert projects["alpha"].status == "unresolved_manual_attention"
+    assert [%{reason_code: "malformed_history_entry"}] = projects["alpha"].unresolved_manual_attention
+    assert projects["beta"].status == "history_ready"
+    assert projects["beta"].counts.unresolved_manual_attention_count == 0
+  end
+
   test "device projection embeds cutover audit history and no-history projects" do
     projection =
       projection(["alpha", "beta"], acknowledgements?: true)
@@ -230,7 +448,7 @@ defmodule SymphonyElixir.HubCutoverAuditHistoryTest do
     }
   end
 
-  defp closeout(item, opts) do
+  defp closeout(item, opts \\ []) do
     %{
       project_id: item.project_id,
       request_fingerprint: Keyword.get(opts, :request_fingerprint, item.request_fingerprint),
@@ -244,6 +462,40 @@ defmodule SymphonyElixir.HubCutoverAuditHistoryTest do
       source: Keyword.get(opts, :source, "operator-file"),
       decided_at: "2026-06-30T11:02:00Z",
       operator_note: Keyword.get(opts, :note, "operator closeout")
+    }
+  end
+
+  defp recovered_entry(project_id, opts) do
+    entry_id = Keyword.get(opts, :entry_id, "history-#{project_id}")
+    evaluated_at = Keyword.get(opts, :evaluated_at, "2026-06-30T11:00:30Z")
+    operation = Keyword.get(opts, :operation, "poll")
+    decision = Keyword.get(opts, :decision, "would_allow")
+
+    %{
+      entry_id: entry_id,
+      project_id: project_id,
+      evaluated_at: evaluated_at,
+      request: %{
+        request_id: "history-request-#{entry_id}",
+        project_id: project_id,
+        requested_at: evaluated_at,
+        requested_operations: [operation],
+        activation_plan: %{fingerprint: "history-plan-#{project_id}"},
+        cutover_gate: %{fingerprint: "history-gate-#{project_id}", decision: "allow"}
+      },
+      requested_operations: [operation],
+      operation_results: [
+        %{
+          operation: operation,
+          decision: decision,
+          reason_codes: Keyword.get(opts, :reason_codes, ["history_#{decision}"]),
+          required_operator_actions: Keyword.get(opts, :required_operator_actions, [%{code: "review_history"}])
+        }
+      ],
+      safe_evidence: Keyword.get(opts, :safe_evidence, %{}),
+      dry_run_only: true,
+      no_side_effects: true,
+      source: "operator_file"
     }
   end
 

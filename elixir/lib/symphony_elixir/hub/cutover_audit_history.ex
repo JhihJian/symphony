@@ -56,22 +56,36 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
     history_limit = positive_integer(Keyword.get(opts, :history_limit)) || @default_history_limit
     project_history_limit = positive_integer(Keyword.get(opts, :project_history_limit)) || @default_project_history_limit
 
-    entries =
-      [entry_list(Keyword.get(opts, :history_entries, value(sources, :history_entries)), now), current_audit_entries(audit, now)]
-      |> List.flatten()
+    recovered_entries =
+      Keyword.get(opts, :history_entries, value(sources, :history_entries))
+      |> entry_list(now)
       |> Enum.map(&history_entry_snapshot(&1, now))
+      |> Enum.uniq_by(& &1.entry_id)
+      |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
+
+    current_entries =
+      audit
+      |> current_audit_entries(now)
+      |> Enum.map(&history_entry_snapshot(&1, now))
+      |> Enum.uniq_by(& &1.entry_id)
+      |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
+
+    entries =
+      [recovered_entries, current_entries]
+      |> List.flatten()
       |> Enum.uniq_by(& &1.entry_id)
       |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
 
     limited_entries = Enum.take(entries, history_limit)
     truncated? = length(entries) > length(limited_entries)
     closeouts = closeout_list(Keyword.get(opts, :closeouts, value(sources, :manual_attention_closeouts)), now)
-    project_ids = project_ids(limited_entries, closeouts, audit)
-    closeout_index = evaluate_closeouts(closeouts, limited_entries)
+    attention_entries = attention_entries(current_entries, limited_entries)
+    project_ids = project_ids(attention_entries, closeouts, audit)
+    closeout_index = evaluate_closeouts(closeouts, current_entries)
 
     projects =
       project_ids
-      |> Enum.map(&project_summary(&1, limited_entries, closeout_index, project_history_limit))
+      |> Enum.map(&project_summary(&1, limited_entries, attention_entries, closeout_index, project_history_limit))
       |> Enum.sort_by(& &1.project_id)
 
     %{
@@ -101,11 +115,14 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       |> Enum.map(&evaluated_closeout_snapshot/1)
       |> Enum.sort_by(&{&1.project_id, &1.status, &1.operation, &1.reason_code, &1.required_operator_action_code})
 
-    projects =
+    projects_input =
       summary
       |> list_value(:projects)
       |> Enum.map(&project_snapshot/1)
       |> Enum.sort_by(& &1.project_id)
+
+    limits = limits_snapshot(value(summary, :limits), projects_input)
+    {projects, limits} = limit_project_history_entries(projects_input, limits)
 
     %{
       version: positive_integer(value(summary, :version)) || @version,
@@ -113,9 +130,9 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       status: normalize_status(value(summary, :status), projects, closeouts),
       dry_run_only: value(summary, :dry_run_only) != false,
       no_side_effects: value(summary, :no_side_effects) != false,
-      limits: limits_snapshot(value(summary, :limits), projects),
+      limits: limits_snapshot(limits, projects),
       counts:
-        count_snapshot(value(summary, :counts), projects, %{
+        count_snapshot(%{}, projects, %{
           evaluated: closeouts,
           closed_item_ids: closed_item_ids(closeouts)
         }),
@@ -140,7 +157,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
 
   defp entry_from_audit_project(project, now) do
     evaluated_at = iso8601(value(project, :evaluated_at) || value(project, :generated_at)) || now
-    safe_evidence = SafeSummary.sanitize_map(value(project, :safe_evidence) || %{}, output_keys: :preserve)
+    safe_evidence = safe_evidence_snapshot(value(project, :safe_evidence) || %{})
     request = project |> value(:request) |> audit_request_with_evidence(safe_evidence)
 
     %{
@@ -193,7 +210,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       iso8601(value(entry, :evaluated_at) || value(entry, :generated_at) || value(request, :requested_at)) ||
         now
 
-    safe_evidence = SafeSummary.sanitize_map(value(entry, :safe_evidence) || %{}, output_keys: :preserve)
+    safe_evidence = safe_evidence_snapshot(value(entry, :safe_evidence) || %{})
 
     snapshot = %{
       version: positive_integer(value(entry, :version)) || @version,
@@ -219,6 +236,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       required_operator_actions: action_snapshots(value(entry, :required_operator_actions)),
       safe_evidence: safe_evidence,
       source: safe_status(value(entry, :source)) |> blank_to_default("history"),
+      malformed_history_entry: value(entry, :malformed_history_entry) == true,
       dry_run_only: value(entry, :dry_run_only) != false,
       no_side_effects: value(entry, :no_side_effects) != false
     }
@@ -227,16 +245,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
   end
 
   defp history_entry_snapshot(_entry, now) do
-    history_entry_snapshot(
-      %{
-        project_id: "",
-        evaluated_at: now,
-        source: "malformed",
-        reason_codes: ["malformed_history_entry"],
-        required_operator_actions: [%{code: "fix_cutover_audit_history"}]
-      },
-      now
-    )
+    history_entry_snapshot(malformed_history_entry(now, ""), now)
   end
 
   defp request_snapshot(request, now) when is_map(request) do
@@ -268,21 +277,26 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       decision: operation_decision(value(result, :decision)),
       reason_codes: string_list(value(result, :reason_codes)),
       required_operator_actions: action_snapshots(value(result, :required_operator_actions)),
-      safe_evidence: SafeSummary.sanitize_map(value(result, :safe_evidence) || %{}, output_keys: :preserve),
+      safe_evidence: safe_evidence_snapshot(value(result, :safe_evidence) || %{}),
       dry_run_only: value(result, :dry_run_only) != false
     }
   end
 
   defp operation_result_snapshot(result), do: operation_result_snapshot(%{operation: result})
 
-  defp project_summary(project_id, entries, closeout_index, project_history_limit) do
+  defp project_summary(project_id, entries, attention_entries, closeout_index, project_history_limit) do
     project_entries =
       entries
       |> Enum.filter(&(required_string(&1, :project_id) == project_id))
       |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
 
-    latest = List.first(project_entries)
-    attention_items = attention_items(project_entries)
+    project_attention_entries =
+      attention_entries
+      |> Enum.filter(&(required_string(&1, :project_id) == project_id))
+      |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
+
+    latest = List.first(project_attention_entries) || List.first(project_entries)
+    attention_items = attention_items(project_attention_entries)
     closed_ids = closeout_index.closed_item_ids
     unresolved_items = Enum.reject(attention_items, &MapSet.member?(closed_ids, &1.item_id))
 
@@ -294,7 +308,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
     %{
       version: @version,
       project_id: project_id,
-      status: project_status(project_entries, unresolved_items, project_closeouts),
+      status: project_status(project_attention_entries ++ project_entries, unresolved_items, project_closeouts),
       provider_scope: latest && latest.provider_scope,
       latest_audit: latest && latest_audit_snapshot(latest),
       history_entries: Enum.take(project_entries, project_history_limit),
@@ -336,8 +350,8 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       history_entries: history_entries,
       unresolved_manual_attention: unresolved,
       closeouts: closeouts,
-      counts: project_counts(value(project, :counts), history_entries, unresolved, closeouts),
-      safe_evidence: SafeSummary.sanitize_map(value(project, :safe_evidence) || %{}, output_keys: :preserve),
+      counts: project_counts(history_entries, unresolved, closeouts),
+      safe_evidence: safe_evidence_snapshot(value(project, :safe_evidence) || %{}),
       dry_run_only: value(project, :dry_run_only) != false,
       no_side_effects: value(project, :no_side_effects) != false
     }
@@ -374,7 +388,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
         |> Enum.sort_by(& &1.operation),
       reason_codes: string_list(value(entry, :reason_codes)),
       required_operator_actions: action_snapshots(value(entry, :required_operator_actions)),
-      safe_evidence: SafeSummary.sanitize_map(value(entry, :safe_evidence) || %{}, output_keys: :preserve),
+      safe_evidence: safe_evidence_snapshot(value(entry, :safe_evidence) || %{}),
       dry_run_only: value(entry, :dry_run_only) != false,
       no_side_effects: value(entry, :no_side_effects) != false
     }
@@ -435,7 +449,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       required_operator_action_code:
         safe_status(value(item, :required_operator_action_code))
         |> blank_to_default("no_required_action_code"),
-      safe_evidence: SafeSummary.sanitize_map(value(item, :safe_evidence) || %{}, output_keys: :preserve),
+      safe_evidence: safe_evidence_snapshot(value(item, :safe_evidence) || %{}),
       dry_run_only: value(item, :dry_run_only) != false,
       no_side_effects: value(item, :no_side_effects) != false
     }
@@ -444,6 +458,16 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
   end
 
   defp attention_item_snapshot(_item), do: attention_item_snapshot(%{})
+
+  defp attention_entries(current_entries, limited_entries) do
+    source =
+      case current_entries do
+        [] -> limited_entries
+        entries -> entries
+      end
+
+    source
+  end
 
   defp closeout_list(nil, _now), do: []
 
@@ -483,7 +507,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
         value(closeout, :operator_note_digest) ||
           value(closeout, :note_digest) ||
           note_digest(value(closeout, :operator_note) || value(closeout, :note)),
-      safe_evidence: SafeSummary.sanitize_map(value(closeout, :safe_evidence) || %{}, output_keys: :preserve)
+      safe_evidence: safe_evidence_snapshot(value(closeout, :safe_evidence) || %{})
     }
     |> ensure_closeout_id()
   end
@@ -557,7 +581,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       source: safe_status(value(closeout, :source)) |> blank_to_default("operator-file"),
       decided_at: iso8601(value(closeout, :decided_at)),
       operator_note_digest: operator_note_digest,
-      safe_evidence: SafeSummary.sanitize_map(value(closeout, :safe_evidence) || %{}, output_keys: :preserve),
+      safe_evidence: safe_evidence_snapshot(value(closeout, :safe_evidence) || %{}),
       dry_run_only: true,
       no_side_effects: true
     }
@@ -702,31 +726,6 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
     }
   end
 
-  defp project_counts(counts, entries, unresolved_items, closeouts) when is_map(counts) do
-    unresolved_count = non_negative_integer(value(counts, :unresolved_manual_attention_count))
-
-    %{
-      history_entry_count: non_negative_integer(value(counts, :history_entry_count)) || length(entries),
-      unresolved_manual_attention_count: unresolved_count || length(unresolved_items),
-      closed_count: count_or(counts, :closed_count, closeouts, "closed"),
-      deferred_count: count_or(counts, :deferred_count, closeouts, "deferred"),
-      stale_count: count_or(counts, :stale_count, closeouts, "stale"),
-      conflict_count: count_or(counts, :conflict_count, closeouts, "conflict"),
-      malformed_count: count_or(counts, :malformed_count, closeouts, "malformed"),
-      unsupported_count: count_or(counts, :unsupported_count, closeouts, "unsupported"),
-      operation_decision_counts:
-        value(counts, :operation_decision_counts) ||
-          operation_decision_counts(entries)
-    }
-  end
-
-  defp project_counts(_counts, entries, unresolved_items, closeouts),
-    do: project_counts(%{}, entries, unresolved_items, closeouts)
-
-  defp count_or(counts, key, closeouts, status) do
-    non_negative_integer(value(counts, key)) || Enum.count(closeouts, &(&1.status == status))
-  end
-
   defp count_snapshot(counts, projects, closeout_index) when is_map(counts) do
     closeouts = Map.get(closeout_index, :evaluated, [])
 
@@ -752,8 +751,6 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
     }
   end
 
-  defp count_snapshot(_counts, projects, closeout_index), do: count_snapshot(%{}, projects, closeout_index)
-
   defp operation_decision_counts(entries) do
     base = %{
       would_allow: 0,
@@ -777,6 +774,59 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
         Map.update!(inner, key, &(&1 + 1))
       end)
     end)
+  end
+
+  defp limit_project_history_entries(projects, limits) do
+    observed_input_count = Enum.reduce(projects, 0, &(&2 + length(list_value(&1, :history_entries))))
+    input_count = max(non_negative_integer(value(limits, :input_history_entry_count)) || 0, observed_input_count)
+
+    per_project_limit =
+      positive_integer(value(limits, :max_history_entries_per_project)) || @default_project_history_limit
+
+    global_limit = positive_integer(value(limits, :max_history_entries)) || @default_history_limit
+
+    entries_with_project =
+      projects
+      |> Enum.flat_map(fn project ->
+        project
+        |> list_value(:history_entries)
+        |> Enum.take(per_project_limit)
+        |> Enum.map(&{project.project_id, &1})
+      end)
+      |> Enum.sort_by(fn {_project_id, entry} -> sort_time(value(entry, :evaluated_at)) end, :desc)
+
+    retained_ids =
+      entries_with_project
+      |> Enum.take(global_limit)
+      |> Enum.map(fn {project_id, entry} -> {project_id, entry.entry_id} end)
+      |> MapSet.new()
+
+    projects =
+      Enum.map(projects, fn project ->
+        history_entries =
+          project
+          |> list_value(:history_entries)
+          |> Enum.filter(&MapSet.member?(retained_ids, {project.project_id, &1.entry_id}))
+          |> Enum.sort_by(&sort_time(&1.evaluated_at), :desc)
+
+        closeouts = list_value(project, :closeouts)
+        unresolved = list_value(project, :unresolved_manual_attention)
+
+        %{
+          project
+          | history_entries: history_entries,
+            counts: project_counts(history_entries, unresolved, closeouts)
+        }
+      end)
+
+    retained_count = Enum.reduce(projects, 0, &(&2 + length(&1.history_entries)))
+
+    limits =
+      limits
+      |> Map.put(:input_history_entry_count, input_count)
+      |> Map.put(:truncated, value(limits, :truncated) == true or input_count > retained_count)
+
+    {projects, limits}
   end
 
   defp limits_snapshot(limits, projects) when is_map(limits) do
@@ -806,6 +856,55 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
     }
   end
 
+  defp safe_evidence_snapshot(evidence) do
+    evidence
+    |> SafeSummary.sanitize_map(output_keys: :preserve)
+    |> redact_local_evidence_paths()
+  end
+
+  defp redact_local_evidence_paths(%_struct{} = value), do: value
+
+  defp redact_local_evidence_paths(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, raw_value}, sanitized ->
+      normalized_key = key |> to_string() |> String.downcase()
+
+      cond do
+        path_like_key?(normalized_key) or raw_output_key?(normalized_key) ->
+          sanitized
+
+        local_absolute_path_value?(raw_value) ->
+          sanitized
+
+        true ->
+          Map.put(sanitized, key, redact_local_evidence_paths(raw_value))
+      end
+    end)
+  end
+
+  defp redact_local_evidence_paths(value) when is_list(value) do
+    value
+    |> Enum.reject(&local_absolute_path_value?/1)
+    |> Enum.map(&redact_local_evidence_paths/1)
+  end
+
+  defp redact_local_evidence_paths(value), do: value
+
+  defp path_like_key?(key) do
+    key in ["path", "local_path", "workspace_path", "workflow_path", "tracker_config_path"] or
+      Regex.match?(~r/(^|_)(path|file_path|config_path|env_path|dir|root)$/, key)
+  end
+
+  defp raw_output_key?(key) do
+    Regex.match?(~r/(^|_)(raw_)?(systemd|hook|app_server|appserver|provider)_?(output|response)$/, key) or
+      key in ["stacktrace", "stack_trace", "exception"]
+  end
+
+  defp local_absolute_path_value?(value) when is_binary(value) do
+    Regex.match?(~r/(^|[\s"'=:])\/(home|tmp|var\/folders|Users|root|workspaces?|data)\/[^\s"',)]+/, value)
+  end
+
+  defp local_absolute_path_value?(_value), do: false
+
   defp operation_evidence(entry, operation) do
     %{
       entry_id: optional_string(entry, :entry_id),
@@ -818,8 +917,8 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       cutover_gate: gate_snapshot(get_in_value(entry, [:request, :cutover_gate]) || %{}),
       operation: operation_name(value(operation, :operation)),
       operation_decision: operation_decision(value(operation, :decision)),
-      operation_evidence: SafeSummary.sanitize_map(value(operation, :safe_evidence) || %{}, output_keys: :preserve),
-      entry_evidence: SafeSummary.sanitize_map(value(entry, :safe_evidence) || %{}, output_keys: :preserve),
+      operation_evidence: safe_evidence_snapshot(value(operation, :safe_evidence) || %{}),
+      entry_evidence: safe_evidence_snapshot(value(entry, :safe_evidence) || %{}),
       dry_run_only: true,
       no_side_effects: true
     }
@@ -851,13 +950,7 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
       is_list(value(entries, :projects)) ->
         entries
         |> list_value(:projects)
-        |> Enum.flat_map(fn project ->
-          project_id = required_string(project, :project_id)
-
-          project
-          |> list_value(:history_entries)
-          |> Enum.map(&Map.put(&1, :project_id, optional_string(&1, :project_id) || project_id))
-        end)
+        |> Enum.flat_map(&nested_project_history_entries(&1, now))
 
       true ->
         [entries]
@@ -866,6 +959,43 @@ defmodule SymphonyElixir.Hub.CutoverAuditHistory do
 
   defp entry_list(entries, _now) when is_list(entries), do: entries
   defp entry_list(entry, now), do: [history_entry_snapshot(entry, now)]
+
+  defp nested_project_history_entries(project, now) when is_map(project) do
+    project_id = required_string(project, :project_id)
+
+    project
+    |> list_value(:history_entries)
+    |> Enum.map(&history_entry_with_project_id(&1, project_id, now))
+  end
+
+  defp nested_project_history_entries(project, now) do
+    [malformed_history_entry(now, optional_string(project) || "")]
+  end
+
+  defp history_entry_with_project_id(entry, project_id, _now) when is_map(entry) do
+    Map.put(entry, :project_id, optional_string(entry, :project_id) || project_id)
+  end
+
+  defp history_entry_with_project_id(_entry, project_id, now), do: malformed_history_entry(now, project_id)
+
+  defp malformed_history_entry(now, project_id) do
+    %{
+      project_id: project_id,
+      evaluated_at: now,
+      operation_results: [
+        %{
+          operation: "poll",
+          decision: "manual_attention",
+          reason_codes: ["malformed_history_entry"],
+          required_operator_actions: [%{code: "fix_cutover_audit_history"}]
+        }
+      ],
+      source: "malformed",
+      reason_codes: ["malformed_history_entry"],
+      required_operator_actions: [%{code: "fix_cutover_audit_history"}],
+      malformed_history_entry: true
+    }
+  end
 
   defp requested_operations(entry) do
     operations = operation_list(value(entry, :requested_operations))

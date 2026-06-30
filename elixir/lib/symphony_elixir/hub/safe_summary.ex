@@ -25,21 +25,29 @@ defmodule SymphonyElixir.Hub.SafeSummary do
                     "credentials",
                     "env_secret",
                     "env_secrets",
+                    "exception",
+                    "hook_output",
+                    "raw_app_server_output",
                     "provider_config",
                     "provider_response",
                     "raw_config",
+                    "raw_hook_output",
                     "raw_output",
                     "raw_provider_config",
+                    "raw_systemd_output",
                     "response_body",
                     "secret",
                     "secret_env",
                     "secret_envs",
+                    "stack_trace",
+                    "stacktrace",
+                    "systemd_output",
                     "token",
                     "transcript"
                   ])
   @sensitive_value_patterns [
     ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
-    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript)\b/i,
+    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|transcript|full prompt|codex transcript|raw provider response|raw systemd output|raw hook output|raw app-server output|stacktrace|stack trace)\b/i,
     ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
   ]
 
@@ -106,7 +114,11 @@ defmodule SymphonyElixir.Hub.SafeSummary do
       |> String.downcase()
 
     body_key?(key) or MapSet.member?(@sensitive_keys, key) or
-      Regex.match?(~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config|raw_output|provider_config|provider_response|response_body)$/, key)
+      Regex.match?(
+        ~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config|raw_output|provider_config|provider_response|response_body|stacktrace|stack_trace)$/,
+        key
+      ) or
+      Regex.match?(~r/(^|_)(raw_)?(systemd|hook|app_server|appserver|provider)_?(output|response)$/, key)
   end
 
   @spec sensitive_value?(term()) :: boolean()
