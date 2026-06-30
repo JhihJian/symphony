@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   stores raw provider response bodies.
   """
 
-  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, CutoverGate, DispatchBoundary, RuntimeLedger, SafeSummary}
 
   @version 1
   @candidate_list_keys [:candidates, :candidate_issues, :issues]
@@ -26,6 +26,11 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
       |> ActivationPreflight.to_snapshot()
 
+    cutover_gate =
+      opts
+      |> Keyword.get(:cutover_gate)
+      |> CutoverGate.observability_snapshot()
+
     projects_by_id = registry_projects_by_id(registry)
     capacities = capacity_snapshot(registry, ledger, opts)
 
@@ -35,7 +40,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
     {projects, all_candidates, all_invalid} =
       source_rows
-      |> Enum.map(&project_intake(&1, projects_by_id, ledger, capacities, activation_preflight, now))
+      |> Enum.map(&project_intake(&1, projects_by_id, ledger, capacities, activation_preflight, cutover_gate, now))
       |> collapse_project_intakes()
 
     %{
@@ -116,7 +121,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
     }
   end
 
-  defp project_intake(source, projects_by_id, ledger, capacities, activation_preflight, now) do
+  defp project_intake(source, projects_by_id, ledger, capacities, activation_preflight, cutover_gate, now) do
     project = Map.get(projects_by_id, source.project_id, %{})
     raw_candidates = candidate_entries(source.result_summary)
 
@@ -126,7 +131,13 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       |> Enum.reduce({[], []}, fn {raw_candidate, index}, {candidates, invalids} ->
         case normalize_candidate(raw_candidate, index, source, project) do
           {:ok, candidate} ->
-            evaluated = evaluate_candidate(candidate, project, source, ledger, capacities, activation_preflight, now)
+            caps = capacities
+            preflight = activation_preflight
+            gate = cutover_gate
+
+            evaluated =
+              evaluate_candidate(candidate, project, source, ledger, caps, preflight, gate, now)
+
             {[evaluated | candidates], invalids}
 
           {:invalid, invalid} ->
@@ -361,7 +372,7 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
   defp issue_identity_from_key(_issue_key, _project_id, _provider_scope_key), do: nil
 
-  defp evaluate_candidate(candidate, project, source, ledger, capacities, activation_preflight, now) do
+  defp evaluate_candidate(candidate, project, source, ledger, capacities, activation_preflight, cutover_gate, now) do
     cond do
       project_config_error?(project) ->
         skip_candidate(candidate, "config_error", optional_string(project, :load_error) || "Project configuration is invalid")
@@ -375,6 +386,14 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
       provider_backpressure_reason(source, now) ->
         reason = provider_backpressure_reason(source, now)
         skip_candidate(candidate, reason, "Provider poll result is under backoff or unavailable")
+
+      cutover_block = cutover_gate_block(cutover_gate, candidate.project_id) ->
+        skip_candidate(
+          candidate,
+          "cutover_gate_blocked",
+          optional_string(cutover_block, :message) || "Cutover gate blocked dispatch",
+          %{cutover_gate: cutover_gate_snapshot(cutover_block)}
+        )
 
       activation_block = ActivationPreflight.block_reason(activation_preflight, candidate.project_id, :dispatch) ->
         skip_candidate(
@@ -396,6 +415,9 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
         |> capacity_precheck(project, ledger, capacities)
     end
   end
+
+  defp cutover_gate_block(nil, _project_id), do: nil
+  defp cutover_gate_block(cutover_gate, project_id), do: CutoverGate.block_reason(cutover_gate, project_id, :dispatch)
 
   defp dispatch_precheck(candidate, project, source, ledger, now) do
     dispatch_candidate =
@@ -743,6 +765,18 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
   end
 
   defp activation_preflight_snapshot(_preflight), do: activation_preflight_snapshot(%{})
+
+  defp cutover_gate_snapshot(gate) when is_map(gate) do
+    %{
+      status: safe_status(value(gate, :status)),
+      reason: safe_status(value(gate, :reason)) || "cutover_gate_blocked",
+      allowed_operations: gate |> list_value(:allowed_operations) |> Enum.map(&safe_status/1) |> Enum.reject(&blank?/1),
+      blocked_operations: gate |> list_value(:blocked_operations) |> Enum.map(&safe_status/1) |> Enum.reject(&blank?/1),
+      required_operator_actions: gate |> list_value(:required_operator_actions) |> Enum.map(&SafeSummary.sanitize_value(&1, output_keys: :preserve))
+    }
+  end
+
+  defp cutover_gate_snapshot(_gate), do: cutover_gate_snapshot(%{})
 
   defp counts(candidates, invalid_candidates) do
     eligible_count = Enum.count(candidates, &(get_in(&1, [:dispatch_evaluation, :eligible]) == true))

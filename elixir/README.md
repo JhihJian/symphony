@@ -446,8 +446,8 @@ safe-summary based. The existing per-project services and their poll loops keep 
 migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_scheduler`, `hub_activation_preflight`, `hub_project_registry`, `hub_poll_coordination`,
-`hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
+`hub_scheduler`, `hub_activation_preflight`, `hub_cutover_gate`, `hub_project_registry`,
+`hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
 `hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and
 `hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
@@ -460,17 +460,19 @@ runtime-ledger replay summaries, scheduler enabled/disabled state, queued/runnin
 last/next tick times, duration, reason, coalesced/error counts, per-project due/backoff/runtime
 summary, provider executor mode (`skeleton`, `real_candidate_scan`, or `real_writeback`), candidate
 counts, writeback executor supported/rejected operations, pending/succeeded/failed/unknown/manual
-attention counts, per-project writeback pressure, recent safe error categories, error
+attention counts, per-project writeback pressure, recent safe error categories, cutover gate
+decision counts, allowed/blocked operation sets, staged ownership record counts, error
 class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
 adds the operator-oriented device summary: scheduler enabled/disabled/queued/running/coalesced
 state and next-tick reason, project status counts, provider queue/backoff/circuit/recent-failure
 pressure, active attempts, pending start intents, workspace leases, unreleased capacity, writeback
 conflict/unknown/manual-attention/provider-lookup state, activation preflight blocks/unknowns,
-lifecycle unknown/manual-attention state, and summary errors. Each project in
+lifecycle unknown/manual-attention state, cutover gate status, and summary errors. Each project in
 `hub_device_observability.projects` also includes a `detail` block for safe identity/provider scope,
 migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
-candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation, and
-writeback completed/retryable/unknown/manual-attention/dangerous-replay state.
+cutover gate decision, candidate intake, dispatch planning/application, worker start handoff,
+lifecycle reconciliation, and writeback completed/retryable/unknown/manual-attention/dangerous-replay
+state.
 `hub_device_observability.migration_readiness` adds a migration readiness report derived from the
 same safe summaries. At the device level it reports Hub runtime mode, scheduler status,
 provider/writeback executor mode, worker starter mode, activation probe mode, migration-state
@@ -499,6 +501,20 @@ summary keeps `hub_owned_actions_allowed: false` and lists the existing safety g
 dispatch, worker start, and real writeback remain governed by activation preflight, legacy ownership
 guardrails, provider governance, runtime ledger, executor mode, workspace leases, and lifecycle
 reconciliation.
+`hub_cutover_gate` and `hub_device_observability.cutover_gate` are the execution-facing audit gate
+after activation plan acknowledgement. The gate is rebuilt from safe runtime inputs for every Hub
+snapshot and project: safe provider scope, migration state, activation plan id/fingerprint,
+acknowledgement status, readiness decision, activation preflight/probe summary, scheduler mode,
+provider/writeback executor mode, and worker starter mode. It returns a stable decision
+(`not_applicable`, `blocked`, `manual_attention`, `staged_ready`, or `allowed`), allowed and blocked
+operation sets for `poll`, `dispatch`, `worker_start`, and `writeback`, blocking/advisory reason
+codes, required operator action codes, and safe evidence. When at least one operation is allowed it
+also emits a read-only staged ownership record bound to the current plan fingerprint, ack,
+preflight/probe evidence, executor modes, and operation set. The record explains why this tick may
+continue; it is not persisted as a migration transaction and does not edit Hub or project config,
+systemd units, provider state, or legacy services. Real candidate scan, dispatch plan application,
+real worker handoff, and real writeback executors consume this gate before provider I/O, ledger
+pending-start mutation, worker start, or writeback side effects; a block is scoped to that project.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -528,8 +544,10 @@ Use readiness for migration preparation only; it does not execute a migration.
 3. Inspect `/api/v1/state`, especially `hub_activation_preflight`,
    `hub_device_observability.overview`, and
    `hub_device_observability.migration_readiness` /
-   `hub_device_observability.activation_plan`. The Dashboard shows the same readiness, plan, ack
-   status, leading reasons, and action codes when Hub summary fields exist.
+   `hub_device_observability.activation_plan`, `hub_cutover_gate`, and
+   `hub_device_observability.cutover_gate`. The Dashboard shows the same readiness, plan, ack,
+   gate status, leading reasons, allowed/blocked operations, and action codes when Hub summary
+   fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -537,7 +555,9 @@ Use readiness for migration preparation only; it does not execute a migration.
 5. Manually confirm any operation that changes ownership: stopping or disabling legacy
    `symphony@<project>.service`, resolving unresolved writeback/manual-attention items, clearing
    active attempts or workspace leases, enabling the Hub scheduler, and selecting real
-   provider/writeback executor or worker starter modes.
+   provider/writeback executor or worker starter modes. After acknowledgement and `hub_managed`,
+   inspect the cutover gate before enabling real Hub-owned actions; `allowed` or `staged_ready`
+   explains which specific operations may proceed and why.
 6. Optionally pass `--hub-activation-ack /path/to/ack.yaml` to load a serialized operator
    acknowledgement. The file should contain acknowledgement entries with `project_id`, `plan_id`,
    `source`, `created_at`, and confirmed action/risk codes. This only changes the safe ack summary;

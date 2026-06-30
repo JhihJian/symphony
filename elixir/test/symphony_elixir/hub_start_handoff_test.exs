@@ -169,6 +169,30 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     assert [%{status: "skipped", reason: "activation_preflight_blocked"}] = handoff.results
   end
 
+  test "cutover gate skips real worker start handoff without calling starter" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    cutover_gate = cutover_gate("alpha", "blocked", blocked_operations: ["worker_start"], reasons: ["operator_acknowledgement_missing"])
+
+    fail_if_called = fn _request, _opts ->
+      flunk("starter must not be called when cutover gate blocks worker_start")
+    end
+
+    assert {same_ledger, handoff} =
+             WorkerStartHandoff.run(registry(), ledger,
+               now: @now,
+               starter: fail_if_called,
+               cutover_gate: cutover_gate
+             )
+
+    assert same_ledger == ledger
+    assert handoff.counts.selected_count == 1
+    assert handoff.counts.skipped_count == 1
+    assert handoff.counts.unresolved_start_intent_count == 1
+    assert handoff.reason_counts == %{"cutover_gate_blocked" => 1}
+    assert [%{status: "skipped", reason: "cutover_gate_blocked"}] = handoff.results
+  end
+
   test "real worker starter opt-in launches through injectable runner and returns safe ack" do
     parent = self()
     previous_runner = Application.get_env(:symphony_elixir, :hub_worker_start_runner)
@@ -663,4 +687,23 @@ defmodule SymphonyElixir.HubStartHandoffTest do
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+
+  defp cutover_gate(project_id, decision, opts) do
+    %{
+      projects: [
+        %{
+          project_id: project_id,
+          migration_state: "hub_managed",
+          decision: decision,
+          allowed_operations: Keyword.get(opts, :allowed_operations, []),
+          blocked_operations: Keyword.get(opts, :blocked_operations, ["poll", "dispatch", "worker_start", "writeback"]),
+          blocking_reasons:
+            opts
+            |> Keyword.get(:reasons, [])
+            |> Enum.map(&%{code: &1, source: "cutover_gate", level: "blocking"}),
+          required_operator_actions: [%{code: "accept_activation_plan"}]
+        }
+      ]
+    }
+  end
 end

@@ -54,6 +54,28 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
     assert result.result_summary.reason == "provider_scope_key_mismatch"
   end
 
+  test "cutover gate blocks candidate scan before project settings or provider I/O" do
+    request =
+      provider_request!(
+        project_id: "alpha",
+        provider_scope: %{kind: "memory", key: "memory:alpha", scope: %{namespace: "alpha"}},
+        operation_kind: :candidate_scan,
+        logical_key: "hub-poll:alpha:candidate_scan"
+      )
+
+    result =
+      RealCandidateScanExecutor.execute(request,
+        registry: registry([project("alpha", "memory", "memory:alpha")]),
+        cutover_gate: cutover_gate("alpha", "blocked", blocked_operations: ["poll"], reasons: ["operator_acknowledgement_missing"])
+      )
+
+    assert result.status == :permanent_failure
+    assert result.error_class == :conflict
+    assert result.result_summary.error == "cutover_gate_blocked"
+    assert result.result_summary.provider_io == false
+    assert "poll" in result.result_summary.blocked_operations
+  end
+
   test "does not expose raw provider error payloads in result summaries" do
     root = Path.join(System.tmp_dir!(), "hub-real-candidate-safe-errors-#{System.unique_integer([:positive])}")
 
@@ -138,6 +160,25 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
         provider_scope_key: "memory:#{project_id}",
         provider_scope: %{namespace: project_id}
       }
+    }
+  end
+
+  defp cutover_gate(project_id, decision, opts) do
+    %{
+      projects: [
+        %{
+          project_id: project_id,
+          migration_state: "hub_managed",
+          decision: decision,
+          allowed_operations: Keyword.get(opts, :allowed_operations, []),
+          blocked_operations: Keyword.get(opts, :blocked_operations, ["poll", "dispatch", "worker_start", "writeback"]),
+          blocking_reasons:
+            opts
+            |> Keyword.get(:reasons, [])
+            |> Enum.map(&%{code: &1, source: "cutover_gate", level: "blocking"}),
+          required_operator_actions: [%{code: "accept_activation_plan"}]
+        }
+      ]
     }
   end
 end

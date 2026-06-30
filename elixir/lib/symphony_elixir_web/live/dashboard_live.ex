@@ -208,6 +208,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   accepted <%= hub_activation_ack_count(@payload, :accepted) %> · missing <%= hub_activation_ack_count(@payload, :missing) %> · malformed <%= hub_activation_ack_count(@payload, :malformed) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Cutover Gate</p>
+                <p class="metric-value"><%= hub_cutover_status(@payload) %></p>
+                <p class="metric-detail">
+                  allowed <%= hub_cutover_count(@payload, :allowed_count) %> · staged <%= hub_cutover_count(@payload, :staged_ready_count) %> · blocked <%= hub_cutover_count(@payload, :blocked_count) %> · manual <%= hub_cutover_count(@payload, :manual_attention_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  records <%= hub_cutover_count(@payload, :staged_ownership_record_count) %> · ops <%= hub_cutover_allowed_ops(@payload) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -251,6 +262,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_activation_ack_badge_class(project.activation_plan && project.activation_plan.operator_acknowledgement && project.activation_plan.operator_acknowledgement.status)}>
                           ack <%= hub_activation_ack_status(project.activation_plan) %>
+                        </span>
+                        <span class={hub_cutover_badge_class(project.cutover_gate && project.cutover_gate.decision)}>
+                          gate <%= hub_cutover_project_status(project.cutover_gate) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -713,6 +727,43 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "not_applicable"
+    end
+  end
+
+  defp hub_cutover_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_allowed_ops(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :projects])
+    |> case do
+      projects when is_list(projects) ->
+        projects
+        |> Enum.flat_map(&(Map.get(&1, :allowed_operations) || []))
+        |> Enum.uniq()
+        |> Enum.sort()
+        |> case do
+          [] -> "none"
+          ops -> Enum.join(ops, ", ")
+        end
+
+      _projects ->
+        "none"
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -759,6 +810,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_activation_ack_badge_class("manual_attention"), do: "state-badge state-badge-danger"
   defp hub_activation_ack_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_badge_class("allowed"), do: "state-badge state-badge-active"
+  defp hub_cutover_badge_class("staged_ready"), do: "state-badge state-badge-active"
+  defp hub_cutover_badge_class("not_applicable"), do: "state-badge state-badge-muted"
+  defp hub_cutover_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -767,6 +825,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_activation_ack_status(%{operator_acknowledgement: %{status: status}}) when is_binary(status), do: status
   defp hub_activation_ack_status(_plan), do: "missing"
+
+  defp hub_cutover_project_status(%{decision: decision}) when is_binary(decision), do: decision
+  defp hub_cutover_project_status(_gate), do: "unknown"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"

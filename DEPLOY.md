@@ -34,6 +34,16 @@ code、阻断/建议原因、脱敏 evidence，以及 acknowledgement 状态。a
 executor/probe mode、ownership facts 或 reason/action code 变化后，旧 ack 会显示为 `stale`、
 `conflict` 或 manual attention，不能静默复用。`accepted` 只表示 operator 已确认这份证据，不会
 自动 stop/disable legacy service、编辑配置、写回 provider 或交接 worker。
+activation plan / ack 之后，Hub 还会暴露 `hub_cutover_gate` 和
+`hub_device_observability.cutover_gate`。这个 cutover gate 是真实 Hub-owned 动作前的逐项目门禁：
+它把 plan id/fingerprint、ack 状态、readiness、activation preflight、host/service probe、
+provider/writeback executor、worker starter、scheduler 和项目快照合成 `not_applicable`、`blocked`、
+`manual_attention`、`staged_ready` 或 `allowed` 决策，并列出 `poll`、`dispatch`、`worker_start`、
+`writeback` 哪些允许、哪些被阻断、原因和需要 operator 处理的 action code。只有项目已显式
+`hub_managed`、ack 匹配当前 plan、preflight 安全、没有 legacy owner 冲突且对应 executor/starter
+模式匹配时，真实 candidate scan、dispatch pending start intent、real worker starter 和 real writeback
+才会继续。允许时生成的 staged ownership record 只是本轮输入的只读审计摘要；证据或模式变化后不能静默复用，
+也不会自动修改 `HUB.yaml`、`WORKFLOW.md`、`TRACKER.yaml`、systemd unit、provider 状态或 legacy service。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -68,7 +78,9 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
 curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   preflight: .hub_activation_preflight,
   readiness: .hub_device_observability.migration_readiness,
-  activation_plan: .hub_device_observability.activation_plan
+  activation_plan: .hub_device_observability.activation_plan,
+  cutover_gate: .hub_cutover_gate,
+  device_cutover_gate: .hub_device_observability.cutover_gate
 }'
 ```
 
@@ -80,7 +92,8 @@ service、provider scope、workspace/runtime/log/state/port owner、writeback、
 `ready_for_hub_management` 表示证据上已接近可由人工切换为 `hub_managed`；`blocked` 表示存在明确
 冲突；`unknown_manual_attention` 表示证据不足或需要人工复核。停止/disable legacy
 `symphony@<project>.service`、处理 unresolved writeback/manual attention、确认 real provider
-executor/writeback executor/worker starter 模式，必须由 operator 手工执行。本片不提供一键迁移，
+executor/writeback executor/worker starter 模式，并确认 cutover gate 对目标 operation 显示 allowed
+或 staged_ready，必须由 operator 手工执行。本片不提供一键迁移，
 也不会自动修改 `HUB.yaml`、项目配置、systemd unit 或 provider 状态。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`

@@ -105,6 +105,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :PresenterRuntime)
@@ -118,6 +119,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       assert payload.counts.running == 0
       assert payload.hub_runtime.mode == "hub"
+      assert payload.hub_cutover_gate.counts.project_count == 1
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -145,6 +147,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       legacy_payload = Presenter.state_payload(legacy_name, 100)
       refute Map.has_key?(legacy_payload, :hub_runtime)
+      refute Map.has_key?(legacy_payload, :hub_cutover_gate)
       refute Map.has_key?(legacy_payload, :hub_project_registry)
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)
@@ -228,6 +231,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert project.activation_plan.status == "plan_ready"
       assert project.activation_plan.operator_acknowledgement.status == "accepted"
       assert project.activation_plan.hub_owned_actions_allowed == false
+      assert project.cutover_gate.decision == "blocked"
+      assert "migration_state_not_hub_managed" in Enum.map(project.cutover_gate.blocking_reasons, & &1.code)
+      assert snapshot.hub_cutover_gate.counts.blocked_count == 1
+      assert snapshot.hub_runtime.cutover_gate.status == "blocked"
       assert snapshot.hub_runtime.operator_acknowledgements.status in ["plan_ready", "blocked"]
       assert "activation_preflight" in project.activation_plan.hub_owned_actions_remain_guarded_by
 
@@ -251,8 +258,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_ledger =
@@ -360,8 +369,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :DashboardRuntime)
@@ -511,12 +522,23 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :PollTickSuccessRuntime)
 
+      provider_executor = success_executor(self())
+      operator_acknowledgements = cutover_acknowledgements!(hub_path, provider_executor: provider_executor)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: provider_executor,
+        operator_acknowledgements: operator_acknowledgements
+      ]
+
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        {Runtime, runtime_opts},
         id: :hub_runtime_poll_tick_success
       )
 
@@ -534,7 +556,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.poll_tick.candidate_intake.eligible_count == 0
       assert snapshot.hub_runtime.poll_tick.dispatch_planning.already_planned_count == 2
       assert snapshot.hub_runtime.poll_tick.dispatch_plan_application.applied_count == 2
-      assert snapshot.hub_runtime.poll_tick.worker_start_handoff.unknown_count == 2
+      assert snapshot.hub_runtime.poll_tick.worker_start_handoff.skipped_count == 2
       assert snapshot.hub_runtime.candidate_intake.candidate_count == 2
       assert snapshot.hub_runtime.candidate_intake.eligible_count == 0
       assert snapshot.hub_runtime.dispatch_planning.planned_count == 0
@@ -542,7 +564,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.dispatch_planning.pending_intent_count == 2
       assert snapshot.hub_runtime.dispatch_plan_application.applied_count == 2
       assert snapshot.hub_runtime.dispatch_plan_application.pending_start_intent_count == 2
-      assert snapshot.hub_runtime.worker_start_handoff.unknown_count == 2
+      assert snapshot.hub_runtime.worker_start_handoff.skipped_count == 2
       assert snapshot.hub_runtime.worker_start_handoff.unresolved_start_intent_count == 2
 
       assert snapshot.hub_candidate_intake.counts == %{
@@ -591,9 +613,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_dispatch_plan_application.counts.pending_start_intent_count == 2
       assert snapshot.hub_dispatch_plan_application.reason_counts == %{}
       assert snapshot.hub_worker_start_handoff.counts.selected_count == 2
-      assert snapshot.hub_worker_start_handoff.counts.unknown_count == 2
+      assert snapshot.hub_worker_start_handoff.counts.skipped_count == 2
       assert snapshot.hub_worker_start_handoff.counts.unresolved_start_intent_count == 2
-      assert snapshot.hub_worker_start_handoff.reason_counts == %{"default_skeleton_no_worker_started" => 2}
+      assert snapshot.hub_worker_start_handoff.reason_counts == %{"cutover_gate_blocked" => 2}
 
       assert Enum.map(snapshot.hub_dispatch_plan_application.pending_start_intents, & &1.issue_key) == [
                "alpha:memory:alpha:mem-1",
@@ -612,7 +634,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 2
       assert length(ledger_project.pending_start_intents) == 2
-      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :unknown))
+      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :pending))
 
       facts_by_type = Enum.group_by(snapshot.hub_poll_coordination.facts, & &1.fact_type)
       assert [_attempt | _] = Map.fetch!(facts_by_type, :poll_attempt)
@@ -635,7 +657,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_candidate_intake.counts.candidate_count == 2
       assert payload.hub_dispatch_planning.counts.already_planned_count == 2
       assert payload.hub_dispatch_plan_application.counts.applied_count == 2
-      assert payload.hub_worker_start_handoff.counts.unknown_count == 2
+      assert payload.hub_worker_start_handoff.counts.skipped_count == 2
       assert [%{candidates: payload_candidates}] = payload.hub_candidate_intake.projects
       assert Enum.all?(payload_candidates, &(&1.dispatch_evaluation.skipped_reason == "duplicate_active_attempt"))
     after
@@ -658,6 +680,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       parent = self()
@@ -688,7 +711,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
         name: runtime_name,
         config_path: hub_path,
         provider_executor: success_executor(self()),
-        worker_start_starter: starter
+        worker_start_starter: starter,
+        operator_acknowledgements:
+          cutover_acknowledgements!(hub_path,
+            provider_executor: success_executor(self()),
+            worker_start_starter: starter
+          )
       ]
 
       start_supervised!(
@@ -763,6 +791,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       starter = fn request, _opts ->
@@ -824,6 +853,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
         config_path: hub_path,
         provider_executor: success_executor(self()),
         worker_start_starter: starter,
+        operator_acknowledgements:
+          cutover_acknowledgements!(hub_path,
+            provider_executor: success_executor(self()),
+            worker_start_starter: starter
+          ),
         worker_lifecycle_result_source: lifecycle_source
       ]
 
@@ -899,14 +933,20 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :PollTickBackoffRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: backoff_executor(self())},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: backoff_executor(self()),
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: backoff_executor(self()))},
         id: :hub_runtime_poll_tick_backoff
       )
 
@@ -959,6 +999,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: good
           workflow_path: good/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: bad
           workflow_path: bad/WORKFLOW.md
       """)
@@ -966,7 +1007,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
       runtime_name = Module.concat(__MODULE__, :PollTickConfigErrorRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: success_executor(self()))},
         id: :hub_runtime_poll_tick_config_error
       )
 
@@ -997,12 +1042,22 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :PollTickRedactionRuntime)
+      provider_executor = secret_executor()
+      operator_acknowledgements = cutover_acknowledgements!(hub_path, provider_executor: provider_executor)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: provider_executor,
+        operator_acknowledgements: operator_acknowledgements
+      ]
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: secret_executor()},
+        {Runtime, runtime_opts},
         id: :hub_runtime_poll_tick_redaction
       )
 
@@ -1038,12 +1093,22 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :PollTickBodyOnlyRedactionRuntime)
+      provider_executor = body_only_executor()
+      operator_acknowledgements = cutover_acknowledgements!(hub_path, provider_executor: provider_executor)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        provider_executor: provider_executor,
+        operator_acknowledgements: operator_acknowledgements
+      ]
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: body_only_executor()},
+        {Runtime, runtime_opts},
         id: :hub_runtime_poll_tick_body_only_redaction
       )
 
@@ -1125,8 +1190,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       Workflow.set_workflow_file_path(Path.join(root, "legacy/WORKFLOW.md"))
@@ -1149,7 +1216,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
       runtime_name = Module.concat(__MODULE__, :RealCandidateScanRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: RealCandidateScanExecutor},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: RealCandidateScanExecutor,
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: RealCandidateScanExecutor)},
         id: :hub_runtime_real_candidate_scan
       )
 
@@ -1208,10 +1279,13 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: limited
           workflow_path: limited/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: retry
           workflow_path: retry/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: bad
           workflow_path: bad/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
@@ -1223,7 +1297,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
       runtime_name = Module.concat(__MODULE__, :RealCandidateFailureRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: RealCandidateScanExecutor},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: RealCandidateScanExecutor,
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: RealCandidateScanExecutor)},
         id: :hub_runtime_real_candidate_failures
       )
 
@@ -1292,22 +1370,29 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       runtime_name = Module.concat(__MODULE__, :ActivationPreflightRuntime)
 
+      activation_probe = %{
+        source: "unit-test-probe",
+        projects: %{
+          "alpha" => %{
+            legacy_service: %{service: "symphony@alpha.service", active: true},
+            provider_scope_owners: [%{provider_scope_key: "memory:alpha", owner: "legacy-poll", authorization: "Bearer secret"}],
+            workspace_owners: [%{workspace_root: Path.join([root, "workspaces", "alpha"]), owner: "legacy-worker"}]
+          },
+          "beta" => %{legacy_service: %{service: "symphony@beta.service", active: false, enabled: false}}
+        }
+      }
+
       start_supervised!(
         {Runtime,
          name: runtime_name,
          config_path: hub_path,
          provider_executor: success_executor(self()),
-         activation_probe: %{
-           source: "unit-test-probe",
-           projects: %{
-             "alpha" => %{
-               legacy_service: %{service: "symphony@alpha.service", active: true},
-               provider_scope_owners: [%{provider_scope_key: "memory:alpha", owner: "legacy-poll", authorization: "Bearer secret"}],
-               workspace_owners: [%{workspace_root: Path.join([root, "workspaces", "alpha"]), owner: "legacy-worker"}]
-             },
-             "beta" => %{legacy_service: %{service: "symphony@beta.service", active: false, enabled: false}}
-           }
-         }},
+         activation_probe: activation_probe,
+         operator_acknowledgements:
+           cutover_acknowledgements!(hub_path,
+             provider_executor: success_executor(self()),
+             activation_probe: activation_probe
+           )},
         id: :hub_runtime_activation_preflight
       )
 
@@ -1445,26 +1530,37 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       runtime_name = Module.concat(__MODULE__, :HostServiceProbeRuntime)
 
+      activation_probe =
+        HostServiceProbe.build_fun(
+          config_root: legacy_config_root,
+          runtime_root: Path.join(root, "runtime"),
+          deps: %{
+            file_regular?: &File.regular?/1,
+            file_dir?: &File.dir?/1,
+            read_file: &File.read/1,
+            systemctl_show: fn
+              "symphony@alpha.service" -> {:ok, "ActiveState=active\nSubState=running\nResult=success\n"}
+              "symphony@beta.service" -> {:ok, "ActiveState=inactive\nSubState=dead\nResult=success\n"}
+            end,
+            systemctl_enabled: fn _service -> {:ok, "disabled"} end,
+            listening_ports: fn -> {:ok, [20_001]} end
+          }
+        )
+        |> then(fn probe_fun ->
+          {:ok, registry} = ProjectRegistry.load(hub_path)
+          probe_fun.(registry)
+        end)
+
       start_supervised!(
         {Runtime,
          name: runtime_name,
          config_path: hub_path,
          provider_executor: success_executor(self()),
-         activation_probe:
-           HostServiceProbe.build_fun(
-             config_root: legacy_config_root,
-             runtime_root: Path.join(root, "runtime"),
-             deps: %{
-               file_regular?: &File.regular?/1,
-               file_dir?: &File.dir?/1,
-               read_file: &File.read/1,
-               systemctl_show: fn
-                 "symphony@alpha.service" -> {:ok, "ActiveState=active\nSubState=running\nResult=success\n"}
-                 "symphony@beta.service" -> {:ok, "ActiveState=inactive\nSubState=dead\nResult=success\n"}
-               end,
-               systemctl_enabled: fn _service -> {:ok, "disabled"} end,
-               listening_ports: fn -> {:ok, [20_001]} end
-             }
+         activation_probe: activation_probe,
+         operator_acknowledgements:
+           cutover_acknowledgements!(hub_path,
+             provider_executor: success_executor(self()),
+             activation_probe: activation_probe
            )},
         id: :hub_runtime_host_service_probe
       )
@@ -1513,6 +1609,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :CandidateIntakeConflictRuntime)
@@ -1522,7 +1619,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
          name: runtime_name,
          config_path: hub_path,
          provider_executor: conflict_executor(self(), Path.join([root, "workspaces", "alpha"])),
-         runtime_ledger: active_runtime_ledger(Path.join([root, "workspaces", "alpha"]))},
+         runtime_ledger: active_runtime_ledger(Path.join([root, "workspaces", "alpha"])),
+         operator_acknowledgements:
+           cutover_acknowledgements!(hub_path,
+             provider_executor: conflict_executor(self(), Path.join([root, "workspaces", "alpha"]))
+           )},
         id: :hub_runtime_candidate_intake_conflicts
       )
 
@@ -1573,7 +1674,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 3
       assert Enum.any?(ledger_project.active_attempts, &(&1.issue_key =~ "mem-ready"))
-      assert [%{issue_key: ready_key, status: :unknown}] = ledger_project.pending_start_intents
+      assert [%{issue_key: ready_key, status: :pending}] = ledger_project.pending_start_intents
       assert ready_key =~ "mem-ready"
 
       [planning_project] = snapshot.hub_dispatch_planning.projects
@@ -1602,12 +1703,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :DispatchPlanningReplayRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: success_executor(self()))},
         id: :hub_runtime_dispatch_planning_replay
       )
 
@@ -1646,7 +1752,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [ledger_project] = dispatch_summary.projects
       assert length(ledger_project.active_attempts) == 2
       assert length(ledger_project.pending_start_intents) == 2
-      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :unknown))
+      assert Enum.all?(ledger_project.pending_start_intents, &(&1.status == :pending))
     after
       File.rm_rf(root)
     end
@@ -1667,12 +1773,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :DispatchPlanningCapacityRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: success_executor(self()))},
         id: :hub_runtime_dispatch_planning_capacity
       )
 
@@ -1714,6 +1825,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :SchedulerAutoRuntime)
@@ -1722,7 +1834,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
         name: runtime_name,
         config_path: hub_path,
         scheduler_enabled: true,
-        provider_executor: success_executor(self())
+        provider_executor: success_executor(self()),
+        operator_acknowledgements:
+          cutover_acknowledgements!(hub_path,
+            provider_executor: success_executor(self()),
+            scheduler_enabled: true
+          )
       ]
 
       start_supervised!(
@@ -1785,6 +1902,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :SchedulerCoalesceRuntime)
@@ -1794,7 +1912,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
         name: runtime_name,
         config_path: hub_path,
         scheduler_enabled: true,
-        provider_executor: blocking_success_executor(parent)
+        provider_executor: blocking_success_executor(parent),
+        operator_acknowledgements:
+          cutover_acknowledgements!(hub_path,
+            provider_executor: blocking_success_executor(parent),
+            scheduler_enabled: true
+          )
       ]
 
       start_supervised!(
@@ -1849,8 +1972,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :SchedulerBackoffRuntime)
@@ -1859,7 +1984,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
         name: runtime_name,
         config_path: hub_path,
         scheduler_enabled: true,
-        provider_executor: raising_alpha_executor(self())
+        provider_executor: raising_alpha_executor(self()),
+        operator_acknowledgements:
+          cutover_acknowledgements!(hub_path,
+            provider_executor: raising_alpha_executor(self()),
+            scheduler_enabled: true
+          )
       ]
 
       start_supervised!(
@@ -1915,12 +2045,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
       projects:
         - project_id: alpha
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
       """)
 
       runtime_name = Module.concat(__MODULE__, :SchedulerDisabledRuntime)
 
       start_supervised!(
-        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: success_executor(self())},
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: success_executor(self()))},
         id: :hub_runtime_scheduler_disabled
       )
 
@@ -2214,6 +2349,38 @@ defmodule SymphonyElixir.HubRuntimeTest do
   defp unknown_registry(unknown_keys) do
     Enum.reduce(unknown_keys, %{}, fn key, acc ->
       Map.put(acc, key, "visible")
+    end)
+  end
+
+  defp cutover_acknowledgements!(hub_path, opts) do
+    now = Keyword.get(opts, :now, ~U[2026-06-30 09:00:00Z])
+    provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    worker_start_starter = Keyword.get(opts, :worker_start_starter)
+    activation_probe = Keyword.get(opts, :activation_probe)
+    scheduler_enabled? = Keyword.get(opts, :scheduler_enabled, false) == true
+
+    {:ok, registry} = ProjectRegistry.load(hub_path)
+    activation_preflight = ActivationPreflight.build(registry, now: now, probe: activation_probe)
+
+    snapshot =
+      Runtime.build_snapshot(hub_path, now, registry,
+        now: now,
+        activation_probe: activation_probe,
+        activation_preflight: activation_preflight,
+        provider_executor: provider_executor,
+        worker_start_starter: worker_start_starter,
+        scheduler: %{enabled: scheduler_enabled?, status: if(scheduler_enabled?, do: "scheduled", else: "disabled")}
+      )
+
+    Enum.map(snapshot.hub_device_observability.projects, fn project ->
+      %{
+        project_id: project.project_id,
+        plan_id: project.activation_plan.plan_id,
+        source: "test-operator-ack",
+        created_at: "2026-06-30T09:01:00Z",
+        acknowledged_action_codes: Enum.map(project.activation_plan.required_acknowledgements, & &1.code),
+        note: "test acknowledgement; no automatic migration"
+      }
     end)
   end
 

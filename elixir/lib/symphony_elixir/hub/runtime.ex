@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
     CandidateIntake,
+    CutoverGate,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -59,6 +60,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
           required(:activation_probe) => map() | function() | nil,
           required(:operator_acknowledgements) => term(),
+          required(:cutover_gate) => map(),
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
@@ -306,10 +308,23 @@ defmodule SymphonyElixir.Hub.Runtime do
       worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
 
+      cutover_gate =
+        build_cutover_gate(
+          registry,
+          loaded_at,
+          activation_preflight,
+          provider_executor,
+          worker_start_starter,
+          activation_probe,
+          operator_acknowledgements,
+          scheduler
+        )
+
       initial_snapshot =
         build_snapshot(config_path, loaded_at, registry,
           now: loaded_at,
           activation_preflight: activation_preflight,
+          cutover_gate: cutover_gate,
           activation_probe: activation_probe,
           operator_acknowledgements: operator_acknowledgements,
           provider_queue: provider_queue,
@@ -336,6 +351,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         activation_probe: activation_probe,
         operator_acknowledgements: operator_acknowledgements,
         activation_preflight: activation_preflight,
+        cutover_gate: cutover_gate,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
         runtime_ledger: runtime_ledger,
         candidate_intake: candidate_intake,
@@ -437,9 +453,21 @@ defmodule SymphonyElixir.Hub.Runtime do
       {:ok, registry} ->
         activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
 
+        cutover_gate =
+          build_cutover_gate(
+            registry,
+            requested_at,
+            activation_preflight,
+            state.provider_executor,
+            state.worker_start_starter,
+            state.activation_probe,
+            state.operator_acknowledgements,
+            state.scheduler
+          )
+
         {state, tick_summary} =
           state
-          |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight})
+          |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight, cutover_gate: cutover_gate})
           |> run_poll_tick(requested_at)
 
         {:reply,
@@ -494,6 +522,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       Keyword.get(opts, :activation_preflight) ||
         ActivationPreflight.empty(registry, now: now)
 
+    cutover_gate = Keyword.get(opts, :cutover_gate)
+
     tick = normalize_tick(Keyword.get(opts, :tick))
     runtime_ledger = Keyword.get(opts, :runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
     candidate_intake = Keyword.get(opts, :candidate_intake, CandidateIntake.empty(registry, now: now, runtime_ledger: runtime_ledger))
@@ -531,7 +561,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         facts: poll_facts,
         queue: provider_queue,
-        activation_preflight: activation_preflight
+        activation_preflight: activation_preflight,
+        cutover_gate: poll_cutover_gate(provider_executor, cutover_gate)
       )
 
     scheduler = normalize_scheduler(Keyword.get(opts, :scheduler), poll_plan, runtime_ledger, worker_start_handoff, worker_lifecycle_reconciliation, now)
@@ -552,6 +583,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
           activation_preflight: activation_preflight,
+          cutover_gate: cutover_gate || %{},
           scheduler: scheduler,
           tick: tick,
           candidate_intake: candidate_intake,
@@ -568,6 +600,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
     counts = counts(registry, device_observability)
     registry_summary = registry_summary(registry)
+    cutover_gate = CutoverGate.to_snapshot(cutover_gate || device_observability.cutover_gate)
 
     %{
       running: [],
@@ -593,6 +626,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         worker_starter: worker_starter_summary(worker_start_starter),
         activation_probe: activation_probe_summary(activation_probe, activation_preflight),
         activation_preflight: activation_preflight,
+        cutover_gate: cutover_gate,
         writeback: writeback,
         scheduler: scheduler,
         poll_tick: tick,
@@ -607,6 +641,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       },
       hub_scheduler: scheduler,
       hub_activation_preflight: activation_preflight,
+      hub_cutover_gate: cutover_gate,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -664,6 +699,33 @@ defmodule SymphonyElixir.Hub.Runtime do
     ActivationPreflight.build(registry, now: now, probe: probe)
   end
 
+  defp build_cutover_gate(registry, now, activation_preflight, provider_executor, worker_start_starter, activation_probe, operator_acknowledgements, scheduler) do
+    provider_summary = provider_executor_summary(provider_executor)
+
+    device_projection =
+      DeviceObservability.build(
+        %{
+          hub_runtime:
+            hub_runtime_observability(
+              provider_executor: provider_executor,
+              activation_probe: activation_probe,
+              activation_preflight: activation_preflight,
+              worker_start_starter: worker_start_starter
+            ),
+          registry: registry,
+          activation_preflight: activation_preflight,
+          scheduler: scheduler,
+          runtime_ledger: RuntimeLedger.new(),
+          writeback: %{executor: provider_summary},
+          migration_boundary: migration_boundary()
+        },
+        now: now,
+        operator_acknowledgements: operator_acknowledgements
+      )
+
+    device_projection.cutover_gate
+  end
+
   defp safe_activation_probe(fun, registry) do
     fun.(registry)
   rescue
@@ -680,7 +742,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: requested_at,
         facts: state.poll_facts,
         queue: state.provider_queue,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
       )
 
     executable_entries = Enum.filter(plan.projects, &(&1.allow_poll == true))
@@ -697,7 +760,8 @@ defmodule SymphonyElixir.Hub.Runtime do
             requested_at,
             state.registry,
             state.config_path,
-            state.activation_preflight
+            state.activation_preflight,
+            state.cutover_gate
           )
           |> normalize_provider_result(request, queue)
 
@@ -725,7 +789,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
         now: finished_at,
         runtime_ledger: state.runtime_ledger,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     dispatch_planning =
@@ -733,20 +798,23 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         runtime_ledger: state.runtime_ledger,
         previous_plan: state.dispatch_planning,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     {runtime_ledger, dispatch_plan_application} =
       DispatchPlanApplication.apply_plan(state.registry, dispatch_planning, state.runtime_ledger,
         now: finished_at,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     {runtime_ledger, worker_start_handoff} =
       WorkerStartHandoff.run(state.registry, runtime_ledger,
         now: finished_at,
         starter: state.worker_start_starter,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     {runtime_ledger, worker_lifecycle_reconciliation} =
@@ -759,7 +827,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
         now: finished_at,
         runtime_ledger: runtime_ledger,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     dispatch_planning =
@@ -767,7 +836,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         runtime_ledger: runtime_ledger,
         previous_plan: dispatch_planning,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
       )
 
     tick =
@@ -788,6 +858,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         poll_facts: poll_facts,
         activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate,
         activation_probe: state.activation_probe,
         operator_acknowledgements: state.operator_acknowledgements,
         provider_queue: provider_queue,
@@ -912,8 +983,20 @@ defmodule SymphonyElixir.Hub.Runtime do
       {:ok, registry} ->
         activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
 
+        cutover_gate =
+          build_cutover_gate(
+            registry,
+            requested_at,
+            activation_preflight,
+            state.provider_executor,
+            state.worker_start_starter,
+            state.activation_probe,
+            state.operator_acknowledgements,
+            state.scheduler
+          )
+
         state
-        |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight})
+        |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight, cutover_gate: cutover_gate})
         |> run_poll_tick(requested_at)
         |> then(fn {state, tick_summary} -> {:ok, state, tick_summary} end)
 
@@ -1002,6 +1085,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         poll_facts: state.poll_facts,
         activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate,
         activation_probe: state.activation_probe,
         operator_acknowledgements: state.operator_acknowledgements,
         provider_queue: state.provider_queue,
@@ -1026,7 +1110,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         facts: state.poll_facts,
         queue: state.provider_queue,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
       )
 
     cond do
@@ -1050,7 +1135,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         facts: state.poll_facts,
         queue: state.provider_queue,
-        activation_preflight: state.activation_preflight
+        activation_preflight: state.activation_preflight,
+        cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
       )
 
     replay = RuntimeLedger.replay(state.runtime_ledger)
@@ -1297,6 +1383,16 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
+  defp poll_cutover_gate(provider_executor, cutover_gate) do
+    provider_summary = provider_executor_summary(provider_executor)
+
+    if provider_summary.provider_io == true and "candidate_scan" in list_value(provider_summary, :supported_operations) do
+      cutover_gate
+    else
+      nil
+    end
+  end
+
   defp project_writeback_summary(project) do
     writebacks = value(project, :writebacks) || %{}
     counts = value(writebacks, :counts) || %{}
@@ -1425,9 +1521,9 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp worker_starter_summary(starter) when is_function(starter, 2) do
     %{
-      mode: "custom_function",
+      mode: "real_worker_starter",
       starter: "anonymous_function",
-      worker_start: "unknown"
+      worker_start: true
     }
   end
 
@@ -1550,9 +1646,10 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp provider_executor_summary(executor) when is_function(executor, 2) do
     %{
-      mode: "custom_function",
+      mode: "real_candidate_scan",
       executor: "anonymous_function",
-      provider_io: "unknown"
+      provider_io: true,
+      supported_operations: ["candidate_scan"]
     }
   end
 
@@ -1564,33 +1661,35 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
-  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path, _activation_preflight) do
+  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path, _activation_preflight, _cutover_gate) do
     {:error, :missing_provider_request}
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight) when is_function(executor, 2) do
+  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight, cutover_gate) when is_function(executor, 2) do
     safe_execute_provider_request(fn ->
       executor.(request,
         started_at: started_at,
         registry: registry,
         hub_config_path: config_path,
-        activation_preflight: activation_preflight
+        activation_preflight: activation_preflight,
+        cutover_gate: cutover_gate
       )
     end)
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight) when is_atom(executor) do
+  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight, cutover_gate) when is_atom(executor) do
     safe_execute_provider_request(fn ->
       executor.execute(request,
         started_at: started_at,
         registry: registry,
         hub_config_path: config_path,
-        activation_preflight: activation_preflight
+        activation_preflight: activation_preflight,
+        cutover_gate: cutover_gate
       )
     end)
   end
 
-  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path, _activation_preflight) do
+  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path, _activation_preflight, _cutover_gate) do
     {:error, :invalid_provider_executor}
   end
 

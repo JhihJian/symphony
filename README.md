@@ -211,6 +211,19 @@ ack is shown as stale/conflicting instead of being silently reused. Accepted ack
 an audit boundary: Hub-owned poll, dispatch, worker start, and real writeback remain guarded by
 activation preflight, legacy ownership checks, provider governance, runtime ledger, executor mode,
 workspace leases, and lifecycle reconciliation.
+The next explicit boundary is `hub_cutover_gate` / `hub_device_observability.cutover_gate`, a
+per-project cutover decision consumed before Hub-owned real actions enter their side-effect paths.
+It combines the activation plan, operator acknowledgement, readiness decision, activation preflight,
+host/service probe, executor/starter modes, scheduler state, provider scope, and project snapshot
+into a sanitized decision such as `not_applicable`, `blocked`, `manual_attention`, `staged_ready`,
+or `allowed`. The gate reports allowed and blocked operations for `poll`, `dispatch`,
+`worker_start`, and `writeback`, plus blocking/advisory reasons, required operator action codes,
+safe evidence, and read-only staged ownership records when operations are allowed. Missing, stale,
+conflicting, malformed, or unsupported acknowledgement input, unsafe or unknown preflight evidence,
+legacy ownership conflicts, executor/starter mode mismatches, and non-`hub_managed` migration state
+block only the affected project's Hub-owned real actions. A staged ownership record is audit
+evidence for the current inputs only; it is not a database migration transaction and does not modify
+legacy services, project config, systemd units, provider state, or `HUB.yaml`.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -230,7 +243,8 @@ For a local activation dry run, use
 `./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --port <port>`
 and inspect `hub_activation_preflight`,
 `hub_device_observability.migration_readiness`,
-`hub_device_observability.activation_plan`, and the Dashboard Hub sections in `/api/v1/state`.
+`hub_device_observability.activation_plan`, `hub_cutover_gate`,
+`hub_device_observability.cutover_gate`, and the Dashboard Hub sections in `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.
@@ -239,10 +253,12 @@ mode, set projects to `legacy_only` or `hub_ready` in `HUB.yaml`, enable the hos
 resolve readiness actions before changing any project to `hub_managed`. `legacy_only` means Hub is
 only observing a legacy-owned project; `hub_ready` means the project can be evaluated for dry-run or
 future management; `hub_managed` means Hub-owned actions are allowed only after activation
-preflight is safe. Stopping/disabling legacy `symphony@<project>.service`, resolving unknown
-writeback/manual-attention items, and confirming real provider/writeback/worker modes remain manual
-operator decisions. This command gathers evidence only and does not stop, disable, restart, delete,
-modify `HUB.yaml`, modify project config, or migrate `symphony@<project>.service`.
+preflight is safe, acknowledgement still matches the activation plan, and the cutover gate allows
+the specific operation. Stopping/disabling legacy `symphony@<project>.service`, resolving unknown
+writeback/manual-attention items, confirming real provider/writeback/worker modes, and changing
+project ownership remain manual operator decisions. This command gathers evidence only and does not
+stop, disable, restart, delete, modify `HUB.yaml`, modify project config, or migrate
+`symphony@<project>.service`.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

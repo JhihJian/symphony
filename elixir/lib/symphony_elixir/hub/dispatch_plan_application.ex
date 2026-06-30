@@ -8,7 +8,14 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   run workspace hooks, or write provider state.
   """
 
-  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, DispatchPlanning, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    CutoverGate,
+    DispatchBoundary,
+    DispatchPlanning,
+    RuntimeLedger,
+    SafeSummary
+  }
 
   @version 1
 
@@ -34,6 +41,11 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
       |> ActivationPreflight.to_snapshot()
 
+    cutover_gate =
+      opts
+      |> Keyword.get(:cutover_gate)
+      |> CutoverGate.observability_snapshot()
+
     registry_projects = registry_projects_by_id(registry)
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
 
@@ -43,6 +55,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       plan: plan,
       registry_projects: registry_projects,
       activation_preflight: activation_preflight,
+      cutover_gate: cutover_gate,
       ledger_changed?: false
     }
 
@@ -211,7 +224,9 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   defp apply_planned_outcome(project, outcome, ledger, state) do
     candidate = dispatch_candidate(project, outcome, state)
 
-    case activation_preflight(state, candidate) || capacity_preflight(project, ledger, candidate, state) do
+    case cutover_gate(state, candidate) ||
+           activation_preflight(state, candidate) ||
+           capacity_preflight(project, ledger, candidate, state) do
       {:blocked, reason, message} ->
         application_outcome =
           outcome
@@ -243,6 +258,21 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       reason ->
         message = optional_string(reason, :message) || "Activation preflight blocked dispatch application"
         {:blocked, "activation_preflight_blocked", message}
+    end
+  end
+
+  defp cutover_gate(%{cutover_gate: nil}, _candidate), do: nil
+
+  defp cutover_gate(state, candidate) do
+    project_id = optional_string(candidate, :project_id)
+
+    case CutoverGate.block_reason(state.cutover_gate, project_id, :dispatch) do
+      nil ->
+        nil
+
+      reason ->
+        message = optional_string(reason, :message) || "Cutover gate blocked dispatch application"
+        {:blocked, "cutover_gate_blocked", message}
     end
   end
 
