@@ -329,6 +329,13 @@ real provider reads through the governed Hub boundary, opt in explicitly:
 ./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-candidate-scan --port 21000
 ```
 
+To let Hub execute the first safe writeback subset through the same governed boundary, opt in
+explicitly:
+
+```bash
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-writeback --port 21000
+```
+
 `--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
 present, and the legacy startup path remains:
 
@@ -380,6 +387,17 @@ Other operation kinds remain unsupported and provider writeback is not implement
 validation problems become permanent failures, rate limits become rate-limited/backoff summaries,
 network/provider 5xx failures become retryable failures, and unknown results are not treated as
 success.
+When `--hub-provider-executor real-writeback` is used, the provider executor handles only the first
+safe writeback subset: status/stage writes, GitHub workpad marker upserts, and GitHub label
+additions. Before provider I/O it normalizes the routed writeback intent through
+`WritebackProcessor.decide/3`; already-succeeded intents are reused, conflicting intent keys are
+blocked, and unknown non-idempotent operations such as PR creation or ordinary append comments go to
+manual attention or provider lookup instead of blind replay. The executor resolves `project_id` and
+provider scope against the Hub registry, reloads that project's own `WORKFLOW.md` and `TRACKER.yaml`,
+and calls the project-local tracker/GitHub write path under `Config.with_settings/2`. Unsupported
+providers or operations return governed non-success results. Success, rate limits, retryable
+network/provider failures, config/auth/not-found/validation failures, and unknown/manual-attention
+outcomes are mapped into safe `ProviderGovernance` result summaries linked to the writeback intent.
 When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
 tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
 tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
@@ -388,12 +406,13 @@ or unknown start intents, running attempts, retry/backoff, and manual attention.
 queued, the request returns a diagnostic queued/coalesced summary with `requested_at`,
 `next_tick_at`, and scheduler state instead of running a second concurrent tick. Without
 `--hub-scheduler`, manual refresh remains synchronous and keeps the previous behavior.
-Hub mode still does not start the legacy single-project orchestrator, write comments/statuses/PRs,
-run the final durable Hub scheduler, or take ownership of existing `symphony@project.service`
-instances. The
-default provider executor and default start handoff are skeleton boundaries and do not migrate the
-legacy GitHub/GitLab/Linear adapters. The opt-in real candidate-scan executor uses those adapters
-only for project-local reads behind Hub governance; it does not migrate legacy polling or writeback.
+Hub mode still does not start the legacy single-project orchestrator, run the final durable Hub
+scheduler, or take ownership of existing `symphony@project.service` instances. The default provider
+executor and default start handoff are skeleton boundaries and do not migrate the legacy
+GitHub/GitLab/Linear adapters. The opt-in real candidate-scan executor uses those adapters only for
+project-local reads behind Hub governance. The opt-in real writeback executor covers only the safe
+subset above; it does not migrate all dynamic tools, PR creation, ordinary append comments, legacy
+polling, or legacy service ownership.
 The lifecycle reconciliation source is likewise injectable and
 safe-summary based. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.
@@ -410,7 +429,9 @@ post-ack lifecycle succeeded/failed/cancelled/timeout/stopped/lost/unknown/manua
 reason counts, workspace released/retained counts, pending or unresolved start-intent summaries,
 runtime-ledger replay summaries, scheduler enabled/disabled state, queued/running/coalesced status,
 last/next tick times, duration, reason, coalesced/error counts, per-project due/backoff/runtime
-summary, provider executor mode (`skeleton` or `real_candidate_scan`), candidate counts, error
+summary, provider executor mode (`skeleton`, `real_candidate_scan`, or `real_writeback`), candidate
+counts, writeback executor supported/rejected operations, pending/succeeded/failed/unknown/manual
+attention counts, per-project writeback pressure, recent safe error categories, error
 class/backoff/manual attention summaries, and skipped reasons while omitting provider tokens, API keys,
 authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
 provider response bodies, full comment/PR bodies, and raw hook/app-server output.

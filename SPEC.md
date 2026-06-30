@@ -1222,6 +1222,31 @@ Runtime entrypoint:
   timeouts and provider 5xx responses to `retryable_failure`, auth/config/not-found/validation
   problems to `permanent_failure`, and unknown/ambiguous side-effect results to a non-success
   unknown/manual-attention class.
+- A Hub runtime MAY provide an explicit opt-in real writeback provider executor, for example
+  `--hub-provider-executor real-writeback`. The default without that opt-in MUST remain the
+  skeleton/direct legacy behavior, and legacy single-project runtime behavior MUST remain unchanged.
+- A real writeback executor SHOULD handle only replay-safe or marker-addressed writeback subsets at
+  first, such as workflow stage/status writes, workpad marker upserts, and additive label writes.
+  Unsupported providers or operation kinds MUST return explicit non-success governed results rather
+  than silent success.
+- A real writeback executor MUST perform a ledger-first decision before provider I/O. It MUST reuse
+  already-succeeded intents, block conflicting intent keys or same-key/different-target facts, and
+  avoid blind replay for unknown non-idempotent operations. PR creation and ordinary append comments
+  whose result is unknown SHOULD require provider lookup or manual attention instead of automatic
+  replay.
+- A real writeback executor MUST resolve the request's `project_id` and provider scope against the
+  Hub registry and load that project's own `WORKFLOW.md` and `TRACKER.yaml` semantics for the
+  write. It MUST NOT rely on process-global legacy `Config.settings!()` to choose a project, nor
+  reuse another project's token, repository/project number, provider scope, label/state mapping, or
+  required-label configuration.
+- A single project's writeback provider/config failure MUST be mapped to that project's governed
+  result and scope state/backoff/manual-attention summary. It MUST NOT crash the entire Hub tick or
+  contaminate another project/scope.
+- Real writeback result classification SHOULD map success to `success`, rate limit/quota/abuse to
+  `rate_limited`, network timeouts and provider 5xx responses to `retryable_failure`,
+  auth/config/not-found/validation problems to `permanent_failure`, unsupported operations to
+  `permanent_failure` or manual attention, and uncertain non-idempotent side effects to
+  `unknown_result` with manual attention or provider lookup.
 - A Hub candidate intake boundary SHOULD normalize provider candidate-scan summaries into
   provider-neutral records keyed by `project_id`, provider scope, IssueRef or equivalent issue key,
   and source poll request/result correlation. It SHOULD accept atom-key and string-key input, isolate
@@ -1340,6 +1365,12 @@ Runtime entrypoint:
   Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
   `pr_body`, `raw_provider_body`, and `full_prompt`, MUST be replaced with safe metadata such as
   hashes and byte counts even when no credential-like value is present.
+- Hub runtime output SHOULD expose real writeback executor observability when present: executor
+  mode, supported and rejected operation kinds, pending/succeeded/failed/unknown/manual-attention
+  counts, per-project writeback pressure, and recent safe error categories. These summaries MUST
+  keep the same redaction boundary and MUST NOT include raw provider responses, GraphQL/REST
+  payloads, full comment/PR bodies, prompts, transcripts, authorization/cookie values, tokens, or
+  secret env values.
 
 Compatibility boundary:
 
@@ -1348,8 +1379,8 @@ Compatibility boundary:
 - Hub runtime ledgers define recoverable claim/attempt/workspace/retry/session/writeback facts for
   future Hub coordination. They also define start-intent and safe run-context facts for the atomic
   dispatch boundary. They do not by themselves implement a provider poll loop,
-  database/transaction backend, cross-process distributed lock, full Hub scheduler, or provider
-  writeback execution.
+  database/transaction backend, cross-process distributed lock, full Hub scheduler, or real provider
+  execution.
 - Hub provider request governance defines the model and in-memory scheduling contract for a shared
   provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
   snapshots from that contract. A Hub poll tick skeleton may execute selected candidate-scan
@@ -1360,6 +1391,11 @@ Compatibility boundary:
   governed candidate intake. It does not imply Hub provider writeback execution, dynamic tool
   routing, durable provider queues, cross-process locking, or migration of legacy
   `symphony@project.service` polling.
+- A real Hub writeback executor, when explicitly enabled, is only a minimal safe writeback
+  integration for governed writeback requests. It does not imply all dynamic tools are Hub-owned,
+  PR creation is automatically replayed, ordinary append comments are automatically replayed, a
+  durable provider queue exists, or legacy `symphony@project.service` polling/writeback ownership
+  has migrated.
 - Hub candidate intake MAY consume safe candidate-scan result summaries and produce
   ready-for-dispatch-evaluation or skipped-candidate summaries, including project-level counts and
   reasons such as invalid candidate, duplicate active attempt, workspace busy, project paused,

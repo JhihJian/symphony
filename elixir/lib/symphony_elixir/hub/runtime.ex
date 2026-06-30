@@ -22,6 +22,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
+    RealWritebackExecutor,
     RuntimeLedger,
     WorkerLifecycleReconciliation,
     WorkerStartHandoff
@@ -483,6 +484,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         generated_at: iso8601(now),
         counts: counts,
         provider_executor: provider_executor_summary(provider_executor),
+        writeback: writeback_summary(runtime_ledger, provider_queue, provider_executor),
         scheduler: scheduler,
         poll_tick: tick,
         candidate_intake: CandidateIntake.tick_summary(candidate_intake),
@@ -1111,6 +1113,110 @@ defmodule SymphonyElixir.Hub.Runtime do
     ]
   end
 
+  defp writeback_summary(runtime_ledger, provider_queue, provider_executor) do
+    replay = RuntimeLedger.replay(runtime_ledger)
+    projects = Enum.map(replay.projects, &project_writeback_summary/1)
+    counts = sum_writeback_counts(projects)
+
+    %{
+      executor: provider_executor_summary(provider_executor),
+      counts: counts,
+      projects: projects,
+      queue: provider_writeback_queue_summary(provider_queue),
+      recent_errors: recent_writeback_errors(projects)
+    }
+  end
+
+  defp project_writeback_summary(project) do
+    writebacks = value(project, :writebacks) || %{}
+    counts = value(writebacks, :counts) || %{}
+    failed = list_value(writebacks, :failed)
+    unknown = list_value(writebacks, :unknown)
+    manual_attention = list_value(writebacks, :manual_attention)
+
+    %{
+      project_id: value(project, :project_id),
+      counts: normalize_writeback_counts(counts),
+      pending_count: count_value(counts, :pending),
+      failed_count: count_value(counts, :failed),
+      unknown_count: count_value(counts, :unknown),
+      manual_attention_count: count_value(counts, :manual_attention),
+      recent_error_classes: recent_error_classes(failed ++ unknown ++ manual_attention)
+    }
+  end
+
+  defp normalize_writeback_counts(counts) when is_map(counts) do
+    %{
+      pending: count_value(counts, :pending),
+      succeeded: count_value(counts, :succeeded),
+      failed: count_value(counts, :failed),
+      unknown: count_value(counts, :unknown),
+      manual_attention: count_value(counts, :manual_attention)
+    }
+  end
+
+  defp normalize_writeback_counts(_counts), do: normalize_writeback_counts(%{})
+
+  defp sum_writeback_counts(projects) do
+    Enum.reduce(projects, normalize_writeback_counts(%{}), fn project, totals ->
+      counts = value(project, :counts) || %{}
+
+      totals
+      |> Map.update!(:pending, &(&1 + count_value(counts, :pending)))
+      |> Map.update!(:succeeded, &(&1 + count_value(counts, :succeeded)))
+      |> Map.update!(:failed, &(&1 + count_value(counts, :failed)))
+      |> Map.update!(:unknown, &(&1 + count_value(counts, :unknown)))
+      |> Map.update!(:manual_attention, &(&1 + count_value(counts, :manual_attention)))
+    end)
+  end
+
+  defp provider_writeback_queue_summary(queue) when is_map(queue) do
+    writeback_operations = ["stage_writeback", "comment_workpad_upsert", "pr_create"]
+    summary = ProviderGovernance.queue_summary(queue)
+
+    pending =
+      summary.pending
+      |> Enum.filter(&(status_string(value(&1, :operation_kind)) in writeback_operations))
+      |> Enum.map(&Map.take(&1, [:request_id, :logical_key, :project_id, :provider_scope_key, :operation_kind, :wait_ms, :backpressure]))
+
+    recent_results =
+      summary.recent_results
+      |> Enum.filter(&(status_string(value(&1, :operation_kind)) in writeback_operations))
+      |> Enum.map(&Map.take(&1, [:request_id, :logical_key, :project_id, :provider_scope_key, :operation_kind, :status, :error_class, :manual_attention]))
+
+    %{
+      pending_count: length(pending),
+      recent_result_count: length(recent_results),
+      pending: pending,
+      recent_results: recent_results
+    }
+  end
+
+  defp provider_writeback_queue_summary(_queue), do: %{pending_count: 0, recent_result_count: 0, pending: [], recent_results: []}
+
+  defp recent_error_classes(writebacks) do
+    writebacks
+    |> Enum.map(fn writeback ->
+      status_string(value(writeback, :provider_result_status)) ||
+        status_string(value(writeback, :manual_attention_reason))
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.take(5)
+  end
+
+  defp recent_writeback_errors(projects) do
+    projects
+    |> Enum.flat_map(fn project ->
+      Enum.map(value(project, :recent_error_classes) || [], fn error_class ->
+        %{project_id: value(project, :project_id), error_class: error_class}
+      end)
+    end)
+    |> Enum.take(10)
+  end
+
+  defp count_value(map, key) when is_map(map), do: non_negative_integer(value(map, key)) || 0
+  defp count_value(_map, _key), do: 0
+
   defp provider_executor_summary(ProviderExecutor) do
     %{
       mode: "skeleton",
@@ -1126,6 +1232,17 @@ defmodule SymphonyElixir.Hub.Runtime do
       executor: "real_candidate_scan",
       provider_io: true,
       supported_operations: ["candidate_scan"]
+    }
+  end
+
+  defp provider_executor_summary(RealWritebackExecutor) do
+    %{
+      mode: "real_writeback",
+      executor: "real_writeback",
+      provider_io: true,
+      supported_operations: RealWritebackExecutor.supported_operations(),
+      supported_logical_actions: RealWritebackExecutor.supported_logical_actions(),
+      rejected_operations: RealWritebackExecutor.rejected_operations()
     }
   end
 

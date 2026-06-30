@@ -291,11 +291,17 @@ defmodule SymphonyElixir.CLI do
       "real_candidate_scan" ->
         {:ok, SymphonyElixir.Hub.RealCandidateScanExecutor}
 
+      "real-writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
+      "real_writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
       "skeleton" ->
         {:ok, nil}
 
       other ->
-        {:error, "Unsupported --hub-provider-executor #{inspect(other)}. Use `real-candidate-scan` or omit the option for the default skeleton."}
+        {:error, "Unsupported --hub-provider-executor #{inspect(other)}. Use `real-candidate-scan`, `real-writeback`, or omit the option for the default skeleton."}
     end
   end
 

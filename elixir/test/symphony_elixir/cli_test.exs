@@ -347,6 +347,26 @@ defmodule SymphonyElixir.CLITest do
     refute_received {:legacy_hub_provider_executor_set, _executor}
   end
 
+  test "accepts explicit real hub provider writeback executor opt-in" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_provider_executor: fn executor ->
+          send(parent, {:hub_provider_executor_set, executor})
+          :ok
+        end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-provider-executor", "real-writeback"], deps)
+    assert_received {:hub_provider_executor_set, SymphonyElixir.Hub.RealWritebackExecutor}
+  end
+
   test "accepts explicit real hub worker starter opt-in" do
     parent = self()
     hub_config_path = "tmp/hub/HUB.yaml"

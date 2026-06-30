@@ -117,8 +117,8 @@ lifecycle counts, reason counts, workspace release/retention counts, and per-pro
 without raw prompts, transcripts, provider bodies, hook/app-server output, tokens, cookies, or raw
 config. This remains a reconciliation baseline, not a Hub-owned scheduler, worker supervisor,
 provider writeback executor, durable store, or legacy service migration.
-Hub provider execution now has two explicit modes. The default remains the skeleton executor, which
-records governed candidate-scan results without calling real provider APIs. Passing
+Hub provider execution now has explicit opt-in modes. The default remains the skeleton executor,
+which records governed candidate-scan results without calling real provider APIs. Passing
 `--hub-provider-executor real-candidate-scan` to Hub mode opts into the first real read executor:
 only `candidate_scan` operations are handled, each request reloads the matching registry project's
 own `WORKFLOW.md` and `TRACKER.yaml`, calls the existing tracker read adapter for that project
@@ -127,6 +127,18 @@ Unsupported provider kinds, non-candidate operations, project config/auth failur
 retryable provider errors are mapped back to governed result classes and per-scope backoff/manual
 attention summaries. This does not migrate provider writeback, dynamic tools, legacy
 `symphony@project.service`, or non-Hub runtime behavior.
+Passing `--hub-provider-executor real-writeback` opts into the first controlled real writeback
+executor. It is deliberately narrow: status/stage writes, GitHub workpad marker upserts, and GitHub
+label additions can execute after `WritebackProcessor` confirms the intent is safe to execute or
+retry. Already-succeeded intents, conflicting intent keys, non-idempotent unknown results, PR
+creation, plain append comments, unsupported providers, and unsupported operations return governed
+manual-attention, lookup-required, or permanent-failure results without blind provider side effects.
+Every execution resolves the request's `project_id` and provider scope back to the matching Hub
+registry project before loading that project's own `WORKFLOW.md` and `TRACKER.yaml`; one project's
+config/auth/provider failure is recorded for that project/scope only. Hub snapshot and
+`/api/v1/state` include safe writeback executor mode, supported/rejected operations, counts, project
+pressure, and recent error categories without tokens, raw provider payloads, or full comment/PR
+bodies.
 `SymphonyElixir.Hub.DispatchBoundary` adds the next
 #74 baseline from candidate issue to active run intent: it model-checks `project_id + IssueRef`
 claims, attempt ids, workspace leases, start intents, worker start acknowledgements, failure states,
@@ -159,7 +171,9 @@ poll plan, can execute one governed candidate-scan poll tick through the Hub pro
 boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
 exposes safe Hub fields through `/api/v1/state`, including `hub_dispatch_plan_application` and
 `hub_worker_start_handoff` and `hub_worker_lifecycle_reconciliation` runtime-ledger replay summaries
-after a plan is applied. The default skeleton executor does not migrate GitHub/GitLab/Linear legacy
+after a plan is applied. When the real writeback executor is explicitly selected, the same payload
+also exposes safe writeback mode, operation support, counts, project pressure, and error-category
+summaries. The default skeleton executor does not migrate GitHub/GitLab/Linear legacy
 adapters, create real workspaces, or start agents; the default start handoff records an unknown
 skeleton result instead of launching a worker. Passing `--hub-worker-starter real` explicitly opts
 into the first real worker handoff adapter, which starts through the existing worker boundary and

@@ -111,7 +111,13 @@ defmodule SymphonyElixir.Hub.ProviderToolRouting do
              is_function(provider_call, 0) and is_list(opts) do
     with {:ok, routed_call} <- build_request(tool_name, operation, target, opts) do
       executor = Keyword.get(opts, :hub_provider_executor, &direct_executor/1)
-      execution = executor.(Map.put(routed_call, :provider_call, provider_call))
+
+      execution =
+        routed_call
+        |> Map.put(:provider_call, provider_call)
+        |> Map.put(:raw_target, target)
+        |> executor.()
+
       {:ok, execution_result(routed_call, execution)}
     end
   end
