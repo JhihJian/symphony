@@ -44,10 +44,12 @@ defmodule SymphonyElixir.HubProjectRegistryTest do
         - project_id: alpha
           name: Alpha Project
           workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
           dispatch_enabled: true
         - project_id: beta
           workflow_path: beta/WORKFLOW.md
           tracker_config_path: beta/TRACKER.yaml
+          migration_state: legacy-only
           paused: true
       """)
 
@@ -59,6 +61,7 @@ defmodule SymphonyElixir.HubProjectRegistryTest do
 
       assert alpha.project_id == "alpha"
       assert alpha.name == "Alpha Project"
+      assert alpha.migration_state == "hub_managed"
       assert alpha.dispatch_enabled == true
       assert alpha.paused == false
       assert alpha.status == :ready
@@ -79,6 +82,7 @@ defmodule SymphonyElixir.HubProjectRegistryTest do
       assert alpha.load_error == nil
 
       assert beta.project_id == "beta"
+      assert beta.migration_state == "legacy_only"
       assert beta.dispatch_enabled == false
       assert beta.paused == true
       assert beta.status == :paused
@@ -87,6 +91,10 @@ defmodule SymphonyElixir.HubProjectRegistryTest do
       assert beta.tracker_summary.provider_scope_key == "gitlab:platform/beta"
       assert beta.runtime_summary.max_concurrent_agents == 4
       assert beta.runtime_summary.polling_interval_ms == 60_000
+
+      snapshot_projects = Map.new(registry.projects, &{&1.project_id, &1})
+      assert snapshot_projects["alpha"].migration_state == "hub_managed"
+      assert snapshot_projects["beta"].migration_state == "legacy_only"
 
       refute snapshot_contains?(registry, "GITHUB_TOKEN")
       refute snapshot_contains?(registry, "GITLAB_TOKEN")

@@ -9,7 +9,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   hooks, or write tracker/provider state.
   """
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, RuntimeLedger, SafeSummary}
 
   @version 1
   @terminal_start_intent_statuses ["acknowledged", "failed", "cancelled"]
@@ -45,6 +45,12 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     now = normalize_datetime(Keyword.get(opts, :now)) || DateTime.utc_now()
     now_iso = iso8601(now)
     starter = Keyword.get(opts, :starter)
+
+    activation_preflight =
+      opts
+      |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
+      |> ActivationPreflight.to_snapshot()
+
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
     registry_projects = registry_projects_by_id(registry)
     initial_replay = RuntimeLedger.replay(initial_ledger)
@@ -52,7 +58,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
     {results, ledger, ledger_changed?} =
       Enum.reduce(requests, {[], initial_ledger, false}, fn request, {results, ledger, ledger_changed?} ->
-        {result, ledger, changed?} = process_request(request, ledger, starter, now)
+        {result, ledger, changed?} = process_request(request, ledger, starter, activation_preflight, now)
         {[result | results], ledger, ledger_changed? or changed?}
       end)
 
@@ -183,8 +189,17 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     end)
   end
 
-  defp process_request(request, ledger, starter, now) do
+  defp process_request(request, ledger, starter, activation_preflight, now) do
     cond do
+      activation_block = ActivationPreflight.block_reason(activation_preflight, request.project_id, :worker_start) ->
+        result = %{
+          status: "skipped",
+          reason: "activation_preflight_blocked",
+          error_summary: optional_string(activation_block, :message) || "Activation preflight blocked worker start"
+        }
+
+        {result_summary(request, result, "skipped", false), ledger, false}
+
       start_intent_terminal?(
         ledger,
         request.project_id,

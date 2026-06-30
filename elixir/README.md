@@ -278,9 +278,11 @@ projects:
     name: Symphony
     workflow_path: /path/to/symphony/WORKFLOW.md
     tracker_config_path: /path/to/symphony/TRACKER.yaml
+    migration_state: hub_managed
     dispatch_enabled: true
   - project_id: docs
     workflow_path: ./docs/WORKFLOW.md
+    migration_state: legacy_only
     paused: true
 ```
 
@@ -293,6 +295,9 @@ Fields:
 - `workflow_path` is required. Relative paths are resolved relative to `HUB.yaml`.
 - `tracker_config_path` is optional. If omitted, Symphony uses `TRACKER.yaml` next to
   `workflow_path`.
+- `migration_state` is optional and defaults to `hub_ready`. Accepted values are `legacy_only`,
+  `hub_ready`, and `hub_managed` (dash-separated aliases are normalized). It is an observability and
+  activation guardrail marker, not an automatic service migration command.
 - `dispatch_enabled` defaults to `true`; `enabled` is accepted as a compatibility alias.
 - `paused: true` disables new dispatch for that project snapshot.
 
@@ -398,6 +403,19 @@ and calls the project-local tracker/GitHub write path under `Config.with_setting
 providers or operations return governed non-success results. Success, rate limits, retryable
 network/provider failures, config/auth/not-found/validation failures, and unknown/manual-attention
 outcomes are mapped into safe `ProviderGovernance` result summaries linked to the writeback intent.
+Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
+`hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
+snapshot plus an injected `activation_probe` map or function and returns a serializable,
+sanitized summary. The probe can report legacy service active/enabled/unknown state, legacy
+instances, provider scope owners, workspace/runtime/log/state path owners, Dashboard/API port
+owners, instance registry entries, or probe failure/unknown status. If a `hub_managed` project has a
+legacy owner or an unknown probe result, Hub blocks that project from candidate scan, candidate
+dispatch/application, real worker start, and real writeback provider I/O by default. The block is
+per project: other projects with `safe_to_manage` continue through the same tick. The summary is
+exposed as `hub_activation_preflight`, `hub_runtime.activation_preflight`, and per-project
+`activation_preflight` in device observability with blocked operation types, reason/source codes,
+checked time, probe source, and conflict/manual-attention counts. This is a #74 migration
+guardrail, not an automatic tool to stop, disable, replace, or delete `symphony@project.service`.
 When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
 tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
 tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
@@ -418,9 +436,10 @@ safe-summary based. The existing per-project services and their poll loops keep 
 migration explicitly changes ownership.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
-`hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
-`hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
-`hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and `hub_device_observability`.
+`hub_scheduler`, `hub_activation_preflight`, `hub_project_registry`, `hub_poll_coordination`,
+`hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
+`hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and
+`hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
 planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
@@ -580,7 +599,10 @@ markers, then returns one Dashboard/API-safe device view. The projection include
 eligibility and next due time, active workspace/attempt/start-intent facts, writeback
 unknown/manual-attention/conflict facts, and backpressure reasons such as provider rate limit,
 queue pressure, project pause/backoff, workspace occupied, active attempt exists, writeback unknown,
-and manual attention.
+activation preflight blocked, and manual attention. When a Hub runtime provides
+`hub_activation_preflight`, each project also includes the sanitized preflight status, blocked
+operations, probe source, checked time, detected legacy ownership summary, unknown probe results,
+and conflict/manual-attention counts.
 
 The projection is safe for logs, `/api/v1/state`, and future Dashboard snapshots. It accepts
 atom-key or string-key snapshots without dynamically creating atoms, preserves unknown map keys as

@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.Presenter do
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
 
   alias SymphonyElixir.Hub.{
+    ActivationPreflight,
     CandidateIntake,
     DeviceObservability,
     DispatchPlanApplication,
@@ -41,6 +42,7 @@ defmodule SymphonyElixirWeb.Presenter do
         }
         |> maybe_put_hub_runtime(snapshot)
         |> maybe_put_hub_scheduler(snapshot)
+        |> maybe_put_hub_activation_preflight(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -97,6 +99,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case safe_map(hub_scheduler) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_scheduler, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_activation_preflight(payload, snapshot) do
+    hub_activation_preflight =
+      Map.get(snapshot, :hub_activation_preflight) ||
+        Map.get(snapshot, "hub_activation_preflight")
+
+    case ActivationPreflight.observability_snapshot(hub_activation_preflight) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_activation_preflight, safe_snapshot)
     end
   end
 

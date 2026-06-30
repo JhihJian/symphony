@@ -20,6 +20,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
   @type project_ref :: %{
           required(:project_id) => String.t(),
           optional(:name) => String.t() | nil,
+          optional(:migration_state) => String.t(),
           required(:workflow_path) => Path.t(),
           required(:tracker_config_path) => Path.t(),
           required(:dispatch_enabled) => boolean()
@@ -51,6 +52,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
           required(:name) => String.t() | nil,
           required(:dispatch_enabled) => boolean(),
           required(:paused) => boolean(),
+          required(:migration_state) => String.t(),
           required(:status) => :ready | :paused | :error,
           required(:workflow_path) => String.t() | nil,
           required(:tracker_config_path) => String.t() | nil,
@@ -181,6 +183,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
        %{
          project_id: project_id,
          name: project |> Map.get("name") |> normalize_optional_string(),
+         migration_state: project |> Map.get("migration_state") |> normalize_migration_state(),
          workflow_path: expanded_workflow_path,
          tracker_config_path: expanded_tracker_config_path,
          dispatch_enabled: dispatch_enabled,
@@ -259,6 +262,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
       name: project_ref.name,
       dispatch_enabled: project_ref.dispatch_enabled,
       paused: not project_ref.dispatch_enabled,
+      migration_state: project_ref.migration_state,
       status: if(project_ref.dispatch_enabled, do: :ready, else: :paused),
       workflow_path: project_ref.workflow_path,
       tracker_config_path: project_ref.tracker_config_path,
@@ -277,6 +281,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
       name: project_ref.name,
       dispatch_enabled: project_ref.dispatch_enabled,
       paused: true,
+      migration_state: Map.get(project_ref, :migration_state, "hub_ready"),
       status: :error,
       workflow_path: Map.get(project_ref, :workflow_path),
       tracker_config_path: Map.get(project_ref, :tracker_config_path),
@@ -320,6 +325,7 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
     payload = %{
       project_id: project_ref.project_id,
       name: project_ref.name,
+      migration_state: project_ref.migration_state,
       dispatch_enabled: project_ref.dispatch_enabled,
       workflow_path: project_ref.workflow_path,
       tracker_config_path: project_ref.tracker_config_path,
@@ -453,6 +459,20 @@ defmodule SymphonyElixir.Hub.ProjectRegistry do
   end
 
   defp normalize_optional_string(_value), do: nil
+
+  defp normalize_migration_state(value) do
+    value
+    |> normalize_optional_string()
+    |> case do
+      "legacy-only" -> "legacy_only"
+      "legacy_only" -> "legacy_only"
+      "hub-managed" -> "hub_managed"
+      "hub_managed" -> "hub_managed"
+      "hub-ready" -> "hub_ready"
+      "hub_ready" -> "hub_ready"
+      _other -> "hub_ready"
+    end
+  end
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->

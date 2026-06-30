@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   run workspace hooks, or write provider state.
   """
 
-  alias SymphonyElixir.Hub.{DispatchBoundary, DispatchPlanning, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, DispatchBoundary, DispatchPlanning, RuntimeLedger, SafeSummary}
 
   @version 1
 
@@ -28,6 +28,12 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
     now = normalize_datetime(Keyword.get(opts, :now)) || DateTime.utc_now()
     now_iso = iso8601(now)
     plan = DispatchPlanning.to_snapshot(dispatch_planning)
+
+    activation_preflight =
+      opts
+      |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
+      |> ActivationPreflight.to_snapshot()
+
     registry_projects = registry_projects_by_id(registry)
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
 
@@ -36,6 +42,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       now_iso: now_iso,
       plan: plan,
       registry_projects: registry_projects,
+      activation_preflight: activation_preflight,
       ledger_changed?: false
     }
 
@@ -204,13 +211,13 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   defp apply_planned_outcome(project, outcome, ledger, state) do
     candidate = dispatch_candidate(project, outcome, state)
 
-    case capacity_preflight(project, ledger, candidate, state) do
+    case activation_preflight(state, candidate) || capacity_preflight(project, ledger, candidate, state) do
       {:blocked, reason, message} ->
         application_outcome =
           outcome
           |> base_application_outcome()
           |> Map.merge(%{
-            status: "skipped",
+            status: "blocked",
             reason: reason,
             message: message,
             intent_id: optional_string(outcome.intent, :intent_id),
@@ -223,6 +230,19 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
 
       :ok ->
         dispatch_planned_outcome(outcome, ledger, state, candidate)
+    end
+  end
+
+  defp activation_preflight(state, candidate) do
+    project_id = optional_string(candidate, :project_id)
+
+    case ActivationPreflight.block_reason(state.activation_preflight, project_id, :dispatch) do
+      nil ->
+        nil
+
+      reason ->
+        message = optional_string(reason, :message) || "Activation preflight blocked dispatch application"
+        {:blocked, "activation_preflight_blocked", message}
     end
   end
 

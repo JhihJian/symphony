@@ -1,7 +1,13 @@
 defmodule SymphonyElixir.HubRealWritebackExecutorTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{ProviderToolRouting, RealWritebackExecutor, RuntimeLedger, WritebackProcessor}
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    ProviderToolRouting,
+    RealWritebackExecutor,
+    RuntimeLedger,
+    WritebackProcessor
+  }
 
   test "executes idempotent stage writeback through project-local tracker settings" do
     root = tmp_root("hub-real-writeback-stage")
@@ -184,6 +190,49 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
       assert conflict.error_class == :conflict
       assert conflict.result_summary.provider_io == false
       assert conflict.result_summary.decision == "conflict"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "activation preflight blocks real writeback before provider I/O" do
+    root = tmp_root("hub-real-writeback-activation-preflight")
+    test_pid = self()
+
+    try do
+      project = write_memory_project!(root, "alpha") |> Map.put(:migration_state, "hub_managed")
+      routed = routed_call!("tracker_issue", "set_status", %{issue_id: "129", state: "in_progress"}, "alpha", "memory")
+
+      preflight =
+        ActivationPreflight.build(registry([project]),
+          probe: %{
+            projects: %{
+              "alpha" => %{
+                legacy_service: %{service: "symphony@alpha.service", active: true},
+                provider_scope_owners: [%{provider_scope_key: "memory:alpha", owner: "legacy-poll"}]
+              }
+            }
+          }
+        )
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          activation_preflight: preflight,
+          tracker_update_issue_state: fn issue_id, state ->
+            send(test_pid, {:unexpected_provider_call, issue_id, state})
+            :ok
+          end
+        )
+
+      assert result.status == :permanent_failure
+      assert result.error_class == :conflict
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.error == "activation_preflight_blocked"
+      assert result.result_summary.reason == "legacy_ownership_conflict"
+      assert "writeback" in result.result_summary.blocked_operations
+      refute_received {:unexpected_provider_call, _issue_id, _state}
     after
       File.rm_rf(root)
     end

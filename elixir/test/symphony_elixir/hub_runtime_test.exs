@@ -1188,6 +1188,149 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "activation preflight blocks only conflicting hub-managed project before provider scan" do
+    root = tmp_root("hub-runtime-activation-preflight")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+      write_project!(root, "beta", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "beta"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :ActivationPreflightRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         activation_probe: %{
+           source: "unit-test-probe",
+           projects: %{
+             "alpha" => %{
+               legacy_service: %{service: "symphony@alpha.service", active: true},
+               provider_scope_owners: [%{provider_scope_key: "memory:alpha", owner: "legacy-poll", authorization: "Bearer secret"}],
+               workspace_owners: [%{workspace_root: Path.join([root, "workspaces", "alpha"]), owner: "legacy-worker"}]
+             },
+             "beta" => %{legacy_service: %{service: "symphony@beta.service", active: false, enabled: false}}
+           }
+         }},
+        id: :hub_runtime_activation_preflight
+      )
+
+      assert %{poll_tick: %{selected_count: 1, result_counts: %{"success" => 1}}} =
+               Runtime.request_refresh(runtime_name)
+
+      assert_receive {:provider_candidate_scan, %{project_id: "beta"}}, 1_000
+      refute_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 100
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      preflight_projects = Map.new(snapshot.hub_activation_preflight.projects, &{&1.project_id, &1})
+      assert preflight_projects["alpha"].status == "blocked_conflict"
+      assert preflight_projects["alpha"].blocked_operations == ["poll", "dispatch", "worker_start", "writeback"]
+      assert preflight_projects["beta"].status == "safe_to_manage"
+
+      poll_projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
+      assert poll_projects["alpha"].allow_poll == false
+      assert poll_projects["alpha"].eligibility.reason == :activation_preflight_blocked
+      assert poll_projects["beta"].last_poll.status == :success
+
+      device_projects = Map.new(snapshot.hub_device_observability.projects, &{&1.project_id, &1})
+      assert device_projects["alpha"].status == "blocked"
+      assert device_projects["alpha"].activation_preflight.status == "blocked_conflict"
+      assert "activation_preflight_blocked" in reason_names(device_projects["alpha"])
+      refute "activation_preflight_blocked" in reason_names(device_projects["beta"])
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      payload_projects = Map.new(payload.hub_activation_preflight.projects, &{&1.project_id, &1})
+      assert payload_projects["alpha"].status == "blocked_conflict"
+      assert payload_projects["beta"].status == "safe_to_manage"
+
+      safe_text =
+        inspect({
+          payload.hub_activation_preflight,
+          payload.hub_device_observability.projects |> Enum.find(&(&1.project_id == "alpha")) |> Map.get(:activation_preflight)
+        })
+
+      refute safe_text =~ "Bearer secret"
+      refute safe_text =~ Path.join([root, "workspaces", "alpha"])
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "activation preflight blocks dispatch application and real worker start for unresolved intents" do
+    root = tmp_root("hub-runtime-activation-handoff")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 60_000
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      parent = self()
+
+      starter = fn request, _opts ->
+        send(parent, {:unexpected_worker_start, request})
+
+        %{
+          status: :ack,
+          reason: :worker_ack,
+          session_id: "session-#{request.start_intent_id}",
+          worker_host: "worker-runtime",
+          workspace_path: request.workspace_path
+        }
+      end
+
+      runtime_name = Module.concat(__MODULE__, :ActivationPreflightHandoffRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: success_executor(self()),
+         worker_start_starter: starter,
+         activation_probe: %{
+           source: "unit-test-probe",
+           projects: %{
+             "alpha" => %{legacy_service: %{service: "symphony@alpha.service", active: true}}
+           }
+         }},
+        id: :hub_runtime_activation_preflight_handoff
+      )
+
+      assert %{poll_tick: %{selected_count: 0}} = Runtime.request_refresh(runtime_name)
+      refute_receive {:provider_candidate_scan, %{project_id: "alpha"}}, 100
+      refute_receive {:unexpected_worker_start, _request}, 100
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 0
+      assert snapshot.hub_dispatch_plan_application.counts.applied_count == 0
+      assert snapshot.hub_worker_start_handoff.counts.selected_count == 0
+      assert snapshot.hub_poll_coordination.projects |> hd() |> Map.get(:eligibility) |> Map.get(:reason) == :activation_preflight_blocked
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "candidate intake marks active attempt and workspace conflicts while applying only safe candidates" do
     root = tmp_root("hub-runtime-candidate-intake-conflicts")
     hub_path = Path.join(root, "HUB.yaml")

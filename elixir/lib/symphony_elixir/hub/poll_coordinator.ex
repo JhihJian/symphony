@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
   `SymphonyElixir.Orchestrator` poll loop.
   """
 
-  alias SymphonyElixir.Hub.{ProviderGovernance, SafeSummary}
+  alias SymphonyElixir.Hub.{ActivationPreflight, ProviderGovernance, SafeSummary}
 
   @version 1
   @default_poll_interval_ms 30_000
@@ -32,7 +32,8 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     :rate_limited,
     :circuit_open,
     :scope_concurrency,
-    :provider_unavailable
+    :provider_unavailable,
+    :activation_preflight_blocked
   ]
   @type fact :: %{
           required(:fact_type) => atom(),
@@ -79,6 +80,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
           required(:version) => pos_integer(),
           required(:generated_at) => DateTime.t(),
           required(:registry) => map(),
+          required(:activation_preflight) => map(),
           required(:projects) => [plan_entry()],
           required(:poll_order) => [String.t()],
           required(:provider_queue) => map(),
@@ -97,13 +99,22 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
     now = normalize_datetime(Keyword.get(opts, :now)) || DateTime.utc_now()
     input_facts = opts |> Keyword.get(:facts, []) |> normalize_facts()
 
+    activation_preflight =
+      opts
+      |> Keyword.get(:activation_preflight, ActivationPreflight.empty(registry, now: now))
+      |> ActivationPreflight.to_snapshot()
+
     queue =
       opts
       |> Keyword.get(:queue, ProviderGovernance.new_queue())
       |> poll_queue()
 
     projects = registry |> list_value(:projects) |> Enum.sort_by(&required_string(&1, :project_id))
-    base_entries = Enum.map(projects, &base_entry(&1, input_facts, now))
+
+    base_entries =
+      projects
+      |> Enum.map(&base_entry(&1, input_facts, now))
+      |> apply_activation_preflight(activation_preflight)
 
     {planned_entries, planned_queue, poll_order} =
       base_entries
@@ -114,6 +125,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       version: @version,
       generated_at: now,
       registry: registry_summary(registry, projects),
+      activation_preflight: activation_preflight,
       projects: planned_entries,
       poll_order: poll_order,
       provider_queue: ProviderGovernance.queue_summary(planned_queue, now),
@@ -213,6 +225,7 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       version: normalize_positive_integer(value(plan, :version)) || @version,
       generated_at: iso8601(value(plan, :generated_at)),
       registry: sanitize_map(value(plan, :registry) || %{}),
+      activation_preflight: ActivationPreflight.observability_snapshot(value(plan, :activation_preflight)),
       poll_order: list_value(plan, :poll_order) |> Enum.map(&safe_optional_string/1) |> Enum.reject(&is_nil/1),
       projects: plan |> list_value(:projects) |> Enum.map(&entry_snapshot/1),
       provider_queue: sanitize_value(value(plan, :provider_queue) || %{}),
@@ -284,6 +297,32 @@ defmodule SymphonyElixir.Hub.PollCoordinator do
       last_poll: last_poll && fact_summary(last_poll),
       governance: nil
     }
+  end
+
+  defp apply_activation_preflight(entries, activation_preflight) do
+    Enum.map(entries, fn entry ->
+      if entry.eligibility.eligible? == true and entry.eligibility.reason == :ready do
+        apply_activation_preflight_to_ready_entry(entry, activation_preflight)
+      else
+        entry
+      end
+    end)
+  end
+
+  defp apply_activation_preflight_to_ready_entry(entry, activation_preflight) do
+    case ActivationPreflight.block_reason(activation_preflight, entry.project_id, :poll) do
+      nil ->
+        entry
+
+      reason ->
+        entry
+        |> Map.put(:allow_poll, false)
+        |> Map.put(
+          :eligibility,
+          eligibility(false, :activation_preflight_blocked, safe_optional_string(reason, :message) || "activation preflight blocked poll")
+        )
+        |> Map.put(:governance, %{activation_preflight: reason})
+    end
   end
 
   defp enqueue_due_entries(entries, queue, now) do

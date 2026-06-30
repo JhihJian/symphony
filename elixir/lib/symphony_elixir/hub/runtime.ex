@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   use GenServer
 
   alias SymphonyElixir.Hub.{
+    ActivationPreflight,
     CandidateIntake,
     DeviceObservability,
     DispatchPlanApplication,
@@ -32,6 +33,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_env_key :hub_scheduler_enabled
   @provider_executor_env_key :hub_provider_executor
   @worker_start_starter_env_key :hub_worker_start_starter
+  @activation_probe_env_key :hub_activation_probe
   @worker_lifecycle_result_source_env_key :hub_worker_lifecycle_result_source
   @poll_fact_limit 200
   @scheduler_min_delay_ms 10
@@ -53,6 +55,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:provider_queue) => ProviderGovernance.queue(),
           required(:provider_executor) => module() | function(),
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
+          required(:activation_probe) => map() | function() | nil,
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
@@ -127,6 +130,18 @@ defmodule SymphonyElixir.Hub.Runtime do
     :ok
   end
 
+  @spec set_activation_probe(map() | function() | nil) :: :ok
+  def set_activation_probe(probe) when is_map(probe) or is_function(probe, 1) or is_nil(probe) do
+    Application.put_env(:symphony_elixir, @activation_probe_env_key, probe)
+    :ok
+  end
+
+  @spec clear_activation_probe() :: :ok
+  def clear_activation_probe do
+    Application.delete_env(:symphony_elixir, @activation_probe_env_key)
+    :ok
+  end
+
   @spec set_worker_lifecycle_result_source(WorkerLifecycleReconciliation.result_source()) :: :ok
   def set_worker_lifecycle_result_source(source) when is_atom(source) or is_function(source, 2) or is_nil(source) do
     Application.put_env(:symphony_elixir, @worker_lifecycle_result_source_env_key, source)
@@ -156,6 +171,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   @spec worker_start_starter() :: WorkerStartHandoff.starter()
   def worker_start_starter do
     Application.get_env(:symphony_elixir, @worker_start_starter_env_key)
+  end
+
+  @spec activation_probe() :: map() | function() | nil
+  def activation_probe do
+    Application.get_env(:symphony_elixir, @activation_probe_env_key)
   end
 
   @spec config_path() :: Path.t() | nil
@@ -242,10 +262,13 @@ defmodule SymphonyElixir.Hub.Runtime do
       tick = idle_tick(loaded_at)
       scheduler = new_scheduler(Keyword.get(opts, :scheduler_enabled, scheduler_enabled?()), loaded_at)
       provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
+      activation_probe = Keyword.get(opts, :activation_probe, activation_probe())
+      activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
 
       initial_snapshot =
         build_snapshot(config_path, loaded_at, registry,
           now: loaded_at,
+          activation_preflight: activation_preflight,
           provider_queue: provider_queue,
           provider_executor: provider_executor,
           runtime_ledger: runtime_ledger,
@@ -266,6 +289,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         provider_queue: provider_queue,
         provider_executor: provider_executor,
         worker_start_starter: Keyword.get(opts, :worker_start_starter, worker_start_starter()),
+        activation_probe: activation_probe,
+        activation_preflight: activation_preflight,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
         runtime_ledger: runtime_ledger,
         candidate_intake: candidate_intake,
@@ -365,9 +390,11 @@ defmodule SymphonyElixir.Hub.Runtime do
   defp run_manual_refresh(state, requested_at) do
     case load_registry(state.config_path) do
       {:ok, registry} ->
+        activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
+
         {state, tick_summary} =
           state
-          |> Map.merge(%{loaded_at: requested_at, registry: registry})
+          |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight})
           |> run_poll_tick(requested_at)
 
         {:reply,
@@ -414,6 +441,11 @@ defmodule SymphonyElixir.Hub.Runtime do
     provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
     poll_facts = Keyword.get(opts, :poll_facts, [])
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+
+    activation_preflight =
+      Keyword.get(opts, :activation_preflight) ||
+        ActivationPreflight.empty(registry, now: now)
+
     tick = normalize_tick(Keyword.get(opts, :tick))
     runtime_ledger = Keyword.get(opts, :runtime_ledger, RuntimeLedger.new()) |> RuntimeLedger.to_snapshot()
     candidate_intake = Keyword.get(opts, :candidate_intake, CandidateIntake.empty(registry, now: now, runtime_ledger: runtime_ledger))
@@ -446,7 +478,13 @@ defmodule SymphonyElixir.Hub.Runtime do
         WorkerLifecycleReconciliation.empty(registry, now: now, runtime_ledger: runtime_ledger)
       )
 
-    poll_plan = PollCoordinator.build_plan(registry, now: now, facts: poll_facts, queue: provider_queue)
+    poll_plan =
+      PollCoordinator.build_plan(registry,
+        now: now,
+        facts: poll_facts,
+        queue: provider_queue,
+        activation_preflight: activation_preflight
+      )
 
     device_observability =
       DeviceObservability.build(
@@ -454,6 +492,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           registry: registry,
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
+          activation_preflight: activation_preflight,
           worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
           migration_boundary: migration_boundary()
         },
@@ -484,6 +523,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         generated_at: iso8601(now),
         counts: counts,
         provider_executor: provider_executor_summary(provider_executor),
+        activation_preflight: activation_preflight,
         writeback: writeback_summary(runtime_ledger, provider_queue, provider_executor),
         scheduler: scheduler,
         poll_tick: tick,
@@ -496,6 +536,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         registry: registry_summary
       },
       hub_scheduler: scheduler,
+      hub_activation_preflight: activation_preflight,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -529,6 +570,25 @@ defmodule SymphonyElixir.Hub.Runtime do
     end
   end
 
+  defp build_activation_preflight(registry, probe, now) do
+    probe =
+      case probe do
+        fun when is_function(fun, 1) -> safe_activation_probe(fun, registry)
+        value when is_map(value) -> value
+        _value -> %{}
+      end
+
+    ActivationPreflight.build(registry, now: now, probe: probe)
+  end
+
+  defp safe_activation_probe(fun, registry) do
+    fun.(registry)
+  rescue
+    error -> %{status: "unknown", source: "activation_probe", error: Exception.message(error)}
+  catch
+    kind, reason -> %{status: "unknown", source: "activation_probe", error: "#{kind}: #{safe_error(reason)}"}
+  end
+
   defp run_poll_tick(state, requested_at) do
     started_tick = running_tick(requested_at)
 
@@ -536,7 +596,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       PollCoordinator.build_plan(state.registry,
         now: requested_at,
         facts: state.poll_facts,
-        queue: state.provider_queue
+        queue: state.provider_queue,
+        activation_preflight: state.activation_preflight
       )
 
     executable_entries = Enum.filter(plan.projects, &(&1.allow_poll == true))
@@ -548,7 +609,13 @@ defmodule SymphonyElixir.Hub.Runtime do
 
         {result, queue} =
           request
-          |> execute_provider_request(state.provider_executor, requested_at, state.registry, state.config_path)
+          |> execute_provider_request(
+            state.provider_executor,
+            requested_at,
+            state.registry,
+            state.config_path,
+            state.activation_preflight
+          )
           |> normalize_provider_result(request, queue)
 
         finished_at = DateTime.utc_now()
@@ -574,23 +641,29 @@ defmodule SymphonyElixir.Hub.Runtime do
     candidate_intake =
       CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
         now: finished_at,
-        runtime_ledger: state.runtime_ledger
+        runtime_ledger: state.runtime_ledger,
+        activation_preflight: state.activation_preflight
       )
 
     dispatch_planning =
       DispatchPlanning.build(state.registry, candidate_intake,
         now: finished_at,
         runtime_ledger: state.runtime_ledger,
-        previous_plan: state.dispatch_planning
+        previous_plan: state.dispatch_planning,
+        activation_preflight: state.activation_preflight
       )
 
     {runtime_ledger, dispatch_plan_application} =
-      DispatchPlanApplication.apply_plan(state.registry, dispatch_planning, state.runtime_ledger, now: finished_at)
+      DispatchPlanApplication.apply_plan(state.registry, dispatch_planning, state.runtime_ledger,
+        now: finished_at,
+        activation_preflight: state.activation_preflight
+      )
 
     {runtime_ledger, worker_start_handoff} =
       WorkerStartHandoff.run(state.registry, runtime_ledger,
         now: finished_at,
-        starter: state.worker_start_starter
+        starter: state.worker_start_starter,
+        activation_preflight: state.activation_preflight
       )
 
     {runtime_ledger, worker_lifecycle_reconciliation} =
@@ -602,14 +675,16 @@ defmodule SymphonyElixir.Hub.Runtime do
     candidate_intake =
       CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
         now: finished_at,
-        runtime_ledger: runtime_ledger
+        runtime_ledger: runtime_ledger,
+        activation_preflight: state.activation_preflight
       )
 
     dispatch_planning =
       DispatchPlanning.build(state.registry, candidate_intake,
         now: finished_at,
         runtime_ledger: runtime_ledger,
-        previous_plan: dispatch_planning
+        previous_plan: dispatch_planning,
+        activation_preflight: state.activation_preflight
       )
 
     tick =
@@ -629,6 +704,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       build_snapshot(state.config_path, state.loaded_at, state.registry,
         now: finished_at,
         poll_facts: poll_facts,
+        activation_preflight: state.activation_preflight,
         provider_queue: provider_queue,
         provider_executor: state.provider_executor,
         runtime_ledger: runtime_ledger,
@@ -748,8 +824,10 @@ defmodule SymphonyElixir.Hub.Runtime do
   defp run_async_tick(state, requested_at) do
     case load_registry(state.config_path) do
       {:ok, registry} ->
+        activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
+
         state
-        |> Map.merge(%{loaded_at: requested_at, registry: registry})
+        |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight})
         |> run_poll_tick(requested_at)
         |> then(fn {state, tick_summary} -> {:ok, state, tick_summary} end)
 
@@ -837,6 +915,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       build_snapshot(state.config_path, state.loaded_at, state.registry,
         now: now,
         poll_facts: state.poll_facts,
+        activation_preflight: state.activation_preflight,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
         runtime_ledger: state.runtime_ledger,
@@ -857,7 +936,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       PollCoordinator.build_plan(state.registry,
         now: now,
         facts: state.poll_facts,
-        queue: state.provider_queue
+        queue: state.provider_queue,
+        activation_preflight: state.activation_preflight
       )
 
     cond do
@@ -880,7 +960,8 @@ defmodule SymphonyElixir.Hub.Runtime do
       PollCoordinator.build_plan(state.registry,
         now: now,
         facts: state.poll_facts,
-        queue: state.provider_queue
+        queue: state.provider_queue,
+        activation_preflight: state.activation_preflight
       )
 
     replay = RuntimeLedger.replay(state.runtime_ledger)
@@ -1270,31 +1351,33 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
-  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path) do
+  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path, _activation_preflight) do
     {:error, :missing_provider_request}
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path) when is_function(executor, 2) do
+  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight) when is_function(executor, 2) do
     safe_execute_provider_request(fn ->
       executor.(request,
         started_at: started_at,
         registry: registry,
-        hub_config_path: config_path
+        hub_config_path: config_path,
+        activation_preflight: activation_preflight
       )
     end)
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path) when is_atom(executor) do
+  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight) when is_atom(executor) do
     safe_execute_provider_request(fn ->
       executor.execute(request,
         started_at: started_at,
         registry: registry,
-        hub_config_path: config_path
+        hub_config_path: config_path,
+        activation_preflight: activation_preflight
       )
     end)
   end
 
-  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path) do
+  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path, _activation_preflight) do
     {:error, :invalid_provider_executor}
   end
 
@@ -1625,6 +1708,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     %{
       project_id: Map.get(project, :project_id),
       name: Map.get(project, :name),
+      migration_state: Map.get(project, :migration_state),
       dispatch_enabled: Map.get(project, :dispatch_enabled) == true,
       paused: Map.get(project, :paused) == true,
       status: project |> Map.get(:status) |> status_string(),

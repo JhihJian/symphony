@@ -13,7 +13,16 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
 
   alias SymphonyElixir.Config
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
-  alias SymphonyElixir.Hub.{ProviderGovernance, ProviderScope, RuntimeLedger, SafeSummary, WritebackProcessor}
+
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    ProviderGovernance,
+    ProviderScope,
+    RuntimeLedger,
+    SafeSummary,
+    WritebackProcessor
+  }
+
   alias SymphonyElixir.Tracker
 
   @supported_operations [:stage_writeback, :comment_workpad_upsert]
@@ -31,6 +40,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   @spec execute(ProviderGovernance.request(), keyword()) :: ProviderGovernance.result()
   def execute(request, opts \\ []) when is_map(request) and is_list(opts) do
     with :ok <- validate_operation_kind(request),
+         :ok <- activation_preflight(request, opts),
          {:ok, pending_fact} <- pending_fact(request, opts),
          {:ok, decision} <- WritebackProcessor.decide(runtime_ledger(opts), pending_fact),
          :ok <- allow_execution(decision),
@@ -41,6 +51,9 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     else
       {:manual_attention, reason} ->
         manual_attention_result(request, reason)
+
+      {:activation_blocked, reason} ->
+        activation_blocked_result(request, reason)
 
       {:decision_blocked, decision} ->
         blocked_decision_result(request, decision)
@@ -121,6 +134,19 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   end
 
   defp validate_operation_kind(%{operation_kind: operation_kind}), do: {:unsupported_operation, operation_kind}
+
+  defp activation_preflight(request, opts) do
+    case Keyword.get(opts, :activation_preflight) do
+      preflight when is_map(preflight) ->
+        case ActivationPreflight.block_reason(preflight, request.project_id, :writeback) do
+          nil -> :ok
+          reason -> {:activation_blocked, reason}
+        end
+
+      _preflight ->
+        :ok
+    end
+  end
 
   defp pending_fact(request, opts) do
     cond do
@@ -392,6 +418,22 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
         writeback_intent_key: decision.intent_key,
         manual_attention: decision.manual_attention == true,
         diagnostics: diagnostic_codes(decision.diagnostics)
+      }
+    )
+  end
+
+  defp activation_blocked_result(request, reason) do
+    ProviderGovernance.result(request, :permanent_failure,
+      error_class: :conflict,
+      result_summary: %{
+        boundary: "hub_real_writeback_executor",
+        executor: "real_writeback",
+        provider_io: false,
+        error: "activation_preflight_blocked",
+        reason: safe_reason(value(reason, :reason) || :activation_preflight_blocked),
+        status: safe_reason(value(reason, :status)),
+        blocked_operations: list_value(reason, :blocked_operations),
+        sources: list_value(reason, :sources)
       }
     )
   end
