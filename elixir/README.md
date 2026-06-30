@@ -322,6 +322,13 @@ The scheduler loop is a separate explicit opt-in:
 ./bin/symphony --hub-config /path/to/HUB.yaml --hub-scheduler --port 21000
 ```
 
+The default Hub provider executor is still the safe skeleton. To let Hub candidate scans perform
+real provider reads through the governed Hub boundary, opt in explicitly:
+
+```bash
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-candidate-scan --port 21000
+```
+
 `--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
 present, and the legacy startup path remains:
 
@@ -364,6 +371,15 @@ still-running activity, succeeded completion, failed, cancelled, timeout/stopped
 unknown, or manual-attention outcomes. Confirmed terminal outcomes release the matching
 workspace/capacity or enter retry/backoff, blocked, or released states; lost/unknown/manual-attention
 outcomes retain the active attempt/workspace as observable evidence and do not blindly redispatch.
+When `--hub-provider-executor real-candidate-scan` is used, the provider executor handles only
+`candidate_scan` operations. It finds the request's `project_id` in the Hub registry, reloads that
+project's own `WORKFLOW.md` and `TRACKER.yaml`, temporarily scopes adapter reads to those settings,
+and normalizes returned issues into safe candidate summaries containing project id, provider kind,
+provider scope key, provider-local id/identifier/URL/title, current stage, and poll correlation.
+Other operation kinds remain unsupported and provider writeback is not implemented. Config/auth and
+validation problems become permanent failures, rate limits become rate-limited/backoff summaries,
+network/provider 5xx failures become retryable failures, and unknown results are not treated as
+success.
 When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
 tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
 tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
@@ -376,7 +392,9 @@ Hub mode still does not start the legacy single-project orchestrator, write comm
 run the final durable Hub scheduler, or take ownership of existing `symphony@project.service`
 instances. The
 default provider executor and default start handoff are skeleton boundaries and do not migrate the
-legacy GitHub/GitLab/Linear adapters. The lifecycle reconciliation source is likewise injectable and
+legacy GitHub/GitLab/Linear adapters. The opt-in real candidate-scan executor uses those adapters
+only for project-local reads behind Hub governance; it does not migrate legacy polling or writeback.
+The lifecycle reconciliation source is likewise injectable and
 safe-summary based. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.
 
@@ -392,7 +410,8 @@ post-ack lifecycle succeeded/failed/cancelled/timeout/stopped/lost/unknown/manua
 reason counts, workspace released/retained counts, pending or unresolved start-intent summaries,
 runtime-ledger replay summaries, scheduler enabled/disabled state, queued/running/coalesced status,
 last/next tick times, duration, reason, coalesced/error counts, per-project due/backoff/runtime
-summary, and skipped reasons while omitting provider tokens, API keys,
+summary, provider executor mode (`skeleton` or `real_candidate_scan`), candidate counts, error
+class/backoff/manual attention summaries, and skipped reasons while omitting provider tokens, API keys,
 authorization/cookie values, secret env values, raw provider config, full prompts, full transcripts,
 provider response bodies, full comment/PR bodies, and raw hook/app-server output.
 The terminal dashboard only adds a compact Hub mode line with project count, config error count,

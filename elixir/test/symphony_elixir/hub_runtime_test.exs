@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.HubRuntimeTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, Runtime, RuntimeLedger}
+  alias SymphonyElixir.Hub.{ProviderExecutor, ProviderGovernance, RealCandidateScanExecutor, Runtime, RuntimeLedger}
   alias SymphonyElixirWeb.Presenter
 
   test "builds Hub snapshot with ready paused and project-level config error entries" do
@@ -898,6 +898,177 @@ defmodule SymphonyElixir.HubRuntimeTest do
              provider_io: false,
              candidate_scan: "accepted"
            }
+  end
+
+  test "real candidate scan executor uses project-local tracker config and feeds candidate intake safely" do
+    root = tmp_root("hub-runtime-real-candidate-scan")
+    hub_path = Path.join(root, "HUB.yaml")
+    legacy_issue = %Issue{id: "legacy", identifier: "LEGACY", title: "Legacy", state: "Todo"}
+    alpha_issue = %Issue{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue", description: "full alpha issue body should not leak", state: "Todo"}
+    beta_issue = %Issue{id: "beta-1", identifier: "BETA-1", title: "Beta issue", state: "Todo"}
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        tracker_project_slug: "legacy-global-project",
+        workspace_root: Path.join([root, "workspaces", "alpha"])
+      )
+
+      write_project!(root, "beta",
+        tracker_kind: "memory",
+        tracker_project_slug: "legacy-global-project",
+        workspace_root: Path.join([root, "workspaces", "beta"])
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+      """)
+
+      Workflow.set_workflow_file_path(Path.join(root, "legacy/WORKFLOW.md"))
+      File.mkdir_p!(Path.join(root, "legacy"))
+
+      write_workflow_file!(Path.join(root, "legacy/WORKFLOW.md"),
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "legacy"])
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [legacy_issue])
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [alpha_issue],
+        "beta" => [beta_issue]
+      })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      runtime_name = Module.concat(__MODULE__, :RealCandidateScanRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: RealCandidateScanExecutor},
+        id: :hub_runtime_real_candidate_scan
+      )
+
+      assert %{poll_tick: %{selected_count: 2, result_counts: %{"success" => 2}}} =
+               Runtime.request_refresh(runtime_name)
+
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
+      assert_receive {:memory_tracker_fetch_candidate_issues, "beta"}, 1_000
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_runtime.provider_executor.mode == "real_candidate_scan"
+      assert snapshot.hub_runtime.provider_executor.provider_io == true
+      assert snapshot.hub_runtime.poll_tick.candidate_intake.candidate_count == 2
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 2
+
+      projects = Map.new(snapshot.hub_candidate_intake.projects, &{&1.project_id, &1})
+      assert projects["alpha"].provider_scope_key == "memory:alpha"
+      assert projects["beta"].provider_scope_key == "memory:beta"
+      assert [%{issue_ref: %{provider_issue_id: "alpha-1"}}] = projects["alpha"].candidates
+      assert [%{issue_ref: %{provider_issue_id: "beta-1"}}] = projects["beta"].candidates
+
+      results =
+        snapshot.hub_poll_coordination.facts
+        |> Enum.filter(&(&1.fact_type == :poll_result))
+        |> Map.new(&{&1.project_id, &1})
+
+      assert results["alpha"].result_summary.executor == "real_candidate_scan"
+      assert results["alpha"].result_summary.provider_io in [true, "true"]
+      assert [%{id: "alpha-1", title: "Alpha issue"}] = results["alpha"].result_summary.candidates
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      safe_text = inspect(payload)
+      refute safe_text =~ "LEGACY"
+      refute safe_text =~ "full alpha issue body should not leak"
+      refute safe_text =~ "description"
+      refute safe_text =~ "GITHUB_TOKEN"
+      refute safe_text =~ "ghp_"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "cookie"
+      refute safe_text =~ "raw_config"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "real candidate scan executor maps provider failures and unsupported operations safely" do
+    root = tmp_root("hub-runtime-real-candidate-failures")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "limited", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "limited"]))
+      write_project!(root, "retry", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "retry"]))
+      write_project!(root, "bad", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "bad"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: limited
+          workflow_path: limited/WORKFLOW.md
+        - project_id: retry
+          workflow_path: retry/WORKFLOW.md
+        - project_id: bad
+          workflow_path: bad/WORKFLOW.md
+      """)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "limited" => {:error, {:memory_rate_limited, 60_000}},
+        "retry" => {:error, {:github_api_status, 503}},
+        "bad" => {:error, :missing_github_api_token}
+      })
+
+      runtime_name = Module.concat(__MODULE__, :RealCandidateFailureRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, provider_executor: RealCandidateScanExecutor},
+        id: :hub_runtime_real_candidate_failures
+      )
+
+      assert %{poll_tick: %{selected_count: 3, result_counts: %{"permanent_failure" => 1, "rate_limited" => 1, "retryable_failure" => 1}}} =
+               Runtime.request_refresh(runtime_name)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
+
+      assert projects["limited"].last_poll.status == :rate_limited
+      assert projects["limited"].backoff_until != nil
+      assert projects["retry"].last_poll.status == :retryable_failure
+      assert projects["retry"].backoff_until != nil
+      assert projects["bad"].last_poll.status == :permanent_failure
+
+      device_projects = Map.new(snapshot.hub_device_observability.projects, &{&1.project_id, &1})
+      assert "provider_rate_limit" in reason_names(device_projects["limited"])
+      assert "provider_backoff" in reason_names(device_projects["retry"])
+      assert device_projects["bad"].status == "config_invalid"
+
+      unsupported =
+        provider_request!(
+          project_id: "limited",
+          provider_scope: %{kind: "memory", key: "memory:limited", scope: %{namespace: "limited"}},
+          operation_kind: :stage_writeback,
+          logical_key: "hub-poll:limited:stage_writeback"
+        )
+
+      unsupported_result =
+        RealCandidateScanExecutor.execute(unsupported,
+          registry: Runtime.snapshot(runtime_name, 100).hub_project_registry
+        )
+
+      assert unsupported_result.status == :permanent_failure
+      assert unsupported_result.error_class == :validation
+      assert unsupported_result.result_summary.error == "unsupported_operation"
+
+      safe_text = inspect(Presenter.state_payload(runtime_name, 100))
+      refute safe_text =~ "github_api_status"
+      refute safe_text =~ "GITHUB_TOKEN"
+      refute safe_text =~ "authorization"
+      refute safe_text =~ "cookie"
+      refute safe_text =~ "raw_provider"
+    after
+      File.rm_rf(root)
+    end
   end
 
   test "candidate intake marks active attempt and workspace conflicts while applying only safe candidates" do

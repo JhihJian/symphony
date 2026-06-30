@@ -11,6 +11,7 @@ defmodule SymphonyElixir.CLI do
   @switches [
     {@acknowledgement_switch, :boolean},
     hub_config: :string,
+    hub_provider_executor: :string,
     hub_scheduler: :boolean,
     hub_worker_starter: :string,
     logs_root: :string,
@@ -24,6 +25,7 @@ defmodule SymphonyElixir.CLI do
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_tracker_config_file_path: (String.t() -> :ok | {:error, term()}),
           set_hub_config_path: (String.t() -> :ok | {:error, term()}),
+          set_hub_provider_executor: (module() | nil -> :ok | {:error, term()}),
           set_hub_scheduler_enabled: (boolean() -> :ok | {:error, term()}),
           validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
           set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
@@ -86,6 +88,7 @@ defmodule SymphonyElixir.CLI do
          :ok <- maybe_set_logs_root(opts, deps),
          :ok <- maybe_set_server_port(opts, deps),
          :ok <- maybe_set_hub_scheduler(opts, deps),
+         :ok <- maybe_set_hub_provider_executor(opts, deps),
          :ok <- maybe_set_hub_worker_starter(opts, deps),
          {:ok, hub_config_path} <- hub_config_path(opts),
          :ok <- require_regular_file(deps, hub_config_path, "Hub config file not found"),
@@ -120,7 +123,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] --hub-config <path-to-HUB.yaml>"
+    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -130,6 +133,7 @@ defmodule SymphonyElixir.CLI do
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_tracker_config_file_path: &TrackerConfig.set_tracker_file_path/1,
       set_hub_config_path: &HubRuntime.set_config_path/1,
+      set_hub_provider_executor: &HubRuntime.set_provider_executor/1,
       set_hub_scheduler_enabled: &HubRuntime.set_scheduler_enabled/1,
       validate_hub_config: &HubRuntime.validate_config/1,
       set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
@@ -233,6 +237,22 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp maybe_set_hub_provider_executor(opts, deps) do
+    case Keyword.get_values(opts, :hub_provider_executor) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_provider_executor_module()
+        |> case do
+          {:ok, module} -> deps.set_hub_provider_executor.(module)
+          {:error, message} -> {:error, message}
+        end
+    end
+  end
+
   defp maybe_set_hub_scheduler(opts, deps) do
     deps.set_hub_scheduler_enabled.(Keyword.get(opts, :hub_scheduler, false) == true)
   end
@@ -259,6 +279,27 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp hub_worker_starter_module(_value), do: {:error, usage_message()}
+
+  defp hub_provider_executor_module(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "real-candidate-scan" ->
+        {:ok, SymphonyElixir.Hub.RealCandidateScanExecutor}
+
+      "real_candidate_scan" ->
+        {:ok, SymphonyElixir.Hub.RealCandidateScanExecutor}
+
+      "skeleton" ->
+        {:ok, nil}
+
+      other ->
+        {:error, "Unsupported --hub-provider-executor #{inspect(other)}. Use `real-candidate-scan` or omit the option for the default skeleton."}
+    end
+  end
+
+  defp hub_provider_executor_module(_value), do: {:error, usage_message()}
 
   defp hub_config_path(opts) do
     case Keyword.get_values(opts, :hub_config) do

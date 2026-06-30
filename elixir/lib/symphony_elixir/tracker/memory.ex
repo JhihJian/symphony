@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @behaviour SymphonyElixir.Tracker
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker
   alias SymphonyElixir.Tracker.StageState
@@ -60,7 +61,12 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    {:ok, issue_entries()}
+    send_event({:memory_tracker_fetch_candidate_issues, memory_project_id()})
+
+    case configured_issues_for_project() do
+      {:error, reason} -> {:error, reason}
+      issues -> {:ok, issue_entries(issues)}
+    end
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -70,20 +76,32 @@ defmodule SymphonyElixir.Tracker.Memory do
       |> Enum.map(&normalize_state/1)
       |> MapSet.new()
 
-    {:ok,
-     Enum.filter(issue_entries(), fn %Issue{state: state} ->
-       MapSet.member?(normalized_states, normalize_state(state))
-     end)}
+    case configured_issues_for_project() do
+      {:error, reason} ->
+        {:error, reason}
+
+      issues ->
+        {:ok,
+         Enum.filter(issue_entries(issues), fn %Issue{state: state} ->
+           MapSet.member?(normalized_states, normalize_state(state))
+         end)}
+    end
   end
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) do
     wanted_ids = MapSet.new(issue_ids)
 
-    {:ok,
-     Enum.filter(issue_entries(), fn %Issue{id: id} ->
-       MapSet.member?(wanted_ids, id)
-     end)}
+    case configured_issues_for_project() do
+      {:error, reason} ->
+        {:error, reason}
+
+      issues ->
+        {:ok,
+         Enum.filter(issue_entries(issues), fn %Issue{id: id} ->
+           MapSet.member?(wanted_ids, id)
+         end)}
+    end
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
@@ -102,8 +120,44 @@ defmodule SymphonyElixir.Tracker.Memory do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
   end
 
-  defp issue_entries do
-    Enum.filter(configured_issues(), &match?(%Issue{}, &1))
+  defp configured_issues_for_project do
+    project_id = memory_project_id()
+
+    case Application.get_env(:symphony_elixir, :memory_tracker_issues_by_project) do
+      issues_by_project when is_map(issues_by_project) and is_binary(project_id) ->
+        Map.get(issues_by_project, project_id, [])
+
+      _issues_by_project ->
+        configured_issues()
+    end
+  end
+
+  defp issue_entries(issues) when is_list(issues) do
+    Enum.filter(issues, &match?(%Issue{}, &1))
+  end
+
+  defp issue_entries(_issues), do: []
+
+  defp memory_project_id do
+    case Config.settings() do
+      {:ok, settings} ->
+        case settings.tracker.kind do
+          "memory" -> get_in(settings.workflow, ["hub", "project_id"]) || memory_project_id_from_workspace(settings.workspace.root)
+          _other -> nil
+        end
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp memory_project_id_from_workspace(workspace_root) when is_binary(workspace_root) do
+    workspace_root
+    |> Path.basename()
+    |> case do
+      "" -> nil
+      basename -> basename
+    end
   end
 
   defp send_event(message) do
