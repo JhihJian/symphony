@@ -155,6 +155,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </article>
 
               <article class="hub-summary-panel">
+                <p class="metric-label">Migration Readiness</p>
+                <p class="metric-value"><%= hub_readiness_status(@payload) %></p>
+                <p class="metric-detail">
+                  dry-run <%= hub_readiness_count(@payload, :ready_for_dry_run) %> · hub-ready <%= hub_readiness_count(@payload, :ready_for_hub_management) %> · blocked <%= hub_readiness_count(@payload, :blocked) %> · unknown <%= hub_readiness_count(@payload, :unknown_manual_attention) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  blocking risks <%= hub_global_risk_count(@payload, :global_blocking_risks) %> · advisory <%= hub_global_risk_count(@payload, :global_advisory_risks) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
                 <p class="metric-label">Provider 压力</p>
                 <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.provider_governance.queue_pressure_count %></p>
                 <p class="metric-detail">
@@ -221,6 +232,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="detail-stack">
                         <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
+                        <span class={hub_readiness_badge_class(project.migration_readiness && project.migration_readiness.decision)}>
+                          <%= hub_readiness_project_status(project.migration_readiness) %>
+                        </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
                       </div>
@@ -249,8 +263,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="detail-stack">
                         <span><%= hub_attention_text(project) %></span>
+                        <span :for={action <- hub_required_actions(project)} class="muted event-meta">
+                          action <%= action.code %>
+                        </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
+                        </span>
+                        <span :for={reason <- hub_readiness_reasons(project)} class="muted event-meta">
+                          readiness <%= reason.code %>
                         </span>
                       </div>
                     </td>
@@ -625,6 +645,31 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> Enum.count(&(Map.get(&1, :migration_state) == migration_state))
   end
 
+  defp hub_readiness_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "unknown"
+    end
+  end
+
+  defp hub_readiness_count(payload, decision) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, :counts, :decisions, decision])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_global_risk_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, key])
+    |> List.wrap()
+    |> length()
+  end
+
   defp hub_project_badge_class(status) do
     case status do
       "running" -> "state-badge state-badge-active"
@@ -637,6 +682,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
       _status -> "state-badge state-badge-muted"
     end
   end
+
+  defp hub_readiness_badge_class("ready_for_dry_run"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("ready_for_hub_management"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("already_hub_managed"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("legacy_only"), do: "state-badge state-badge-muted"
+  defp hub_readiness_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_readiness_badge_class("unknown_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_readiness_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
+  defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -678,6 +734,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_attention_text(%{status: "blocked"}), do: "blocked"
   defp hub_attention_text(%{status: "backoff"}), do: "backoff"
   defp hub_attention_text(_project), do: "暂无"
+
+  defp hub_required_actions(%{migration_readiness: %{required_operator_actions: actions}}) when is_list(actions) do
+    Enum.take(actions, 4)
+  end
+
+  defp hub_required_actions(_project), do: []
+
+  defp hub_readiness_reasons(%{migration_readiness: %{blocking_reasons: blocking, advisory_reasons: advisory}})
+       when is_list(blocking) and is_list(advisory) do
+    Enum.take(blocking ++ advisory, 3)
+  end
+
+  defp hub_readiness_reasons(_project), do: []
 
   defp stage_conflict_text(%{local_stage: local_stage, provider_stage: provider_stage}) do
     "#{local_stage || "unknown"} -> #{provider_stage || "unknown"}"

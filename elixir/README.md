@@ -471,12 +471,61 @@ lifecycle unknown/manual-attention state, and summary errors. Each project in
 migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
 candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation, and
 writeback completed/retryable/unknown/manual-attention/dangerous-replay state.
+`hub_device_observability.migration_readiness` adds a migration readiness report derived from the
+same safe summaries. At the device level it reports Hub runtime mode, scheduler status,
+provider/writeback executor mode, worker starter mode, activation probe mode, migration-state
+counts, readiness-decision counts, global blocking risks, and advisory risks. At the project level
+it reports a stable `decision` (`legacy_only`, `ready_for_dry_run`, `ready_for_hub_management`,
+`blocked`, `unknown_manual_attention`, or `already_hub_managed`), `blocking_reasons`,
+`advisory_reasons`, `required_operator_actions`, and safe `evidence`. Reasons and actions use short
+codes such as `legacy_service_active`, `provider_scope_owner_conflict`, `probe_unknown`,
+`provider_backoff`, `writeback_unknown`, `worker_lifecycle_unknown`,
+`stop_disable_legacy_service`, `enable_host_service_probe`, `wait_provider_backoff`,
+`resolve_writeback_manual_attention`, and `confirm_hub_executor_modes`. Evidence references only
+safe summary fields, checked times, counts, fingerprints, and request/result identifiers; it does
+not re-read raw provider/config/env material.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
 values, raw env/raw config, raw provider responses, raw systemd output, raw hook/app-server output,
 full prompts, full transcripts, provider body text, full comment/PR bodies, and exception stack
 traces.
+
+#### Hub migration readiness dry-run runbook
+
+Use readiness for migration preparation only; it does not execute a migration.
+
+1. Prepare `HUB.yaml` with each project's `WORKFLOW.md` and optional `TRACKER.yaml`. Use
+   `migration_state: legacy_only` for projects still owned by `symphony@<project>.service`,
+   `hub_ready` for projects that should be evaluated by Hub dry-run, and `hub_managed` only after an
+   operator has resolved ownership and executor-mode risks.
+2. Start a read-only evidence run with the host-service probe and the default skeleton executor
+   modes:
+
+   ```bash
+   ./bin/symphony \
+     --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+     --hub-config /path/to/HUB.yaml \
+     --hub-activation-probe host-service \
+     --port 21000
+   ```
+
+3. Inspect `/api/v1/state`, especially `hub_activation_preflight`,
+   `hub_device_observability.overview`, and
+   `hub_device_observability.migration_readiness`. The Dashboard shows the same readiness status,
+   project decisions, leading reasons, and action codes when Hub summary fields exist.
+4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
+   ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
+   changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
+   points until their reason/action codes are resolved or explicitly accepted.
+5. Manually confirm any operation that changes ownership: stopping or disabling legacy
+   `symphony@<project>.service`, resolving unresolved writeback/manual-attention items, clearing
+   active attempts or workspace leases, enabling the Hub scheduler, and selecting real
+   provider/writeback executor or worker starter modes.
+
+This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
+`HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does
+not expand the real writeback safety subset.
 
 `SymphonyElixir.Hub.IssueRef` defines the provider-neutral issue reference boundary for future Hub
 ledgers and provider queues. It combines `project_id`, tracker kind, provider scope, provider issue

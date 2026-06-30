@@ -18,6 +18,14 @@ writeback/manual attention、activation preflight 和 lifecycle 状态；项目�
 scope、migration/ownership、config fingerprint/snapshot version、preflight 阻断或 unknown、poll
 eligibility、candidate/dispatch/start/lifecycle/writeback 当前状态。Live Dashboard 也只在存在该 Hub
 summary 时显示“Hub 设备总览”和“Hub 项目明细”；legacy non-Hub 实例不会被误标为 Hub-managed。
+同一个 Hub device observability 投影还会暴露
+`hub_device_observability.migration_readiness`：它只基于上述 safe summary 派生设备级迁移准备报告，
+包括 Hub runtime/scheduler 是否启用、provider/writeback executor、worker starter、activation probe
+模式、各 migration state 和 readiness decision 的项目数量、全局 blocking/advisory 风险，以及每个
+project 的 `legacy_only`、`ready_for_dry_run`、`ready_for_hub_management`、`blocked`、
+`unknown_manual_attention`、`already_hub_managed` 决策、阻断原因、建议动作和脱敏证据。单个项目
+summary 缺字段、版本不兼容或构建失败时，只会让该项目进入 `unknown_manual_attention` /
+`summary_error`，不会拖垮整个 Dashboard/API。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -49,11 +57,22 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
   --hub-activation-probe host-service \
   --port 21000
 
-curl -sS http://127.0.0.1:21000/api/v1/state | jq '.hub_activation_preflight'
+curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
+  preflight: .hub_activation_preflight,
+  readiness: .hub_device_observability.migration_readiness
+}'
 ```
 
 这个命令只生成脱敏证据摘要，不会停止、disable、restart、delete 或迁移任何
-`symphony@<project>.service`。
+`symphony@<project>.service`。迁移前 dry-run 的建议基线是：先准备 `HUB.yaml`，把仍由 legacy
+多实例拥有的项目标为 `legacy_only`，把准备评估的项目标为 `hub_ready`，只有在人工确认 legacy
+service、provider scope、workspace/runtime/log/state/port owner、writeback、lifecycle 和 executor
+模式都可接受后，才把项目改为 `hub_managed`。`ready_for_dry_run` 表示可以继续只读或低风险试运行；
+`ready_for_hub_management` 表示证据上已接近可由人工切换为 `hub_managed`；`blocked` 表示存在明确
+冲突；`unknown_manual_attention` 表示证据不足或需要人工复核。停止/disable legacy
+`symphony@<project>.service`、处理 unresolved writeback/manual attention、确认 real provider
+executor/writeback executor/worker starter 模式，必须由 operator 手工执行。本片不提供一键迁移，
+也不会自动修改 `HUB.yaml`、项目配置、systemd unit 或 provider 状态。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
 边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在

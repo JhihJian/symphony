@@ -269,14 +269,17 @@ defmodule SymphonyElixir.Hub.Runtime do
       scheduler = new_scheduler(Keyword.get(opts, :scheduler_enabled, scheduler_enabled?()), loaded_at)
       provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
       activation_probe = Keyword.get(opts, :activation_probe, activation_probe())
+      worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
 
       initial_snapshot =
         build_snapshot(config_path, loaded_at, registry,
           now: loaded_at,
           activation_preflight: activation_preflight,
+          activation_probe: activation_probe,
           provider_queue: provider_queue,
           provider_executor: provider_executor,
+          worker_start_starter: worker_start_starter,
           runtime_ledger: runtime_ledger,
           candidate_intake: candidate_intake,
           dispatch_planning: dispatch_planning,
@@ -294,7 +297,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         poll_facts: [],
         provider_queue: provider_queue,
         provider_executor: provider_executor,
-        worker_start_starter: Keyword.get(opts, :worker_start_starter, worker_start_starter()),
+        worker_start_starter: worker_start_starter,
         activation_probe: activation_probe,
         activation_preflight: activation_preflight,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
@@ -447,6 +450,8 @@ defmodule SymphonyElixir.Hub.Runtime do
     provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
     poll_facts = Keyword.get(opts, :poll_facts, [])
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    worker_start_starter = Keyword.get(opts, :worker_start_starter)
+    activation_probe = Keyword.get(opts, :activation_probe)
 
     activation_preflight =
       Keyword.get(opts, :activation_preflight) ||
@@ -498,6 +503,14 @@ defmodule SymphonyElixir.Hub.Runtime do
     device_observability =
       DeviceObservability.build(
         %{
+          hub_runtime:
+            hub_runtime_observability(
+              read_only: Keyword.get(opts, :read_only, false),
+              provider_executor: provider_executor,
+              activation_probe: activation_probe,
+              activation_preflight: activation_preflight,
+              worker_start_starter: worker_start_starter
+            ),
           registry: registry,
           poll_coordination: poll_plan,
           runtime_ledger: runtime_ledger,
@@ -538,6 +551,9 @@ defmodule SymphonyElixir.Hub.Runtime do
         generated_at: iso8601(now),
         counts: counts,
         provider_executor: provider_executor_summary(provider_executor),
+        writeback_executor: writeback.executor,
+        worker_starter: worker_starter_summary(worker_start_starter),
+        activation_probe: activation_probe_summary(activation_probe, activation_preflight),
         activation_preflight: activation_preflight,
         writeback: writeback,
         scheduler: scheduler,
@@ -720,8 +736,10 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         poll_facts: poll_facts,
         activation_preflight: state.activation_preflight,
+        activation_probe: state.activation_probe,
         provider_queue: provider_queue,
         provider_executor: state.provider_executor,
+        worker_start_starter: state.worker_start_starter,
         runtime_ledger: runtime_ledger,
         candidate_intake: candidate_intake,
         dispatch_planning: dispatch_planning,
@@ -931,8 +949,10 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now,
         poll_facts: state.poll_facts,
         activation_preflight: state.activation_preflight,
+        activation_probe: state.activation_probe,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
+        worker_start_starter: state.worker_start_starter,
         runtime_ledger: state.runtime_ledger,
         candidate_intake: state.candidate_intake,
         dispatch_planning: state.dispatch_planning,
@@ -1312,6 +1332,120 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp count_value(map, key) when is_map(map), do: non_negative_integer(value(map, key)) || 0
   defp count_value(_map, _key), do: 0
+
+  defp hub_runtime_observability(opts) do
+    provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    activation_probe = Keyword.get(opts, :activation_probe)
+    activation_preflight = Keyword.get(opts, :activation_preflight)
+    worker_start_starter = Keyword.get(opts, :worker_start_starter)
+    provider_summary = provider_executor_summary(provider_executor)
+
+    %{
+      enabled: true,
+      mode: "hub",
+      read_only: Keyword.get(opts, :read_only, false) == true,
+      provider_executor: provider_summary,
+      writeback_executor: provider_summary,
+      worker_starter: worker_starter_summary(worker_start_starter),
+      activation_probe: activation_probe_summary(activation_probe, activation_preflight)
+    }
+  end
+
+  defp worker_starter_summary(nil) do
+    %{
+      mode: "skeleton",
+      starter: "default_skeleton",
+      worker_start: false
+    }
+  end
+
+  defp worker_starter_summary(starter) when is_function(starter, 2) do
+    %{
+      mode: "custom_function",
+      starter: "anonymous_function",
+      worker_start: "unknown"
+    }
+  end
+
+  defp worker_starter_summary(starter) when is_atom(starter) do
+    case Atom.to_string(starter) do
+      "Elixir.SymphonyElixir.Hub.RealWorkerStarter" ->
+        %{
+          mode: "real_worker_starter",
+          starter: "real_worker_starter",
+          worker_start: true
+        }
+
+      _other ->
+        %{
+          mode: "custom_module",
+          starter: inspect(starter),
+          worker_start: "unknown"
+        }
+    end
+  end
+
+  defp worker_starter_summary(_starter) do
+    %{
+      mode: "invalid",
+      starter: "invalid",
+      worker_start: false
+    }
+  end
+
+  defp activation_probe_summary(nil, activation_preflight) do
+    %{
+      mode: "injected_none",
+      source: activation_probe_source(activation_preflight),
+      host_service_probe: false
+    }
+  end
+
+  defp activation_probe_summary(probe, activation_preflight) when is_function(probe, 1) do
+    source = activation_probe_source(activation_preflight)
+
+    %{
+      mode: activation_probe_mode(source),
+      source: source,
+      host_service_probe: source == "host_service_probe"
+    }
+  end
+
+  defp activation_probe_summary(probe, activation_preflight) when is_map(probe) do
+    source =
+      status_string(value(probe, :source)) ||
+        status_string(value(probe, :probe_source)) ||
+        activation_probe_source(activation_preflight)
+
+    %{
+      mode: activation_probe_mode(source),
+      source: source,
+      host_service_probe: source == "host_service_probe"
+    }
+  end
+
+  defp activation_probe_summary(_probe, activation_preflight) do
+    %{
+      mode: "invalid",
+      source: activation_probe_source(activation_preflight),
+      host_service_probe: false
+    }
+  end
+
+  defp activation_probe_source(activation_preflight) do
+    activation_preflight
+    |> list_value(:projects)
+    |> Enum.find_value(&status_string(value(&1, :probe_source)))
+    |> case do
+      nil -> "injected"
+      source -> source
+    end
+  end
+
+  defp activation_probe_mode("host_service_probe"), do: "host_service"
+  defp activation_probe_mode("injected"), do: "injected"
+  defp activation_probe_mode(nil), do: "injected_none"
+  defp activation_probe_mode(_source), do: "custom"
 
   defp provider_executor_summary(ProviderExecutor) do
     %{

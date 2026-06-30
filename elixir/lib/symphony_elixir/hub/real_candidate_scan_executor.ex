@@ -342,6 +342,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
 
   defp safe_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp safe_reason(reason) when is_binary(reason), do: safe_reason_text(reason)
+  defp safe_reason({kind, status}) when kind in [:github_api_status, :gitlab_api_status, :linear_api_status] and is_integer(status), do: "provider_http_status:#{status}"
   defp safe_reason({kind, status}) when is_atom(kind) and is_integer(status), do: "#{kind}:#{status}"
   defp safe_reason({kind, reason}) when is_atom(kind), do: "#{kind}:#{safe_reason(reason)}"
   defp safe_reason(reason) when is_map(reason), do: safe_type(reason)

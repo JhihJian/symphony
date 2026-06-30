@@ -54,6 +54,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
 
     assert html =~ "Hub 设备总览"
     assert html =~ "Hub 项目明细"
+    assert html =~ "Migration Readiness"
     assert html =~ "scheduler scheduled"
     assert html =~ "runtime_reconciliation"
     assert html =~ "provider_failure"
@@ -61,6 +62,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "ready"
     assert html =~ "gamma"
     assert html =~ "manual attention"
+    assert html =~ "unknown_manual_attention"
+    assert html =~ "action resolve_writeback_manual_attention"
     assert html =~ "writeback pending"
     refute html =~ "ghp_secret"
     refute html =~ "Authorization"
@@ -99,10 +102,15 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["overview"]["scheduler"]["status"] == "scheduled"
     assert hub["overview"]["provider_governance"]["recent_failure_count"] == 1
     assert hub["overview"]["writeback"]["manual_attention_count"] == 1
+    assert hub["migration_readiness"]["status"] == "blocked"
+    assert hub["migration_readiness"]["counts"]["decisions"]["unknown_manual_attention"] == 2
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
+    assert projects["gamma"]["migration_readiness"]["decision"] == "unknown_manual_attention"
+    assert Enum.any?(projects["gamma"]["migration_readiness"]["blocking_reasons"], &(&1["code"] == "writeback_unknown"))
+    assert Enum.any?(projects["gamma"]["migration_readiness"]["required_operator_actions"], &(&1["code"] == "resolve_writeback_manual_attention"))
 
     safe_text = inspect(payload)
     refute safe_text =~ "ghp_secret"

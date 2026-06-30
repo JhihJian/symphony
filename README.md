@@ -192,6 +192,15 @@ state. The live Dashboard renders the same safe device overview and project deta
 that Hub summary is present. This remains an observability surface: it does not replace
 `symphony@project.service`, stop/disable/migrate legacy services, or mean Hub has taken over every
 provider poll loop.
+The same projection now includes `hub_device_observability.migration_readiness`, a migration
+readiness report derived only from those safe summaries. The report records Hub runtime mode,
+scheduler status, provider/writeback executor mode, worker starter mode, activation probe mode,
+project migration-state counts, readiness decisions such as `legacy_only`, `ready_for_dry_run`,
+`ready_for_hub_management`, `blocked`, `unknown_manual_attention`, and `already_hub_managed`,
+global blocking/advisory risks, per-project blocking/advisory reasons, required operator action
+codes, and safe evidence references such as checked times, request/result counts, config
+fingerprints, and summary ids. Missing or incompatible project summaries degrade only that project
+to `unknown_manual_attention`; the device API and Dashboard continue to render other projects.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -209,8 +218,17 @@ controlled result source and remains safe-summary based. This entrypoint is opt-
 `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services stay unchanged.
 For a local activation dry run, use
 `./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --port <port>`
-and inspect `hub_activation_preflight` in `/api/v1/state`; this command gathers evidence only and
-does not stop, disable, restart, delete, or migrate `symphony@<project>.service`.
+and inspect `hub_activation_preflight`,
+`hub_device_observability.migration_readiness`, and the Dashboard Hub sections in `/api/v1/state`.
+For a read-only dry-run baseline, keep provider/writeback executors and worker starter in skeleton
+mode, set projects to `legacy_only` or `hub_ready` in `HUB.yaml`, enable the host-service probe, and
+resolve readiness actions before changing any project to `hub_managed`. `legacy_only` means Hub is
+only observing a legacy-owned project; `hub_ready` means the project can be evaluated for dry-run or
+future management; `hub_managed` means Hub-owned actions are allowed only after activation
+preflight is safe. Stopping/disabling legacy `symphony@<project>.service`, resolving unknown
+writeback/manual-attention items, and confirming real provider/writeback/worker modes remain manual
+operator decisions. This command gathers evidence only and does not stop, disable, restart, delete,
+modify `HUB.yaml`, modify project config, or migrate `symphony@<project>.service`.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

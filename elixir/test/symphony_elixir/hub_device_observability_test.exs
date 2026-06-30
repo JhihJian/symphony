@@ -66,6 +66,15 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.writeback.manual_attention_count == 1
     assert projection.overview.lifecycle.unresolved_count >= 1
     assert projection.overview.manual_attention.project_count == 1
+    assert projection.migration_readiness.status == "blocked"
+    assert projection.migration_readiness.hub_runtime.scheduler_enabled == true
+    assert projection.migration_readiness.counts.project_count == 4
+    assert projection.migration_readiness.counts.migration_states.legacy_only == 1
+    assert projection.migration_readiness.counts.decisions.legacy_only == 1
+    assert projection.migration_readiness.counts.ready_for_dry_run_count == 0
+    assert projection.migration_readiness.counts.unknown_manual_attention_count >= 1
+    assert Enum.any?(projection.migration_readiness.global_blocking_risks, &(&1.code == "writeback_unknown"))
+    assert Enum.any?(projection.migration_readiness.global_advisory_risks, &(&1.code == "legacy_only_projects_present"))
 
     assert projection.migration_boundary.legacy_service == "symphony@project.service"
     assert projection.migration_boundary.hub_projection_model_only == true
@@ -85,6 +94,10 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["alpha"].detail.dispatch_application.counts["applied_count"] == 1
     assert projects["alpha"].detail.worker_start.counts["selected_count"] == 1
     assert projects["alpha"].detail.lifecycle.counts.running == 1
+    assert projects["alpha"].migration_readiness.decision == "unknown_manual_attention"
+    assert "active_attempt_exists" in readiness_reason_codes(projects["alpha"])
+    assert "probe_missing" in readiness_reason_codes(projects["alpha"])
+    assert "wait_or_reconcile_lifecycle" in readiness_action_codes(projects["alpha"])
 
     assert projects["beta"].status == "backoff"
     assert projects["beta"].poll.backoff_until == "2026-06-28T09:05:00Z"
@@ -92,21 +105,103 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert Enum.member?(reason_names(projects["beta"]), "provider_rate_limit")
     assert Enum.member?(reason_names(projects["beta"]), "queue_pressure")
     assert projects["beta"].detail.poll_eligibility.reason == "rate_limited"
+    assert projects["beta"].migration_readiness.decision == "unknown_manual_attention"
+    assert "provider_rate_limit" in readiness_reason_codes(projects["beta"])
+    assert "probe_missing" in readiness_reason_codes(projects["beta"])
+    assert "wait_provider_backoff" in readiness_action_codes(projects["beta"])
 
     assert projects["gamma"].status == "manual_attention"
     assert projects["gamma"].writebacks.counts.unknown == 1
     assert projects["gamma"].writebacks.counts.manual_attention == 1
     assert Enum.member?(reason_names(projects["gamma"]), "writeback_unknown")
     assert Enum.member?(reason_names(projects["gamma"]), "manual_attention")
+    assert projects["gamma"].migration_readiness.decision == "unknown_manual_attention"
+    assert "writeback_unknown" in readiness_reason_codes(projects["gamma"])
+    assert "resolve_writeback_manual_attention" in readiness_action_codes(projects["gamma"])
 
     assert projects["legacy"].status == "legacy_only"
     assert projects["legacy"].migration_state == "legacy_only"
+    assert projects["legacy"].migration_readiness.decision == "legacy_only"
+    assert "prepare_hub_yaml" in readiness_action_codes(projects["legacy"])
 
     aggregate_reasons = Enum.map(projection.backpressure_reasons, & &1.reason)
     assert "provider_rate_limit" in aggregate_reasons
     assert "workspace_occupied" in aggregate_reasons
     assert "writeback_unknown" in aggregate_reasons
     assert "manual_attention" in aggregate_reasons
+  end
+
+  test "builds ready dry-run and hub-management decisions from safe summaries" do
+    projection =
+      DeviceObservability.build(
+        %{
+          hub_runtime: %{
+            read_only: true,
+            provider_executor: %{mode: "skeleton", provider_io: false},
+            writeback_executor: %{mode: "skeleton", provider_io: false},
+            worker_starter: %{mode: "skeleton", worker_start: false},
+            activation_probe: %{mode: "host_service", source: "host_service_probe", host_service_probe: true}
+          },
+          registry: %{
+            projects: [
+              registry_project("dry", "github:o/r") |> Map.put(:migration_state, "hub_ready"),
+              registry_project("managed", "github:o/r") |> Map.put(:migration_state, "hub_managed")
+            ],
+            warnings: [],
+            errors: []
+          },
+          poll_coordination: %{
+            projects: [
+              %{project_id: "dry", allow_poll: true, eligibility: %{reason: "ready"}, provider_scope_key: "github:o/r"},
+              %{project_id: "managed", allow_poll: true, eligibility: %{reason: "ready"}, provider_scope_key: "github:o/r"}
+            ]
+          },
+          activation_preflight: %{
+            projects: [
+              %{
+                project_id: "dry",
+                status: "not_hub_managed",
+                safe_to_manage: false,
+                reason: "migration_state_not_hub_managed",
+                checked_at: "2026-06-28T09:00:00Z",
+                probe_source: "host_service_probe",
+                blocked_operations: [],
+                detected_legacy_ownership: [],
+                unknown_probe_results: []
+              },
+              %{
+                project_id: "managed",
+                status: "safe_to_manage",
+                safe_to_manage: true,
+                reason: "hub_managed_no_conflict",
+                checked_at: "2026-06-28T09:00:00Z",
+                probe_source: "host_service_probe",
+                blocked_operations: [],
+                detected_legacy_ownership: [],
+                unknown_probe_results: []
+              }
+            ]
+          },
+          scheduler: %{enabled: false, status: "disabled"},
+          runtime_ledger: %{projects: []}
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    projects = Map.new(projection.projects, &{&1.project_id, &1})
+
+    assert projects["dry"].migration_readiness.decision == "ready_for_hub_management"
+    assert "hub_management_requires_operator_mark_hub_managed" in advisory_reason_codes(projects["dry"])
+    assert "mark_hub_managed_after_checks" in readiness_action_codes(projects["dry"])
+    assert projects["managed"].migration_readiness.decision == "already_hub_managed"
+    assert projection.migration_readiness.counts.ready_for_hub_management_count == 1
+    assert projection.migration_readiness.counts.decisions.already_hub_managed == 1
+    assert Enum.any?(projection.migration_readiness.global_blocking_risks, &(&1.code == "scheduler_disabled"))
+    assert Enum.any?(projection.migration_readiness.global_advisory_risks, &(&1.code == "provider_executor_skeleton"))
+
+    safe_text = inspect(projection.migration_readiness)
+    refute safe_text =~ "/workspaces/dry"
+    refute safe_text =~ "GITHUB_TOKEN"
   end
 
   test "accepts string-key snapshots and redacts sensitive fields without dynamic atom keys" do
@@ -219,6 +314,8 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["broken"].status == "manual_attention"
     assert projects["broken"].summary_error.code == "summary_build_failed"
     assert "summary_error" in reason_names(projects["broken"])
+    assert projects["broken"].migration_readiness.decision == "unknown_manual_attention"
+    assert "summary_error" in readiness_reason_codes(projects["broken"])
     assert projection.overview.manual_attention.project_count >= 1
     assert [%{"code" => "summary_build_failed"}] = projection.overview.summary_errors
 
@@ -281,6 +378,24 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
   defp reason_names(project) do
     project.backpressure_reasons
     |> Enum.map(& &1.reason)
+    |> Enum.sort()
+  end
+
+  defp readiness_reason_codes(project) do
+    project.migration_readiness.blocking_reasons
+    |> Enum.map(& &1.code)
+    |> Enum.sort()
+  end
+
+  defp advisory_reason_codes(project) do
+    project.migration_readiness.advisory_reasons
+    |> Enum.map(& &1.code)
+    |> Enum.sort()
+  end
+
+  defp readiness_action_codes(project) do
+    project.migration_readiness.required_operator_actions
+    |> Enum.map(& &1.code)
     |> Enum.sort()
   end
 

@@ -21,6 +21,78 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     "legacy_only",
     "config_invalid"
   ]
+  @readiness_version 1
+  @readiness_decisions [
+    "legacy_only",
+    "ready_for_dry_run",
+    "ready_for_hub_management",
+    "blocked",
+    "unknown_manual_attention",
+    "already_hub_managed"
+  ]
+  @migration_states ["legacy_only", "hub_ready", "hub_managed"]
+  @risk_levels ["blocking", "advisory"]
+  @provider_risk_codes [
+    "provider_rate_limit",
+    "provider_backoff",
+    "provider_circuit_open",
+    "provider_unavailable",
+    "queue_pressure"
+  ]
+  @unknown_readiness_codes [
+    "probe_unknown",
+    "probe_missing",
+    "summary_error",
+    "summary_version_incompatible",
+    "writeback_unknown",
+    "writeback_manual_attention",
+    "manual_attention_required",
+    "lifecycle_unknown",
+    "worker_lifecycle_lost",
+    "start_intent_unresolved"
+  ]
+  @hub_management_blocking_codes [
+    "config_invalid",
+    "legacy_service_active",
+    "legacy_service_enabled",
+    "provider_scope_owner_conflict",
+    "workspace_owner_conflict",
+    "runtime_path_owner_conflict",
+    "log_path_owner_conflict",
+    "state_path_owner_conflict",
+    "dashboard_port_owner_conflict",
+    "api_port_owner_conflict",
+    "instance_registry_owner_conflict",
+    "probe_unknown",
+    "probe_missing",
+    "summary_error",
+    "summary_version_incompatible",
+    "provider_backoff",
+    "provider_circuit_open",
+    "provider_rate_limit",
+    "provider_unavailable",
+    "writeback_conflict",
+    "writeback_unknown",
+    "writeback_manual_attention",
+    "active_attempt_exists",
+    "workspace_occupied",
+    "workspace_retained",
+    "pending_start_intent",
+    "start_intent_unresolved",
+    "worker_lifecycle_unknown",
+    "worker_lifecycle_lost",
+    "capacity_unavailable"
+  ]
+  @hub_management_blocking_code_set MapSet.new(
+                                      @hub_management_blocking_codes ++
+                                        [
+                                          "legacy_ownership_conflict",
+                                          "legacy_instance_registered",
+                                          "legacy_only_project",
+                                          "pending_start_intent",
+                                          "manual_attention_required"
+                                        ]
+                                    )
   @active_attempt_statuses ["pending", "running"]
   @active_start_intent_statuses ["pending", "unknown", "manual_attention"]
   @sensitive_key_fragments [
@@ -120,25 +192,28 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         safe_project_projection(project_id, source_context)
       end)
 
+    overview =
+      overview_summary(
+        projects,
+        registry,
+        poll_coordination,
+        provider_queue,
+        scheduler,
+        tick,
+        activation_preflight,
+        runtime,
+        writeback,
+        sources,
+        opts
+      )
+
     projection = %{
       version: @version,
       generated_at: now,
-      overview:
-        overview_summary(
-          projects,
-          registry,
-          poll_coordination,
-          provider_queue,
-          scheduler,
-          tick,
-          activation_preflight,
-          runtime,
-          writeback,
-          sources,
-          opts
-        ),
+      overview: overview,
       device: device_summary(projects, registry, poll_coordination, provider_queue, sources, opts),
       status_counts: status_counts(projects),
+      migration_readiness: migration_readiness_summary(projects, overview, now),
       migration_boundary: migration_boundary_summary(sources),
       provider_queue: sanitize_value(provider_queue),
       projects: projects,
@@ -158,12 +233,26 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       |> Enum.map(&project_snapshot/1)
       |> Enum.sort_by(& &1.project_id)
 
+    overview = overview_snapshot(value(projection, :overview), projects)
+    generated_at = iso8601(value(projection, :generated_at)) || DateTime.utc_now() |> DateTime.to_iso8601()
+
+    migration_readiness =
+      migration_readiness_snapshot(
+        value(projection, :migration_readiness),
+        projects,
+        overview,
+        generated_at
+      )
+
+    projects = attach_project_readiness(projects, migration_readiness.projects)
+
     %{
       version: positive_integer(value(projection, :version)) || @version,
-      generated_at: iso8601(value(projection, :generated_at)) || DateTime.utc_now() |> DateTime.to_iso8601(),
-      overview: overview_snapshot(value(projection, :overview), projects),
+      generated_at: generated_at,
+      overview: overview,
       device: device_snapshot(value(projection, :device), projects),
       status_counts: status_counts(projects),
+      migration_readiness: migration_readiness,
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
       provider_queue: sanitize_value(value(projection, :provider_queue) || %{}),
       projects: projects,
@@ -357,6 +446,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       conflicts: sanitize_list(value(project, :conflicts)),
       manual_attention: sanitize_list(value(project, :manual_attention)),
       detail: detail_snapshot(value(project, :detail)),
+      migration_readiness: migration_readiness_project_snapshot(value(project, :migration_readiness)),
       summary_error: summary_error_snapshot(value(project, :summary_error)),
       backpressure_reasons: reason_snapshots(list_value(project, :backpressure_reasons))
     }
@@ -392,11 +482,962 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       enabled: truthy?(value(runtime, :enabled)),
       mode: optional_string(runtime, :mode) || "hub",
       read_only: truthy?(value(runtime, :read_only)),
-      provider_executor: sanitize_value(value(runtime, :provider_executor) || %{})
+      provider_executor: sanitize_value(value(runtime, :provider_executor) || %{}),
+      writeback_executor: sanitize_value(value(runtime, :writeback_executor) || %{}),
+      worker_starter: sanitize_value(value(runtime, :worker_starter) || %{}),
+      activation_probe: sanitize_value(value(runtime, :activation_probe) || %{})
     }
   end
 
   defp hub_runtime_overview_snapshot(_runtime), do: hub_runtime_overview_snapshot(%{})
+
+  defp migration_readiness_snapshot(readiness, projects, overview, generated_at) do
+    readiness =
+      if is_map(readiness) and list_value(readiness, :projects) != [] do
+        readiness
+      else
+        migration_readiness_summary(projects, overview, generated_at)
+      end
+
+    project_decisions =
+      readiness
+      |> list_value(:projects)
+      |> Enum.map(&migration_readiness_project_snapshot/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort_by(& &1.project_id)
+
+    risks =
+      case {list_value(readiness, :global_blocking_risks), list_value(readiness, :global_advisory_risks)} do
+        {[], []} -> global_readiness_risks(project_decisions, overview)
+        {blocking, advisory} -> %{blocking: blocking, advisory: advisory}
+      end
+
+    %{
+      version: positive_integer(value(readiness, :version)) || @readiness_version,
+      generated_at: iso8601(value(readiness, :generated_at)) || generated_at,
+      status: readiness_status(value(readiness, :status), project_decisions, risks.blocking),
+      hub_runtime:
+        hub_runtime_readiness_snapshot(
+          value(readiness, :hub_runtime) || value(overview, :hub_runtime),
+          value(overview, :scheduler)
+        ),
+      counts: readiness_counts_snapshot(value(readiness, :counts), project_decisions),
+      global_blocking_risks:
+        risks.blocking
+        |> Enum.map(&readiness_reason_snapshot(&1, "blocking"))
+        |> Enum.sort_by(&{&1.code, &1.source || ""}),
+      global_advisory_risks:
+        risks.advisory
+        |> Enum.map(&readiness_reason_snapshot(&1, "advisory"))
+        |> Enum.sort_by(&{&1.code, &1.source || ""}),
+      projects: project_decisions
+    }
+  end
+
+  defp migration_readiness_summary(projects, overview, generated_at) do
+    project_decisions =
+      projects
+      |> Enum.map(&project_readiness_decision(&1, overview, generated_at))
+      |> Enum.sort_by(& &1.project_id)
+
+    risks = global_readiness_risks(project_decisions, overview)
+
+    %{
+      version: @readiness_version,
+      generated_at: generated_at,
+      status: readiness_status(nil, project_decisions, risks.blocking),
+      hub_runtime: hub_runtime_readiness_snapshot(value(overview, :hub_runtime), value(overview, :scheduler)),
+      counts: readiness_counts_snapshot(%{}, project_decisions),
+      global_blocking_risks: risks.blocking,
+      global_advisory_risks: risks.advisory,
+      projects: project_decisions
+    }
+  end
+
+  defp hub_runtime_readiness_snapshot(runtime, scheduler) do
+    runtime = hub_runtime_overview_snapshot(runtime || %{})
+    scheduler = scheduler_overview_snapshot(scheduler || %{})
+
+    %{
+      enabled: runtime.enabled,
+      mode: runtime.mode,
+      read_only: runtime.read_only,
+      scheduler_enabled: scheduler.enabled,
+      scheduler_status: scheduler.status,
+      provider_executor: runtime.provider_executor,
+      writeback_executor: runtime.writeback_executor,
+      worker_starter: runtime.worker_starter,
+      activation_probe: runtime.activation_probe
+    }
+  end
+
+  defp migration_readiness_project_snapshot(nil), do: nil
+
+  defp migration_readiness_project_snapshot(readiness) when is_map(readiness) do
+    decision = normalize_readiness_decision(value(readiness, :decision))
+
+    %{
+      version: positive_integer(value(readiness, :version)) || @readiness_version,
+      project_id: required_string(readiness, :project_id),
+      migration_state: normalize_migration_state(value(readiness, :migration_state)),
+      decision: decision,
+      blocking_reasons:
+        readiness
+        |> list_value(:blocking_reasons)
+        |> Enum.map(&readiness_reason_snapshot(&1, "blocking"))
+        |> Enum.sort_by(&{&1.code, &1.source || ""}),
+      advisory_reasons:
+        readiness
+        |> list_value(:advisory_reasons)
+        |> Enum.map(&readiness_reason_snapshot(&1, "advisory"))
+        |> Enum.sort_by(&{&1.code, &1.source || ""}),
+      required_operator_actions:
+        readiness
+        |> list_value(:required_operator_actions)
+        |> Enum.map(&operator_action_snapshot/1)
+        |> Enum.reject(&blank?(&1.code))
+        |> Enum.uniq_by(& &1.code)
+        |> Enum.sort_by(& &1.code),
+      evidence: readiness_evidence_snapshot(value(readiness, :evidence))
+    }
+  end
+
+  defp migration_readiness_project_snapshot(_readiness), do: nil
+
+  defp attach_project_readiness(projects, decisions) do
+    decisions_by_project =
+      decisions
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    Enum.map(projects, fn project ->
+      Map.put(project, :migration_readiness, Map.get(decisions_by_project, project.project_id))
+    end)
+  end
+
+  defp project_readiness_decision(project, overview, generated_at) do
+    blocking_reasons = project_blocking_readiness_reasons(project)
+    advisory_reasons = project_advisory_readiness_reasons(project, overview)
+    decision = project_readiness_state(project, blocking_reasons)
+
+    %{
+      version: @readiness_version,
+      generated_at: generated_at,
+      project_id: required_string(project, :project_id),
+      migration_state: normalize_migration_state(value(project, :migration_state)),
+      decision: decision,
+      blocking_reasons: blocking_reasons,
+      advisory_reasons: advisory_reasons,
+      required_operator_actions: operator_actions(decision, blocking_reasons, advisory_reasons),
+      evidence: project_readiness_evidence(project, overview)
+    }
+    |> migration_readiness_project_snapshot()
+  rescue
+    _error ->
+      summary_error_readiness(required_string(project, :project_id), "summary_error", "hub_device_observability")
+  catch
+    _kind, _reason ->
+      summary_error_readiness(required_string(project, :project_id), "summary_error", "hub_device_observability")
+  end
+
+  defp summary_error_readiness(project_id, code, source) do
+    reason = readiness_reason(code, source, %{project_id: project_id})
+
+    %{
+      version: @readiness_version,
+      project_id: project_id,
+      migration_state: "hub_ready",
+      decision: "unknown_manual_attention",
+      blocking_reasons: [reason],
+      advisory_reasons: [],
+      required_operator_actions: operator_actions("unknown_manual_attention", [reason], []),
+      evidence: %{summary_error: %{code: code, source: source}}
+    }
+    |> migration_readiness_project_snapshot()
+  end
+
+  defp project_blocking_readiness_reasons(project) do
+    migration_state = normalize_migration_state(value(project, :migration_state))
+    status = normalize_project_status(value(project, :status))
+    detail = value(project, :detail) || %{}
+    config = value(detail, :config) || %{}
+    poll = value(detail, :poll_eligibility) || %{}
+    preflight = value(project, :activation_preflight)
+    runtime = value(project, :runtime) || %{}
+    lifecycle = runtime |> value(:lifecycle) |> lifecycle_snapshot()
+    lifecycle_counts = lifecycle |> value(:counts) |> lifecycle_count_snapshot()
+    writebacks = writeback_snapshot(value(project, :writebacks))
+    writeback_counts = writeback_count_snapshot(value(writebacks, :counts))
+    summary_error = value(project, :summary_error)
+
+    []
+    |> maybe_add_summary_error_reason(summary_error)
+    |> add_readiness_reason(
+      status == "config_invalid" or not blank?(optional_string(config, :load_error)),
+      "config_invalid",
+      "project_registry",
+      %{status: status, load_error: optional_string(config, :load_error)}
+    )
+    |> add_preflight_blocking_reasons(preflight, migration_state)
+    |> add_provider_blocking_reasons(project)
+    |> add_readiness_reason(writeback_counts.unknown > 0, "writeback_unknown", "writeback", %{unknown_count: writeback_counts.unknown})
+    |> add_readiness_reason(
+      writeback_counts.manual_attention > 0,
+      "writeback_manual_attention",
+      "writeback",
+      %{manual_attention_count: writeback_counts.manual_attention}
+    )
+    |> add_readiness_reason(
+      non_empty_list?(runtime, :active_attempts),
+      "active_attempt_exists",
+      "runtime_ledger",
+      %{active_attempt_count: length(list_value(runtime, :active_attempts))}
+    )
+    |> add_readiness_reason(
+      non_empty_list?(runtime, :pending_start_intents),
+      "pending_start_intent",
+      "runtime_ledger",
+      %{pending_start_intent_count: length(list_value(runtime, :pending_start_intents))}
+    )
+    |> add_readiness_reason(
+      non_empty_list?(runtime, :workspace_leases),
+      "workspace_occupied",
+      "runtime_ledger",
+      %{workspace_lease_count: length(list_value(runtime, :workspace_leases))}
+    )
+    |> add_readiness_reason(
+      non_empty_list?(lifecycle, :retained_workspace) or lifecycle_counts.retained_workspace > 0,
+      "workspace_retained",
+      "runtime_ledger",
+      %{
+        retained_workspace_count:
+          max(
+            length(list_value(lifecycle, :retained_workspace)),
+            lifecycle_counts.retained_workspace
+          )
+      }
+    )
+    |> add_readiness_reason(lifecycle_counts.lost > 0, "worker_lifecycle_lost", "runtime_ledger", %{lost_count: lifecycle_counts.lost})
+    |> add_readiness_reason(
+      lifecycle_counts.unknown > 0,
+      "worker_lifecycle_unknown",
+      "runtime_ledger",
+      %{unknown_count: lifecycle_counts.unknown}
+    )
+    |> add_readiness_reason(
+      lifecycle_counts.manual_attention > 0,
+      "manual_attention_required",
+      "runtime_ledger",
+      %{manual_attention_count: lifecycle_counts.manual_attention}
+    )
+    |> add_readiness_reason(
+      safe_status(value(poll, :reason)) == "capacity_unavailable",
+      "capacity_unavailable",
+      "poll_coordination",
+      %{reason: value(poll, :reason)}
+    )
+    |> add_readiness_reason(
+      conflict_count(project) > 0,
+      "writeback_conflict",
+      "runtime_ledger",
+      %{conflict_count: conflict_count(project)}
+    )
+    |> Enum.uniq_by(&{&1.code, &1.source})
+  end
+
+  defp maybe_add_summary_error_reason(reasons, nil), do: reasons
+
+  defp maybe_add_summary_error_reason(reasons, summary_error) do
+    code =
+      case safe_status(value(summary_error, :code)) do
+        "summary_version_incompatible" -> "summary_version_incompatible"
+        _other -> "summary_error"
+      end
+
+    add_readiness_reason(reasons, true, code, optional_string(summary_error, :source) || "hub_device_observability", summary_error)
+  end
+
+  defp add_preflight_blocking_reasons(reasons, _preflight, "legacy_only"), do: reasons
+
+  defp add_preflight_blocking_reasons(reasons, nil, _migration_state) do
+    add_readiness_reason(reasons, true, "probe_missing", "activation_preflight", %{})
+  end
+
+  defp add_preflight_blocking_reasons(reasons, preflight, _migration_state) do
+    status = safe_status(value(preflight, :status))
+
+    reasons =
+      preflight
+      |> list_value(:detected_legacy_ownership)
+      |> Enum.reduce(reasons, fn ownership, acc ->
+        add_readiness_reason(
+          acc,
+          true,
+          ownership_conflict_code(ownership),
+          "activation_preflight",
+          ownership_evidence(ownership, preflight)
+        )
+      end)
+
+    reasons =
+      preflight
+      |> list_value(:unknown_probe_results)
+      |> Enum.reduce(reasons, fn unknown, acc ->
+        add_readiness_reason(
+          acc,
+          true,
+          "probe_unknown",
+          "activation_preflight",
+          unknown_evidence(unknown, preflight)
+        )
+      end)
+
+    reasons
+    |> add_readiness_reason(
+      status == "blocked_conflict" and list_value(preflight, :detected_legacy_ownership) == [],
+      "legacy_ownership_conflict",
+      "activation_preflight",
+      preflight_evidence(preflight)
+    )
+    |> add_readiness_reason(
+      status == "unknown_manual_attention" and list_value(preflight, :unknown_probe_results) == [],
+      "probe_unknown",
+      "activation_preflight",
+      preflight_evidence(preflight)
+    )
+  end
+
+  defp ownership_conflict_code(ownership) do
+    source = optional_string(ownership, :source)
+    reason = safe_status(value(ownership, :reason))
+
+    cond do
+      reason in ["legacy_service_active", "legacy_service_enabled"] ->
+        reason
+
+      source == "legacy_service" ->
+        "legacy_service_active"
+
+      source == "legacy_instance" ->
+        "legacy_instance_registered"
+
+      source == "provider_scope_owner" ->
+        "provider_scope_owner_conflict"
+
+      source == "workspace_owner" ->
+        "workspace_owner_conflict"
+
+      source == "runtime_path_owner" ->
+        "runtime_path_owner_conflict"
+
+      source == "log_path_owner" ->
+        "log_path_owner_conflict"
+
+      source == "state_path_owner" ->
+        "state_path_owner_conflict"
+
+      source == "dashboard_port_owner" ->
+        "dashboard_port_owner_conflict"
+
+      source == "api_port_owner" ->
+        "api_port_owner_conflict"
+
+      source == "instance_registry" ->
+        "instance_registry_owner_conflict"
+
+      true ->
+        "legacy_ownership_conflict"
+    end
+  end
+
+  defp add_provider_blocking_reasons(reasons, project) do
+    project
+    |> list_value(:backpressure_reasons)
+    |> Enum.reduce(reasons, fn reason, acc ->
+      code = safe_status(value(reason, :reason))
+
+      if code in @provider_risk_codes do
+        add_readiness_reason(acc, true, code, optional_string(reason, :source) || "provider_governance", %{
+          detail: optional_string(reason, :detail)
+        })
+      else
+        acc
+      end
+    end)
+  end
+
+  defp project_advisory_readiness_reasons(project, overview) do
+    migration_state = normalize_migration_state(value(project, :migration_state))
+    status = normalize_project_status(value(project, :status))
+    runtime = hub_runtime_readiness_snapshot(value(overview, :hub_runtime), value(overview, :scheduler))
+    preflight = value(project, :activation_preflight)
+    recent_failures = recent_provider_failure_count(project)
+
+    []
+    |> add_readiness_reason(
+      migration_state == "legacy_only",
+      "legacy_only_project",
+      "project_registry",
+      %{migration_state: migration_state}
+    )
+    |> add_readiness_reason(
+      migration_state == "hub_ready" and preflight_status(preflight) == "not_hub_managed",
+      "hub_management_requires_operator_mark_hub_managed",
+      "activation_preflight",
+      preflight_evidence(preflight || %{})
+    )
+    |> add_readiness_reason(status == "paused", "project_paused", "project_registry", %{status: status})
+    |> add_readiness_reason(not runtime.scheduler_enabled, "scheduler_disabled", "scheduler", %{status: runtime.scheduler_status})
+    |> add_readiness_reason(runtime.read_only, "runtime_read_only", "hub_runtime", %{read_only: runtime.read_only})
+    |> add_readiness_reason(
+      not host_service_probe_enabled?(runtime.activation_probe),
+      "activation_probe_not_host_service",
+      "activation_preflight",
+      runtime.activation_probe
+    )
+    |> add_readiness_reason(
+      skeleton_executor?(runtime.provider_executor),
+      "provider_executor_skeleton",
+      "hub_runtime",
+      runtime.provider_executor
+    )
+    |> add_readiness_reason(
+      skeleton_executor?(runtime.writeback_executor),
+      "writeback_executor_skeleton",
+      "hub_runtime",
+      runtime.writeback_executor
+    )
+    |> add_readiness_reason(
+      skeleton_worker_starter?(runtime.worker_starter),
+      "worker_starter_skeleton",
+      "hub_runtime",
+      runtime.worker_starter
+    )
+    |> add_readiness_reason(
+      recent_failures > 0,
+      "recent_provider_retryable_failure",
+      "provider_governance",
+      %{recent_failure_count: recent_failures}
+    )
+    |> Enum.uniq_by(&{&1.code, &1.source})
+    |> advisory_reasons()
+  end
+
+  defp project_readiness_state(project, blocking_reasons) do
+    migration_state = normalize_migration_state(value(project, :migration_state))
+    blocking_codes = MapSet.new(blocking_reasons, & &1.code)
+
+    cond do
+      migration_state == "legacy_only" ->
+        "legacy_only"
+
+      MapSet.size(blocking_codes) > 0 and Enum.any?(blocking_codes, &(&1 in @unknown_readiness_codes)) ->
+        "unknown_manual_attention"
+
+      MapSet.size(blocking_codes) > 0 ->
+        "blocked"
+
+      migration_state == "hub_managed" ->
+        "already_hub_managed"
+
+      hub_management_ready_project?(project) ->
+        "ready_for_hub_management"
+
+      true ->
+        "ready_for_dry_run"
+    end
+  end
+
+  defp hub_management_ready_project?(project) do
+    preflight = value(project, :activation_preflight)
+
+    normalize_migration_state(value(project, :migration_state)) == "hub_ready" and
+      preflight_status(preflight) == "not_hub_managed" and
+      list_value(preflight, :detected_legacy_ownership) == [] and
+      list_value(preflight, :unknown_probe_results) == [] and
+      optional_string(preflight || %{}, :probe_source) == "host_service_probe"
+  end
+
+  defp global_readiness_risks(project_decisions, overview) do
+    runtime = hub_runtime_readiness_snapshot(value(overview, :hub_runtime), value(overview, :scheduler))
+    provider = provider_governance_overview_snapshot(value(overview, :provider_governance))
+    capacity = capacity_workspace_overview_snapshot(value(overview, :capacity_workspace))
+    writeback = writeback_overview_snapshot(value(overview, :writeback))
+    lifecycle = lifecycle_overview_snapshot(value(overview, :lifecycle))
+    manual_attention = manual_attention_overview_snapshot(value(overview, :manual_attention))
+
+    blocking =
+      []
+      |> add_readiness_reason(not runtime.scheduler_enabled, "scheduler_disabled", "scheduler", %{status: runtime.scheduler_status})
+      |> add_readiness_reason(
+        not host_service_probe_enabled?(runtime.activation_probe),
+        "activation_probe_not_host_service",
+        "activation_preflight",
+        runtime.activation_probe
+      )
+      |> add_readiness_reason(provider.queue_pressure_count > 0, "queue_pressure", "provider_governance", %{count: provider.queue_pressure_count})
+      |> add_readiness_reason(provider.quota_backoff_count > 0, "provider_backoff", "provider_governance", %{count: provider.quota_backoff_count})
+      |> add_readiness_reason(provider.circuit_open_count > 0, "provider_circuit_open", "provider_governance", %{count: provider.circuit_open_count})
+      |> add_readiness_reason(writeback.counts.unknown > 0, "writeback_unknown", "writeback", %{count: writeback.counts.unknown})
+      |> add_readiness_reason(
+        writeback.manual_attention_count > 0,
+        "writeback_manual_attention",
+        "writeback",
+        %{count: writeback.manual_attention_count}
+      )
+      |> add_readiness_reason(
+        lifecycle.unresolved_count > 0,
+        "worker_lifecycle_unknown",
+        "runtime_ledger",
+        %{count: lifecycle.unresolved_count}
+      )
+      |> add_readiness_reason(
+        capacity.active_attempt_count > 0,
+        "active_attempt_exists",
+        "runtime_ledger",
+        %{count: capacity.active_attempt_count}
+      )
+      |> add_readiness_reason(
+        capacity.pending_start_intent_count > 0,
+        "pending_start_intent",
+        "runtime_ledger",
+        %{count: capacity.pending_start_intent_count}
+      )
+      |> add_readiness_reason(
+        capacity.workspace_lease_count > 0,
+        "workspace_occupied",
+        "runtime_ledger",
+        %{count: capacity.workspace_lease_count}
+      )
+      |> add_readiness_reason(
+        capacity.unreleased_capacity_count > 0,
+        "capacity_unavailable",
+        "runtime_ledger",
+        %{count: capacity.unreleased_capacity_count}
+      )
+      |> add_readiness_reason(
+        manual_attention.project_count > 0,
+        "manual_attention_required",
+        "hub_device_observability",
+        %{project_count: manual_attention.project_count}
+      )
+
+    advisory =
+      []
+      |> add_readiness_reason(runtime.read_only, "runtime_read_only", "hub_runtime", %{read_only: runtime.read_only})
+      |> add_readiness_reason(
+        skeleton_executor?(runtime.provider_executor),
+        "provider_executor_skeleton",
+        "hub_runtime",
+        runtime.provider_executor
+      )
+      |> add_readiness_reason(
+        skeleton_executor?(runtime.writeback_executor),
+        "writeback_executor_skeleton",
+        "hub_runtime",
+        runtime.writeback_executor
+      )
+      |> add_readiness_reason(
+        skeleton_worker_starter?(runtime.worker_starter),
+        "worker_starter_skeleton",
+        "hub_runtime",
+        runtime.worker_starter
+      )
+      |> add_readiness_reason(provider.recent_failure_count > 0, "recent_provider_retryable_failure", "provider_governance", %{
+        count: provider.recent_failure_count,
+        recent_failure_classes: provider.recent_failure_classes
+      })
+      |> add_readiness_reason(
+        readiness_decision_count(project_decisions, "legacy_only") > 0,
+        "legacy_only_projects_present",
+        "project_registry",
+        %{project_count: readiness_decision_count(project_decisions, "legacy_only")}
+      )
+      |> advisory_reasons()
+
+    %{blocking: blocking, advisory: advisory}
+  end
+
+  defp readiness_status(status, project_decisions, global_blocking_risks) do
+    explicit = normalize_readiness_decision(status)
+
+    cond do
+      explicit != "unknown_manual_attention" and safe_status(status) in @readiness_decisions ->
+        explicit
+
+      global_blocking_risks != [] or readiness_decision_count(project_decisions, "blocked") > 0 ->
+        "blocked"
+
+      readiness_decision_count(project_decisions, "unknown_manual_attention") > 0 ->
+        "unknown_manual_attention"
+
+      readiness_decision_count(project_decisions, "ready_for_hub_management") > 0 ->
+        "ready_for_hub_management"
+
+      readiness_decision_count(project_decisions, "ready_for_dry_run") > 0 ->
+        "ready_for_dry_run"
+
+      readiness_decision_count(project_decisions, "already_hub_managed") > 0 ->
+        "already_hub_managed"
+
+      true ->
+        "legacy_only"
+    end
+  end
+
+  defp readiness_counts_snapshot(counts, project_decisions) when is_map(counts) do
+    decisions = Map.new(@readiness_decisions, &{String.to_atom(&1), 0})
+    migration_states = Map.new(@migration_states, &{String.to_atom(&1), 0})
+
+    decision_counts =
+      Enum.reduce(project_decisions, decisions, fn project, acc ->
+        key = project.decision |> normalize_readiness_decision() |> String.to_existing_atom()
+        Map.update!(acc, key, &(&1 + 1))
+      end)
+
+    migration_state_counts =
+      Enum.reduce(project_decisions, migration_states, fn project, acc ->
+        key = project.migration_state |> normalize_migration_state() |> String.to_existing_atom()
+        Map.update!(acc, key, &(&1 + 1))
+      end)
+
+    %{
+      project_count: non_negative_integer(value(counts, :project_count)) || length(project_decisions),
+      migration_states: migration_state_counts,
+      decisions: decision_counts,
+      blocked_count: non_negative_integer(value(counts, :blocked_count)) || decision_counts.blocked,
+      unknown_manual_attention_count:
+        non_negative_integer(value(counts, :unknown_manual_attention_count)) ||
+          decision_counts.unknown_manual_attention,
+      ready_for_dry_run_count:
+        non_negative_integer(value(counts, :ready_for_dry_run_count)) ||
+          decision_counts.ready_for_dry_run,
+      ready_for_hub_management_count:
+        non_negative_integer(value(counts, :ready_for_hub_management_count)) ||
+          decision_counts.ready_for_hub_management,
+      config_error_count: reason_project_count(project_decisions, "config_invalid"),
+      provider_backoff_risk_count: provider_risk_project_count(project_decisions)
+    }
+  end
+
+  defp readiness_counts_snapshot(_counts, project_decisions), do: readiness_counts_snapshot(%{}, project_decisions)
+
+  defp readiness_reason_snapshot(reason, default_level) when is_map(reason) do
+    code = safe_status(value(reason, :code) || value(reason, :reason)) |> blank_to_default("unknown")
+    level = normalize_risk_level(value(reason, :level), default_level)
+
+    %{
+      code: code,
+      label: optional_string(reason, :label) || reason_label(code),
+      source: optional_string(reason, :source),
+      level: level,
+      blocks_hub_management: readiness_blocks_hub_management?(code, level, value(reason, :blocks_hub_management)),
+      evidence: sanitize_value(value(reason, :evidence) || %{})
+    }
+    |> maybe_put(:count, non_negative_integer(value(reason, :count)))
+    |> maybe_put(:project_count, non_negative_integer(value(reason, :project_count)))
+  end
+
+  defp readiness_reason_snapshot(reason, default_level) do
+    readiness_reason_snapshot(%{code: reason}, default_level)
+  end
+
+  defp operator_action_snapshot(action) when is_map(action) do
+    code = safe_status(value(action, :code)) |> blank_to_default("manual_review")
+
+    %{
+      code: code,
+      label: optional_string(action, :label) || action_label(code)
+    }
+  end
+
+  defp operator_action_snapshot(action), do: operator_action_snapshot(%{code: action})
+
+  defp readiness_evidence_snapshot(evidence) when is_map(evidence), do: sanitize_value(evidence)
+  defp readiness_evidence_snapshot(_evidence), do: %{}
+
+  defp add_readiness_reason(reasons, true, code, source, evidence) do
+    [readiness_reason(code, source, evidence) | reasons]
+  end
+
+  defp add_readiness_reason(reasons, condition, _code, _source, _evidence)
+       when condition in [false, nil],
+       do: reasons
+
+  defp readiness_reason(code, source, evidence) do
+    %{
+      code: safe_status(code),
+      label: reason_label(code),
+      source: source,
+      level: "blocking",
+      blocks_hub_management: true,
+      evidence: sanitize_value(evidence || %{})
+    }
+  end
+
+  defp advisory_reasons(reasons) do
+    Enum.map(reasons, &Map.merge(&1, %{level: "advisory", blocks_hub_management: false}))
+  end
+
+  defp normalize_risk_level(level, default_level) do
+    normalized = safe_status(level) |> blank_to_default(default_level)
+
+    if normalized in @risk_levels do
+      normalized
+    else
+      default_level
+    end
+  end
+
+  defp readiness_blocks_hub_management?(_code, "advisory", value), do: value == true
+
+  defp readiness_blocks_hub_management?(code, _level, value) do
+    value != false and MapSet.member?(@hub_management_blocking_code_set, code)
+  end
+
+  defp operator_actions(decision, blocking_reasons, advisory_reasons) do
+    reason_codes =
+      (blocking_reasons ++ advisory_reasons)
+      |> Enum.map(& &1.code)
+      |> MapSet.new()
+
+    reason_codes
+    |> Enum.flat_map(&actions_for_reason/1)
+    |> Kernel.++(actions_for_decision(decision))
+    |> Enum.map(&%{code: &1, label: action_label(&1)})
+    |> Enum.uniq_by(& &1.code)
+  end
+
+  defp actions_for_reason("legacy_only_project"), do: ["prepare_hub_yaml"]
+  defp actions_for_reason("legacy_service_active"), do: ["stop_disable_legacy_service"]
+  defp actions_for_reason("legacy_service_enabled"), do: ["stop_disable_legacy_service"]
+  defp actions_for_reason("legacy_instance_registered"), do: ["stop_disable_legacy_service"]
+  defp actions_for_reason("config_invalid"), do: ["fix_project_config"]
+  defp actions_for_reason("summary_error"), do: ["inspect_summary_error"]
+  defp actions_for_reason("summary_version_incompatible"), do: ["inspect_summary_error"]
+  defp actions_for_reason("probe_missing"), do: ["enable_host_service_probe"]
+  defp actions_for_reason("probe_unknown"), do: ["enable_host_service_probe"]
+  defp actions_for_reason("activation_probe_not_host_service"), do: ["enable_host_service_probe"]
+  defp actions_for_reason("provider_rate_limit"), do: ["wait_provider_backoff"]
+  defp actions_for_reason("provider_backoff"), do: ["wait_provider_backoff"]
+  defp actions_for_reason("provider_circuit_open"), do: ["fix_provider_auth_or_circuit"]
+  defp actions_for_reason("provider_unavailable"), do: ["restore_provider_access"]
+  defp actions_for_reason("queue_pressure"), do: ["wait_provider_queue"]
+  defp actions_for_reason("writeback_unknown"), do: ["resolve_writeback_manual_attention"]
+  defp actions_for_reason("writeback_manual_attention"), do: ["resolve_writeback_manual_attention"]
+  defp actions_for_reason("manual_attention_required"), do: ["resolve_manual_attention"]
+  defp actions_for_reason("active_attempt_exists"), do: ["wait_or_reconcile_lifecycle"]
+  defp actions_for_reason("pending_start_intent"), do: ["wait_or_reconcile_lifecycle"]
+  defp actions_for_reason("start_intent_unresolved"), do: ["wait_or_reconcile_lifecycle"]
+  defp actions_for_reason("worker_lifecycle_unknown"), do: ["wait_or_reconcile_lifecycle"]
+  defp actions_for_reason("worker_lifecycle_lost"), do: ["wait_or_reconcile_lifecycle"]
+  defp actions_for_reason("workspace_occupied"), do: ["release_workspace_or_capacity"]
+  defp actions_for_reason("workspace_retained"), do: ["release_workspace_or_capacity"]
+  defp actions_for_reason("capacity_unavailable"), do: ["release_workspace_or_capacity"]
+  defp actions_for_reason("project_paused"), do: ["unpause_project_when_ready"]
+  defp actions_for_reason("scheduler_disabled"), do: ["enable_hub_scheduler_before_management"]
+  defp actions_for_reason("provider_executor_skeleton"), do: ["confirm_hub_executor_modes"]
+  defp actions_for_reason("writeback_executor_skeleton"), do: ["confirm_hub_executor_modes"]
+  defp actions_for_reason("worker_starter_skeleton"), do: ["confirm_hub_executor_modes"]
+  defp actions_for_reason("runtime_read_only"), do: ["keep_read_only_dry_run"]
+  defp actions_for_reason("hub_management_requires_operator_mark_hub_managed"), do: ["mark_hub_managed_after_checks"]
+
+  defp actions_for_reason(reason)
+       when reason in [
+              "provider_scope_owner_conflict",
+              "workspace_owner_conflict",
+              "runtime_path_owner_conflict",
+              "log_path_owner_conflict",
+              "state_path_owner_conflict",
+              "dashboard_port_owner_conflict",
+              "api_port_owner_conflict",
+              "instance_registry_owner_conflict",
+              "legacy_ownership_conflict"
+            ],
+       do: ["resolve_legacy_ownership_conflict"]
+
+  defp actions_for_reason(_reason), do: ["manual_review"]
+
+  defp actions_for_decision("ready_for_dry_run"), do: ["run_read_only_dry_run"]
+  defp actions_for_decision("ready_for_hub_management"), do: ["mark_hub_managed_after_checks"]
+  defp actions_for_decision("legacy_only"), do: ["prepare_hub_yaml"]
+  defp actions_for_decision(_decision), do: []
+
+  defp reason_label(code) do
+    code
+    |> safe_status()
+    |> String.replace("_", " ")
+  end
+
+  defp action_label("prepare_hub_yaml"), do: "Prepare HUB.yaml"
+  defp action_label("stop_disable_legacy_service"), do: "Stop/disable legacy service"
+  defp action_label("fix_project_config"), do: "Fix project config"
+  defp action_label("inspect_summary_error"), do: "Inspect safe summary error"
+  defp action_label("enable_host_service_probe"), do: "Enable host-service probe"
+  defp action_label("wait_provider_backoff"), do: "Wait for provider backoff"
+  defp action_label("fix_provider_auth_or_circuit"), do: "Fix provider auth/circuit"
+  defp action_label("restore_provider_access"), do: "Restore provider access"
+  defp action_label("wait_provider_queue"), do: "Wait for provider queue"
+  defp action_label("resolve_writeback_manual_attention"), do: "Resolve writeback manual attention"
+  defp action_label("resolve_manual_attention"), do: "Resolve manual attention"
+  defp action_label("wait_or_reconcile_lifecycle"), do: "Wait/reconcile lifecycle"
+  defp action_label("release_workspace_or_capacity"), do: "Release workspace/capacity"
+  defp action_label("unpause_project_when_ready"), do: "Unpause project when ready"
+  defp action_label("enable_hub_scheduler_before_management"), do: "Enable Hub scheduler before management"
+  defp action_label("confirm_hub_executor_modes"), do: "Confirm Hub executor modes"
+  defp action_label("keep_read_only_dry_run"), do: "Keep dry-run read-only"
+  defp action_label("mark_hub_managed_after_checks"), do: "Mark hub_managed after checks"
+  defp action_label("run_read_only_dry_run"), do: "Run read-only dry-run"
+  defp action_label("resolve_legacy_ownership_conflict"), do: "Resolve legacy ownership conflict"
+
+  defp action_label(code) do
+    code
+    |> safe_status()
+    |> String.replace("_", " ")
+  end
+
+  defp project_readiness_evidence(project, overview) do
+    preflight = value(project, :activation_preflight)
+    poll = project |> value(:detail) |> value(:poll_eligibility)
+    runtime = value(project, :runtime) || %{}
+    lifecycle = runtime |> value(:lifecycle) |> lifecycle_snapshot()
+    writebacks = writeback_snapshot(value(project, :writebacks))
+    provider_queue = provider_queue_project_snapshot(value(project, :provider_queue))
+    config = project |> value(:detail) |> value(:config)
+
+    %{
+      registry: %{
+        migration_state: normalize_migration_state(value(project, :migration_state)),
+        status: normalize_project_status(value(project, :status)),
+        dispatch_enabled: truthy?(value(project, :dispatch_enabled))
+      },
+      hub_runtime: hub_runtime_readiness_snapshot(value(overview, :hub_runtime), value(overview, :scheduler)),
+      config: %{
+        snapshot_version: optional_string(config || %{}, :snapshot_version),
+        config_fingerprint: optional_string(config || %{}, :config_fingerprint),
+        loaded_at: iso8601(value(config || %{}, :loaded_at)),
+        load_error: optional_string(config || %{}, :load_error)
+      },
+      activation_preflight: preflight_evidence(preflight || %{}),
+      poll_eligibility: %{
+        allow_poll: truthy?(value(poll || %{}, :allow_poll)),
+        reason: safe_status(value(poll || %{}, :reason)),
+        next_due_at: iso8601(value(poll || %{}, :next_due_at)),
+        backoff_until: iso8601(value(poll || %{}, :backoff_until))
+      },
+      provider_governance: %{
+        pending_count: provider_queue.pending_count,
+        running_count: provider_queue.running_count,
+        backpressure_count: length(provider_queue.backpressure),
+        recent_result_count: length(provider_queue.recent_results)
+      },
+      runtime_ledger: %{
+        active_attempt_count: length(list_value(runtime, :active_attempts)),
+        pending_start_intent_count: length(list_value(runtime, :pending_start_intents)),
+        workspace_lease_count: length(list_value(runtime, :workspace_leases)),
+        retry_backoff_count: length(list_value(runtime, :retry_backoff)),
+        lifecycle_counts: lifecycle_count_snapshot(value(lifecycle, :counts))
+      },
+      writeback: %{counts: writeback_count_snapshot(value(writebacks, :counts))},
+      summary_error: summary_error_snapshot(value(project, :summary_error))
+    }
+  end
+
+  defp preflight_evidence(preflight) when is_map(preflight) do
+    %{
+      status: normalize_activation_preflight_status(value(preflight, :status)),
+      safe_to_manage: truthy?(value(preflight, :safe_to_manage)),
+      reason: optional_string(preflight, :reason),
+      checked_at: iso8601(value(preflight, :checked_at)),
+      probe_source: optional_string(preflight, :probe_source),
+      conflict_count: non_negative_integer(value(preflight, :conflict_count)) || 0,
+      manual_attention_count: non_negative_integer(value(preflight, :manual_attention_count)) || 0,
+      detected_legacy_ownership_count: length(list_value(preflight, :detected_legacy_ownership)),
+      unknown_probe_result_count: length(list_value(preflight, :unknown_probe_results)),
+      blocked_operations: string_list(value(preflight, :blocked_operations))
+    }
+  end
+
+  defp preflight_evidence(_preflight), do: %{}
+
+  defp ownership_evidence(ownership, preflight) do
+    %{
+      source: optional_string(ownership, :source),
+      reason: optional_string(ownership, :reason),
+      owner: optional_string(ownership, :owner),
+      checked_at: iso8601(value(preflight, :checked_at)),
+      probe_source: optional_string(preflight, :probe_source)
+    }
+  end
+
+  defp unknown_evidence(unknown, preflight) do
+    %{
+      source: optional_string(unknown, :source),
+      reason: optional_string(unknown, :reason),
+      checked_at: iso8601(value(preflight, :checked_at)),
+      probe_source: optional_string(preflight, :probe_source)
+    }
+  end
+
+  defp preflight_status(nil), do: nil
+  defp preflight_status(preflight), do: safe_status(value(preflight, :status))
+
+  defp host_service_probe_enabled?(probe) when is_map(probe) do
+    truthy?(value(probe, :host_service_probe)) or optional_string(probe, :source) == "host_service_probe" or
+      optional_string(probe, :mode) == "host_service"
+  end
+
+  defp host_service_probe_enabled?(_probe), do: false
+
+  defp skeleton_executor?(executor) when is_map(executor) do
+    safe_status(value(executor, :mode)) == "skeleton" or value(executor, :provider_io) == false
+  end
+
+  defp skeleton_executor?(_executor), do: false
+
+  defp skeleton_worker_starter?(starter) when is_map(starter) do
+    safe_status(value(starter, :mode)) == "skeleton" or value(starter, :worker_start) == false
+  end
+
+  defp skeleton_worker_starter?(_starter), do: false
+
+  defp recent_provider_failure_count(project) do
+    project
+    |> value(:provider_queue)
+    |> list_value(:recent_results)
+    |> Enum.count(&provider_failure_result?/1)
+  end
+
+  defp conflict_count(project), do: length(list_value(project, :conflicts))
+
+  defp readiness_decision_count(project_decisions, decision) do
+    Enum.count(project_decisions, &(&1.decision == decision))
+  end
+
+  defp reason_project_count(project_decisions, reason_code) do
+    Enum.count(project_decisions, fn project ->
+      Enum.any?(project.blocking_reasons ++ project.advisory_reasons, &(&1.code == reason_code))
+    end)
+  end
+
+  defp provider_risk_project_count(project_decisions) do
+    Enum.count(project_decisions, fn project ->
+      Enum.any?(project.blocking_reasons, &(&1.code in @provider_risk_codes))
+    end)
+  end
+
+  defp normalize_readiness_decision(value) do
+    case safe_status(value) do
+      "ready_for_dry_run" -> "ready_for_dry_run"
+      "ready_for_hub_management" -> "ready_for_hub_management"
+      "already_hub_managed" -> "already_hub_managed"
+      "legacy_only" -> "legacy_only"
+      "blocked" -> "blocked"
+      "unknown_manual_attention" -> "unknown_manual_attention"
+      "manual_attention" -> "unknown_manual_attention"
+      _other -> "unknown_manual_attention"
+    end
+  end
 
   defp scheduler_overview_snapshot(scheduler) when is_map(scheduler) do
     %{

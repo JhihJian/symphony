@@ -1453,6 +1453,48 @@ Runtime entrypoint:
   candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
   and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
   MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
+- `hub_device_observability` SHOULD also expose a read-only `migration_readiness` summary when Hub
+  mode is explicitly enabled. The device-level readiness summary SHOULD include Hub runtime
+  enabled/mode/read-only state, scheduler enabled/status, provider executor mode, writeback executor
+  mode, worker starter mode, activation probe mode, migration-state counts, readiness-decision
+  counts, global blocking risks, and global advisory risks.
+- Each project in the readiness summary SHOULD include a stable serialized decision. Recognized
+  decisions SHOULD include `legacy_only`, `ready_for_dry_run`, `ready_for_hub_management`,
+  `blocked`, `unknown_manual_attention`, and `already_hub_managed`. Decisions MUST be derived from
+  existing safe summaries such as registry migration state, activation preflight, host/service
+  probe result, poll eligibility, provider governance, dispatch/start/lifecycle summaries, and
+  writeback summaries. Implementations MUST NOT re-read tokens, raw provider payloads, raw env, or
+  raw config to build the readiness decision.
+- Project readiness SHOULD include `blocking_reasons`, `advisory_reasons`,
+  `required_operator_actions`, and `evidence`. Blocking reasons SHOULD cover legacy service
+  active/enabled, provider scope owner conflict, workspace/runtime/log/state/port owner conflict,
+  probe missing or unknown, config/auth failure, provider backoff/rate limit/circuit/unavailable,
+  writeback unknown or manual attention, active attempt, unresolved start/lifecycle state,
+  workspace lease/retained workspace, and capacity/workspace conflicts. Advisory reasons SHOULD
+  cover skeleton executor modes, disabled scheduler for dry-run, paused projects, read-only runtime,
+  and recent retryable provider failure when those conditions do not by themselves invalidate a
+  read-only dry-run.
+- Required operator actions SHOULD use short stable codes such as
+  `stop_disable_legacy_service`, `fix_project_config`, `enable_host_service_probe`,
+  `wait_provider_backoff`, `resolve_writeback_manual_attention`, `wait_or_reconcile_lifecycle`,
+  `release_workspace_or_capacity`, `enable_hub_scheduler_before_management`,
+  `confirm_hub_executor_modes`, `run_read_only_dry_run`, and
+  `mark_hub_managed_after_checks`.
+- Readiness evidence MUST reference only safe summary fields, sources, checked times,
+  request/result identifiers, counts, config fingerprints, snapshot versions, or equivalent
+  redacted facts. Evidence MUST NOT include token values, authorization/cookie headers, secret env,
+  raw env/raw config, raw provider bodies/responses, raw systemd output, hook/app-server raw output,
+  full prompt/transcript, full issue/comment/PR/provider body, exception stack traces, or unnecessary
+  private absolute paths.
+- A single project's readiness build failure, missing field, incompatible summary version, or
+  malformed snapshot MUST degrade only that project to `unknown_manual_attention` or `summary_error`.
+  It MUST NOT crash the Hub runtime, Dashboard/API response, or readiness decisions for other
+  projects.
+- `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
+  `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
+  `ready_for_hub_management` decision is evidence for an operator to consider changing registry
+  state, not an automatic change. `hub_managed` MUST still rely on activation preflight and related
+  safe summaries before Hub-owned real actions run.
 - If a single project summary is missing fields, carries an incompatible version, or fails to build,
   Hub observability MUST degrade only that project to `manual_attention`/`summary_error` and MUST
   keep the overall Dashboard/API response available for other projects.
@@ -1463,6 +1505,10 @@ Runtime entrypoint:
   hashes and byte counts even when no credential-like value is present.
 - Hub runtime and Dashboard output MUST NOT expose raw env/raw config, raw provider responses, raw
   systemd output, hook/app-server raw output, or exception stack traces.
+- The readiness report and dry-run runbook MUST NOT implement one-click migration, an interactive
+  migration wizard, automatic stop/disable/restart/delete of `symphony@project.service`, automatic
+  edits to `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider
+  state, or new provider writeback behavior beyond the explicitly supported Hub writeback subset.
 - Hub runtime output SHOULD expose real writeback executor observability when present: executor
   mode, supported and rejected operation kinds, pending/succeeded/failed/unknown/manual-attention
   counts, per-project writeback pressure, and recent safe error categories. These summaries MUST
