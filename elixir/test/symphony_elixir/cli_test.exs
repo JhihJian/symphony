@@ -425,6 +425,65 @@ defmodule SymphonyElixir.CLITest do
     refute_received {:legacy_hub_cutover_operation_request_loaded, _path}
   end
 
+  test "accepts explicit hub cutover audit history and closeout files only for hub mode" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    history_path = "tmp/hub/cutover_history.yaml"
+    closeout_path = "tmp/hub/manual_attention_closeout.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+    expanded_history_path = Path.expand(history_path)
+    expanded_closeout_path = Path.expand(closeout_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path in [expanded_hub_config_path, expanded_history_path, expanded_closeout_path] end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end,
+        load_hub_cutover_audit_history: fn path ->
+          send(parent, {:hub_cutover_audit_history_loaded, path})
+          :ok
+        end,
+        load_hub_manual_attention_closeout: fn path ->
+          send(parent, {:hub_manual_attention_closeout_loaded, path})
+          :ok
+        end
+      })
+
+    assert :ok =
+             CLI.evaluate(
+               [
+                 @ack_flag,
+                 "--hub-config",
+                 hub_config_path,
+                 "--hub-cutover-audit-history",
+                 history_path,
+                 "--hub-manual-attention-closeout",
+                 closeout_path
+               ],
+               deps
+             )
+
+    assert_received {:hub_cutover_audit_history_loaded, ^expanded_history_path}
+    assert_received {:hub_manual_attention_closeout_loaded, ^expanded_closeout_path}
+
+    legacy_deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        load_hub_cutover_audit_history: fn path ->
+          send(parent, {:legacy_hub_cutover_audit_history_loaded, path})
+          :ok
+        end,
+        load_hub_manual_attention_closeout: fn path ->
+          send(parent, {:legacy_hub_manual_attention_closeout_loaded, path})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], legacy_deps)
+    refute_received {:legacy_hub_cutover_audit_history_loaded, _path}
+    refute_received {:legacy_hub_manual_attention_closeout_loaded, _path}
+  end
+
   test "rejects missing hub activation acknowledgement file" do
     hub_config_path = "tmp/hub/HUB.yaml"
     ack_path = "tmp/hub/missing-ack.yaml"
@@ -570,6 +629,8 @@ defmodule SymphonyElixir.CLITest do
         set_hub_activation_probe: fn _opts -> :ok end,
         load_hub_activation_ack: fn _path -> :ok end,
         load_hub_cutover_operation_request: fn _path -> :ok end,
+        load_hub_cutover_audit_history: fn _path -> :ok end,
+        load_hub_manual_attention_closeout: fn _path -> :ok end,
         set_hub_scheduler_enabled: fn _enabled? -> :ok end,
         validate_hub_config: fn _path -> :ok end,
         set_hub_worker_starter: fn _starter -> :ok end,

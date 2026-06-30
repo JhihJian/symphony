@@ -531,6 +531,19 @@ systemd, write provider state, or edit Hub/project config. Malformed requests, u
 unknown operations, unsupported sources, and stale plan/gate/staged-record/project evidence are
 blocked or require manual attention. Projects without an explicit request show `no_request` so the
 Dashboard/API does not imply that migration work is queued or running.
+`hub_cutover_audit_history` and
+`hub_device_observability.cutover_audit_history` build the audit-history and manual attention
+closeout baseline on top of that dry-run result. The summary is bounded and safe for Dashboard/API:
+it records recent request fingerprints, evaluated operations, dry-run decisions, reason/action
+codes, safe evidence fingerprints, unresolved manual attention, and closeout counts. Optional
+serialized inputs can be loaded with `--hub-cutover-audit-history /path/to/history.yaml` and
+`--hub-manual-attention-closeout /path/to/closeout.yaml`; tests/internal callers can inject the same
+values into `SymphonyElixir.Hub.Runtime.build_snapshot/4`. Closeouts bind to project, request,
+activation plan, cutover gate, operation, reason/action code, and safe evidence fingerprint. If any
+of those inputs changes, the closeout is shown as stale or conflicting rather than clearing current
+manual attention. Closeouts only annotate the audit summary: they do not override the cutover gate,
+call providers, start workers, write runtime-ledger facts, operate systemd, write provider state, or
+edit Hub/project config.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -560,11 +573,12 @@ Use readiness for migration preparation only; it does not execute a migration.
 3. Inspect `/api/v1/state`, especially `hub_activation_preflight`,
    `hub_device_observability.overview`, and
    `hub_device_observability.migration_readiness` /
-  `hub_device_observability.activation_plan`, `hub_cutover_gate`,
-  `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`, and
-  `hub_device_observability.cutover_operation_audit`. The Dashboard shows the same readiness, plan,
-  ack, gate status, dry-run audit status, leading reasons, allowed/blocked operations, request
-  counts, and action codes when Hub summary fields exist.
+   `hub_device_observability.activation_plan`, `hub_cutover_gate`,
+   `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`,
+   `hub_device_observability.cutover_operation_audit`, `hub_cutover_audit_history`, and
+   `hub_device_observability.cutover_audit_history`. The Dashboard shows the same readiness, plan,
+   ack, gate status, dry-run audit status, audit-history/closeout counts, leading reasons,
+   allowed/blocked operations, request counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -584,6 +598,12 @@ Use readiness for migration preparation only; it does not execute a migration.
    operations, current plan/gate/staged-record evidence, source, requested timestamp, and safe
    project snapshot. The resulting audit is read-only and reports what the current gate would do; it
    is not a queue, migration command, provider write, worker start, or legacy service takeover.
+8. Optionally pass `--hub-cutover-audit-history /path/to/history.yaml` and
+   `--hub-manual-attention-closeout /path/to/closeout.yaml` to display recovered audit history and
+   operator closeout status. Closeouts must bind project, request fingerprint, activation/gate and
+   evidence fingerprints, operation, reason code, and required action code. They record operator
+   handling only; stale, conflicting, malformed, or unsupported closeouts do not clear unresolved
+   manual attention and never bypass the cutover gate.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does
