@@ -515,6 +515,22 @@ continue; it is not persisted as a migration transaction and does not edit Hub o
 systemd units, provider state, or legacy services. Real candidate scan, dispatch plan application,
 real worker handoff, and real writeback executors consume this gate before provider I/O, ledger
 pending-start mutation, worker start, or writeback side effects; a block is scoped to that project.
+`hub_cutover_operation_audit` and
+`hub_device_observability.cutover_operation_audit` are the operator-facing dry-run request boundary
+after the activation plan and cutover gate. The CLI can load a serialized request with
+`--hub-cutover-operation-request /path/to/request.yaml`, and tests/internal callers can inject the
+same contract into `SymphonyElixir.Hub.Runtime.build_snapshot/4`. A request binds `project_id`,
+safe provider scope, requested operations (`poll`, `dispatch`, `worker_start`, `writeback`),
+activation plan id/fingerprint, cutover gate decision/staged ownership evidence, request source,
+requested time, request fingerprint, safe project snapshot, and a safe operator intent summary
+limited to action/risk codes or a note digest. The audit evaluates only the current safe snapshots
+and returns per-operation `would_allow`, `would_block`, `manual_attention`, or `unsupported`
+decisions with reason/action codes, safe evidence, and `dry_run_only: true`. It does not call
+providers, start workers, write runtime ledger pending-start/attempt/writeback facts, operate
+systemd, write provider state, or edit Hub/project config. Malformed requests, unknown projects,
+unknown operations, unsupported sources, and stale plan/gate/staged-record/project evidence are
+blocked or require manual attention. Projects without an explicit request show `no_request` so the
+Dashboard/API does not imply that migration work is queued or running.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -544,10 +560,11 @@ Use readiness for migration preparation only; it does not execute a migration.
 3. Inspect `/api/v1/state`, especially `hub_activation_preflight`,
    `hub_device_observability.overview`, and
    `hub_device_observability.migration_readiness` /
-   `hub_device_observability.activation_plan`, `hub_cutover_gate`, and
-   `hub_device_observability.cutover_gate`. The Dashboard shows the same readiness, plan, ack,
-   gate status, leading reasons, allowed/blocked operations, and action codes when Hub summary
-   fields exist.
+  `hub_device_observability.activation_plan`, `hub_cutover_gate`,
+  `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`, and
+  `hub_device_observability.cutover_operation_audit`. The Dashboard shows the same readiness, plan,
+  ack, gate status, dry-run audit status, leading reasons, allowed/blocked operations, request
+  counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -562,6 +579,11 @@ Use readiness for migration preparation only; it does not execute a migration.
    acknowledgement. The file should contain acknowledgement entries with `project_id`, `plan_id`,
    `source`, `created_at`, and confirmed action/risk codes. This only changes the safe ack summary;
    it does not execute migration work.
+7. Optionally pass `--hub-cutover-operation-request /path/to/request.yaml` to load a serialized
+   request for a pre-migration dry-run audit. The file should bind the target project, requested
+   operations, current plan/gate/staged-record evidence, source, requested timestamp, and safe
+   project snapshot. The resulting audit is read-only and reports what the current gate would do; it
+   is not a queue, migration command, provider write, worker start, or legacy service takeover.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

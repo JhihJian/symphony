@@ -224,6 +224,21 @@ legacy ownership conflicts, executor/starter mode mismatches, and non-`hub_manag
 block only the affected project's Hub-owned real actions. A staged ownership record is audit
 evidence for the current inputs only; it is not a database migration transaction and does not modify
 legacy services, project config, systemd units, provider state, or `HUB.yaml`.
+`hub_cutover_operation_audit` / `hub_device_observability.cutover_operation_audit` adds the
+operator-facing dry-run request boundary after the activation plan and cutover gate. A request can be
+loaded with `--hub-cutover-operation-request /path/to/request.yaml` or injected by tests/internal
+callers. It binds `project_id`, safe provider scope, requested operations (`poll`, `dispatch`,
+`worker_start`, `writeback`), current activation plan id/fingerprint, cutover gate decision/staged
+record evidence, source, requested time, request fingerprint, safe project snapshot, and only
+action/risk codes or a note digest for operator intent. The evaluator returns `would_allow`,
+`would_block`, `manual_attention`, or `unsupported` per requested operation, plus reason/action
+codes and safe evidence. It is always `dry_run_only`: it does not call providers, start workers,
+write runtime ledger pending/attempt/writeback facts, operate systemd, write provider state, or edit
+`HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, or project config. Malformed requests, unknown projects,
+unknown operations, unsupported sources, and stale plan/gate/staged-record/project evidence are
+blocked or require manual attention instead of being treated as current intent. Projects without an
+explicit request report `no_request`, so Dashboard/API output does not imply a migration is queued or
+running.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -244,7 +259,8 @@ For a local activation dry run, use
 and inspect `hub_activation_preflight`,
 `hub_device_observability.migration_readiness`,
 `hub_device_observability.activation_plan`, `hub_cutover_gate`,
-`hub_device_observability.cutover_gate`, and the Dashboard Hub sections in `/api/v1/state`.
+`hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`,
+`hub_device_observability.cutover_operation_audit`, and the Dashboard Hub sections in `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.

@@ -219,6 +219,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   records <%= hub_cutover_count(@payload, :staged_ownership_record_count) %> · ops <%= hub_cutover_allowed_ops(@payload) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Cutover Audit</p>
+                <p class="metric-value"><%= hub_cutover_audit_status(@payload) %></p>
+                <p class="metric-detail">
+                  requests <%= hub_cutover_audit_count(@payload, :request_count) %> · ready <%= hub_cutover_audit_count(@payload, :dry_run_ready_count) %> · blocked <%= hub_cutover_audit_count(@payload, :blocked_count) %> · manual <%= hub_cutover_audit_count(@payload, :manual_attention_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  none <%= hub_cutover_audit_count(@payload, :no_request_count) %> · unsupported <%= hub_cutover_audit_count(@payload, :unsupported_count) %> · dry-run only
+                </p>
+              </article>
             </div>
           </section>
 
@@ -266,6 +277,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class={hub_cutover_badge_class(project.cutover_gate && project.cutover_gate.decision)}>
                           gate <%= hub_cutover_project_status(project.cutover_gate) %>
                         </span>
+                        <span class={hub_cutover_audit_badge_class(project.cutover_operation_audit && project.cutover_operation_audit.status)}>
+                          audit <%= hub_cutover_audit_project_status(project.cutover_operation_audit) %>
+                        </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
                       </div>
@@ -302,6 +316,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={action <- hub_required_actions(project)} class="muted event-meta">
                           action <%= action.code %>
+                        </span>
+                        <span :if={project.cutover_operation_audit && project.cutover_operation_audit.request} class="muted event-meta mono">
+                          request <%= hub_short_request_id(project.cutover_operation_audit.request) %>
+                        </span>
+                        <span :for={reason <- hub_cutover_audit_reasons(project)} class="muted event-meta">
+                          audit <%= reason %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -764,6 +784,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_audit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_operation_audit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_audit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_operation_audit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -817,6 +855,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_badge_class("manual_attention"), do: "state-badge state-badge-danger"
   defp hub_cutover_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_audit_badge_class("dry_run_ready"), do: "state-badge state-badge-active"
+  defp hub_cutover_audit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_audit_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -828,6 +874,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_cutover_project_status(_gate), do: "unknown"
+
+  defp hub_cutover_audit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_audit_project_status(_audit), do: "no_request"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -863,6 +912,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_count(_counts, _key), do: 0
+
+  defp hub_short_request_id(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    String.slice(request_id, 0, 12)
+  end
+
+  defp hub_short_request_id(%{request_fingerprint: fingerprint}) when is_binary(fingerprint) and fingerprint != "" do
+    String.slice(fingerprint, 0, 12)
+  end
+
+  defp hub_short_request_id(_request), do: "unknown"
+
+  defp hub_cutover_audit_reasons(%{cutover_operation_audit: %{reason_codes: reasons}}) when is_list(reasons) do
+    Enum.take(reasons, 3)
+  end
+
+  defp hub_cutover_audit_reasons(_project), do: []
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

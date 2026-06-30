@@ -28,6 +28,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.ActivationPreflight,
           SymphonyElixir.Hub.CandidateIntake,
           SymphonyElixir.Hub.CutoverGate,
+          SymphonyElixir.Hub.CutoverOperationAudit,
           SymphonyElixir.Hub.DispatchBoundary,
           SymphonyElixir.Hub.DispatchPlanApplication,
           SymphonyElixir.Hub.DispatchPlanning,

@@ -44,6 +44,17 @@ provider/writeback executor、worker starter、scheduler 和项目快照合成 `
 模式匹配时，真实 candidate scan、dispatch pending start intent、real worker starter 和 real writeback
 才会继续。允许时生成的 staged ownership record 只是本轮输入的只读审计摘要；证据或模式变化后不能静默复用，
 也不会自动修改 `HUB.yaml`、`WORKFLOW.md`、`TRACKER.yaml`、systemd unit、provider 状态或 legacy service。
+cutover gate 之后，Hub 还会暴露只读的 cutover operation request / dry-run audit 摘要：
+`hub_cutover_operation_audit` 和 `hub_device_observability.cutover_operation_audit`。operator 可以通过
+显式 Hub 启动参数 `--hub-cutover-operation-request /path/to/request.yaml` 提交“请评估这个 project
+的这些 Hub-owned operation”的序列化请求。request 必须绑定 project、安全 provider scope、operation
+set、activation plan id/fingerprint、cutover gate/staged record 证据、source、requested_at、request
+fingerprint 和安全 project snapshot；operator intent 只保留 action/risk code 或 note digest。audit
+只返回每个 operation 的 `would_allow`、`would_block`、`manual_attention` 或 `unsupported`、原因/action
+code、脱敏证据和 `dry_run_only`。它不会访问 provider、启动 worker、写 runtime ledger pending/attempt/
+writeback fact、写 provider、操作 systemd 或修改 `HUB.yaml` / `WORKFLOW.md` / `TRACKER.yaml` / 项目配置。
+没有显式 request 时，Dashboard/API 只显示 `no_request` 计数，不会把 gate allowed 误表示为迁移已排队
+或正在执行。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -80,7 +91,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   readiness: .hub_device_observability.migration_readiness,
   activation_plan: .hub_device_observability.activation_plan,
   cutover_gate: .hub_cutover_gate,
-  device_cutover_gate: .hub_device_observability.cutover_gate
+  device_cutover_gate: .hub_device_observability.cutover_gate,
+  cutover_operation_audit: .hub_cutover_operation_audit,
+  device_cutover_operation_audit: .hub_device_observability.cutover_operation_audit
 }'
 ```
 
