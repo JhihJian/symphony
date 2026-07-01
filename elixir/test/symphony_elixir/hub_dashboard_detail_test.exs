@@ -59,6 +59,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "Cutover Audit"
     assert html =~ "Execution Permit"
     assert html =~ "Execution Authorization"
+    assert html =~ "Replay Decision"
     assert html =~ "scheduler scheduled"
     assert html =~ "runtime_reconciliation"
     assert html =~ "provider_failure"
@@ -72,6 +73,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "audit no_request"
     assert html =~ "permit no_request"
     assert html =~ "auth no_ready_permit"
+    assert html =~ "replay blocked_unresolved_outcome"
+    assert html =~ "replay reason matching_closeout_missing"
     assert html =~ "ack resolve_writeback_manual_attention"
     assert html =~ "action resolve_writeback_manual_attention"
     assert html =~ "writeback pending"
@@ -127,6 +130,11 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["cutover_execution_authorization_ledger"]["counts"]["record_count"] == 0
     assert hub["cutover_authorization_consumption_guard"]["status"] == "no_consumption"
     assert hub["cutover_authorization_consumption_guard"]["counts"]["consumption_count"] == 0
+    assert hub["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
+    assert hub["cutover_replay_decision"]["counts"]["unresolved_outcome_blocked_count"] == 1
+    assert hub["overview"]["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
+    assert hub["overview"]["cutover_replay_decision"]["unresolved_outcome_blocked_count"] == 1
+    assert hub["overview"]["cutover_replay_decision"]["no_unresolved_outcome_count"] == 1
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
@@ -137,7 +145,10 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["alpha"]["cutover_execution_authorization_ledger"]["status"] == "no_ready_permit"
     assert projects["alpha"]["cutover_execution_authorization_ledger"]["records"] == []
     assert projects["alpha"]["cutover_authorization_consumption_guard"] == nil
+    assert projects["alpha"]["cutover_replay_decision"]["status"] == "no_unresolved_outcome"
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
+    assert projects["gamma"]["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
+    assert projects["gamma"]["detail"]["replay_decision"]["blocked_replay"] != []
     assert projects["gamma"]["migration_readiness"]["decision"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["status"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["operator_acknowledgement"]["status"] == "missing"
@@ -186,7 +197,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
               next_reason: "runtime_reconciliation"
             },
             candidate_intake: candidate_intake(),
-            provider_queue: provider_queue()
+            provider_queue: provider_queue(),
+            cutover_replay_decision: replay_decision_summary()
           },
           now: ~U[2026-06-28 09:00:00Z]
         )
@@ -358,6 +370,55 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
           manual_attention: [%{code: "writeback_unknown_manual_attention"}]
         }
       ]
+    }
+  end
+
+  defp replay_decision_summary do
+    %{
+      version: 1,
+      generated_at: "2026-06-28T09:00:00Z",
+      recent_decisions: [
+        %{
+          project_id: "alpha",
+          provider_scope: %{kind: "github", key: "github:o/r", provider_scope_key: "github:o/r", scope: %{owner: "o", repo: "r"}},
+          operation: "poll",
+          side_effect_source: "candidate_scan",
+          replay_key: "alpha-poll-replay",
+          decision: "no_unresolved_outcome",
+          allowed: true,
+          reason_code: "no_matching_unresolved_outcome",
+          evaluated_at: "2026-06-28T09:00:00Z",
+          no_side_effects: true,
+          auto_replay_allowed: false
+        },
+        %{
+          project_id: "gamma",
+          provider_scope: %{kind: "github", key: "github:o/r", provider_scope_key: "github:o/r", scope: %{owner: "o", repo: "r"}},
+          operation: "writeback",
+          side_effect_source: "writeback_executor",
+          replay_key: "gamma-writeback-replay",
+          outcome_replay_key: "gamma-writeback-replay",
+          outcome_fingerprint: "gamma-outcome-fp",
+          outcome_status: "unknown",
+          decision: "blocked_unresolved_outcome",
+          allowed: false,
+          reason_code: "matching_closeout_missing",
+          action_code: "record_execution_outcome_closeout",
+          authorization_record_fingerprint: "gamma-auth-record-fp",
+          readiness_permit_fingerprint: "gamma-permit-fp",
+          consumption_guard_fingerprint: "gamma-consumption-fp",
+          safe_evidence_fingerprints: %{
+            authorization_record: "gamma-auth-record-fp",
+            readiness_permit: "gamma-permit-fp",
+            consumption_guard: "gamma-consumption-fp"
+          },
+          evaluated_at: "2026-06-28T09:00:00Z",
+          no_side_effects: true,
+          auto_replay_allowed: false
+        }
+      ],
+      no_side_effects: true,
+      auto_replay_allowed: false
     }
   end
 end

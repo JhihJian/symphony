@@ -100,7 +100,7 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
       |> List.wrap()
       |> Kernel.++(events_from_sources(sources))
       |> Enum.map(&decision_snapshot/1)
-      |> Enum.reject(&blank?(value(&1, :project_id)))
+      |> Enum.reject(&drop_summary_event?/1)
       |> Enum.sort_by(&event_sort_key/1)
 
     %{
@@ -415,6 +415,7 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
       authorization_request: get_in_value(record, [:authorization_request, :authorization_request_fingerprint]),
       cutover_operation_request: get_in_value(record, [:cutover_operation_request, :request_fingerprint]),
       readiness_permit: get_in_value(record, [:readiness_permit, :permit_fingerprint]),
+      readiness_permit_decision: get_in_value(record, [:readiness_permit, :decision]),
       activation_plan: get_in_value(record, [:activation_plan, :fingerprint]),
       operator_acknowledgement: get_in_value(record, [:operator_acknowledgement, :fingerprint]),
       cutover_gate: get_in_value(record, [:cutover_gate, :fingerprint]),
@@ -492,6 +493,7 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
 
   defp project_summaries(events) do
     events
+    |> Enum.reject(&(optional_string(&1, :project_id) |> blank?()))
     |> Enum.group_by(& &1.project_id)
     |> Enum.map(fn {project_id, decisions} ->
       %{
@@ -713,6 +715,10 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
     }
   end
 
+  defp drop_summary_event?(event) do
+    blank?(value(event, :project_id)) and normalize_decision(value(event, :decision)) != "malformed"
+  end
+
   defp action_for_decision("allowed"), do: nil
   defp action_for_decision("no_authorization"), do: "submit_execution_authorization_request"
   defp action_for_decision("stale"), do: "refresh_execution_authorization_request"
@@ -853,6 +859,9 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
 
   defp optional_string(map, key) do
     case value(map, key) do
+      nil ->
+        nil
+
       value when is_binary(value) ->
         value = String.trim(value)
         if value == "", do: nil, else: value

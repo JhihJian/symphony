@@ -251,6 +251,21 @@ evidence fingerprints change, old closeouts show stale/conflict instead of being
 The API/Dashboard expose counts for history entries, unresolved manual attention, closed, stale,
 conflict, malformed, unsupported, and summary errors without full prompts, provider bodies, raw
 systemd output, secret env, or local private paths.
+`hub_cutover_replay_decision` / `hub_device_observability.cutover_replay_decision` adds the
+closeout-aware pre-side-effect replay decision baseline after the execution outcome ledger and
+outcome closeout read model. For unresolved `unknown` or `manual_attention` outcomes it binds the
+project/provider scope, operation/source, replay key, outcome fingerprint/status, side-effect
+entered/may-have-happened semantics, matching closeout fingerprint/resolution/operator request,
+current cutover request, readiness permit, execution authorization record, authorization
+consumption guard, and safe evidence fingerprints into a serializable decision such as
+`no_unresolved_outcome`, `blocked_unresolved_outcome`, `retry_consideration_allowed`,
+`retry_consideration_denied`, `stale_closeout`, `conflict`, `manual_attention`, `malformed`, or
+`unsupported`. A closeout with `allow_explicit_retry_consideration` only lets the next explicit
+execution continue past the old unresolved-outcome replay block after the current consumption guard
+is already allowed and all bound evidence still matches. It does not create authorization, consume
+authorization, call providers, mutate dispatch/runtime ledgers, start workers, write back, operate
+systemd, edit configuration, or take over legacy services; existing provider/runtime/writeback
+guardrails still decide whether the explicit action may proceed.
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

@@ -296,6 +296,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   retry consideration <%= hub_cutover_outcome_closeout_count(@payload, :allow_explicit_retry_consideration_count) %> · manual <%= hub_cutover_outcome_closeout_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_outcome_closeout_count(@payload, :malformed_count) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Replay Decision</p>
+                <p class="metric-value"><%= hub_cutover_replay_decision_status(@payload) %></p>
+                <p class="metric-detail">
+                  blocked <%= hub_cutover_replay_decision_count(@payload, :unresolved_outcome_blocked_count) %> · retry allowed <%= hub_cutover_replay_decision_count(@payload, :retry_consideration_allowed_count) %> · denied <%= hub_cutover_replay_decision_count(@payload, :retry_consideration_denied_count) %> · no unresolved <%= hub_cutover_replay_decision_count(@payload, :no_unresolved_outcome_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_replay_decision_count(@payload, :stale_closeout_count) %> · conflict <%= hub_cutover_replay_decision_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_decision_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_replay_decision_count(@payload, :malformed_count) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -363,6 +374,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_outcome_closeout_badge_class(project.cutover_execution_outcome_closeout && project.cutover_execution_outcome_closeout.status)}>
                           closeout <%= hub_cutover_outcome_closeout_project_status(project.cutover_execution_outcome_closeout) %>
+                        </span>
+                        <span class={hub_cutover_replay_decision_badge_class(project.cutover_replay_decision && project.cutover_replay_decision.status)}>
+                          replay <%= hub_cutover_replay_decision_project_status(project.cutover_replay_decision) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -442,6 +456,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={closeout <- hub_cutover_project_outcome_closeouts(project)} class="muted event-meta">
                           closeout <%= closeout.side_effect_source %> <%= closeout.status %> / <%= closeout.resolution_code %>
+                        </span>
+                        <span :if={project.cutover_replay_decision} class="muted event-meta">
+                          replay blocked <%= hub_cutover_replay_decision_project_count(project, :unresolved_outcome_blocked_count) %> · retry allowed <%= hub_cutover_replay_decision_project_count(project, :retry_consideration_allowed_count) %> · stale <%= hub_cutover_replay_decision_project_count(project, :stale_closeout_count) %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_blocked_replay(project)} class="muted event-meta">
+                          replay <%= blocked.side_effect_source %> <%= blocked.decision %> / <%= blocked.reason_code %>
+                        </span>
+                        <span :for={reason <- hub_cutover_project_replay_reason_codes(project)} class="muted event-meta">
+                          replay reason <%= reason %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -1030,6 +1053,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_replay_decision_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_decision, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_replay_decision"
+    end
+  end
+
+  defp hub_cutover_replay_decision_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_decision, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1155,6 +1196,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_outcome_closeout_badge_class("unsupported"), do: "state-badge state-badge-danger"
   defp hub_cutover_outcome_closeout_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_replay_decision_badge_class("no_replay_decision"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_decision_badge_class("no_unresolved_outcome"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_decision_badge_class("retry_consideration_allowed"), do: "state-badge state-badge-active"
+  defp hub_cutover_replay_decision_badge_class("retry_consideration_denied"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_decision_badge_class("stale_closeout"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_decision_badge_class("blocked_unresolved_outcome"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -1187,6 +1240,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_outcome_closeout_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_outcome_closeout_project_status(_closeout), do: "no_outcome"
+
+  defp hub_cutover_replay_decision_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_replay_decision_project_status(_decision), do: "no_replay_decision"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1333,6 +1389,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_cutover_project_outcome_closeouts(_project), do: []
+
+  defp hub_cutover_replay_decision_project_count(%{cutover_replay_decision: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_replay_decision_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_blocked_replay(%{cutover_replay_decision: %{blocked_replay: blocked_replay}})
+       when is_list(blocked_replay) do
+    Enum.take(blocked_replay, 3)
+  end
+
+  defp hub_cutover_project_blocked_replay(_project), do: []
+
+  defp hub_cutover_project_replay_reason_codes(%{cutover_replay_decision: %{recent_reason_codes: reason_codes}})
+       when is_list(reason_codes) do
+    Enum.take(reason_codes, 3)
+  end
+
+  defp hub_cutover_project_replay_reason_codes(_project), do: []
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

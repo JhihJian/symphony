@@ -3,6 +3,7 @@ defmodule SymphonyElixir.HubStartHandoffTest do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
     DispatchBoundary,
     IssueRef,
@@ -257,7 +258,67 @@ defmodule SymphonyElixir.HubStartHandoffTest do
 
     assert same_ledger == ledger
     assert handoff.counts.skipped_count == 1
-    assert [%{status: "skipped", reason: "execution_outcome_replay_blocked", execution_outcome: %{status: "unknown"}}] = handoff.results
+
+    assert [
+             %{
+               status: "skipped",
+               reason: "execution_outcome_replay_blocked",
+               replay_decision: %{decision: "blocked_unresolved_outcome"},
+               execution_outcome: %{status: "unknown"}
+             }
+           ] = handoff.results
+  end
+
+  test "matching retry-consideration closeout reaches worker start guardrail without automatic replay" do
+    parent = self()
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    starter = fn _request, _opts ->
+      send(parent, :starter_called)
+      %{status: "unknown", reason: "lost_ack", error_summary: "ack result lost"}
+    end
+
+    assert {unknown_ledger, first_handoff} =
+             WorkerStartHandoff.run(registry(), ledger,
+               now: @now,
+               starter: starter,
+               authorization_consumption_guard: %{authorization_ledger: authorization_ledger()}
+             )
+
+    assert_receive :starter_called
+    assert [%{execution_outcome: first_outcome}] = first_handoff.results
+
+    unresolved =
+      first_outcome
+      |> Map.put(:status, "unknown")
+      |> Map.put(:reason_code, "worker_start_ack_lost")
+      |> CutoverExecutionOutcomeLedger.fact_snapshot()
+
+    outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]}, now: @now)
+    closeout = closeout_summary(outcome_ledger, unresolved, "allow_explicit_retry_consideration")
+
+    retry_starter = fn _request, _opts ->
+      flunk("starter must not be called while the runtime ledger start intent is still unresolved")
+    end
+
+    assert {same_ledger, retry_handoff} =
+             WorkerStartHandoff.run(registry(), unknown_ledger,
+               now: DateTime.add(@now, 60, :second),
+               starter: retry_starter,
+               authorization_consumption_guard: %{authorization_ledger: authorization_ledger()},
+               cutover_execution_outcome_ledger: outcome_ledger,
+               cutover_execution_outcome_closeout: closeout
+             )
+
+    assert same_ledger == unknown_ledger
+
+    assert [
+             %{
+               status: "skipped",
+               reason: "start_intent_unresolved",
+               replay_decision: %{decision: "retry_consideration_allowed", auto_replay_allowed: false}
+             }
+           ] = retry_handoff.results
   end
 
   test "real worker starter opt-in launches through injectable runner and returns safe ack" do
@@ -750,6 +811,73 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     }
 
     Map.merge(base, overrides)
+  end
+
+  defp authorization_ledger do
+    %{
+      projects: [
+        %{
+          project_id: "alpha",
+          authorization_request_count: 1,
+          records: [
+            %{
+              project_id: "alpha",
+              operation: "worker_start",
+              status: "authorized_for_explicit_execution",
+              provider_scope: %{kind: "github", key: "github:jhihjian/symphony", provider_scope_key: "github:jhihjian/symphony", scope: %{owner: "jhihjian", repo: "symphony"}},
+              authorization_record_fingerprint: "record-alpha-worker-start",
+              authorization_request: %{authorization_request_fingerprint: "auth-alpha-worker-start"},
+              cutover_operation_request: %{request_fingerprint: "request-alpha-worker-start"},
+              readiness_permit: %{permit_fingerprint: "permit-alpha-worker-start", decision: "ready_for_execution_consideration"},
+              cutover_gate: %{fingerprint: "gate-alpha-worker-start"},
+              evidence_fingerprints: %{
+                dry_run_audit: "audit-alpha-worker-start",
+                audit_history: "history-alpha-worker-start"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  end
+
+  defp closeout_summary(ledger, outcome, resolution_code) do
+    CutoverExecutionOutcomeCloseout.build(
+      %{
+        cutover_execution_outcome_ledger: ledger,
+        execution_outcome_closeouts: [closeout_from_outcome(outcome, resolution_code)]
+      },
+      now: @now
+    )
+  end
+
+  defp closeout_from_outcome(outcome, resolution_code) do
+    %{
+      project_id: outcome.project_id,
+      provider_scope: outcome.provider_scope,
+      operation: outcome.operation,
+      side_effect_source: outcome.side_effect_source,
+      replay_key: outcome.replay_key,
+      outcome_fingerprint: outcome.evidence_fingerprint,
+      outcome_status: outcome.status,
+      side_effect_entered: outcome.side_effect_entered,
+      side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+      cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+      authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+      authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+      readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+      readiness_permit_decision: outcome.readiness_permit_decision,
+      cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+      dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+      audit_history_fingerprint: outcome.audit_history_fingerprint,
+      consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+      resolution_code: resolution_code,
+      reason_code: "operator_checked_external_state",
+      action_code: "record_manual_resolution",
+      source: "operator_file",
+      created_at: "2026-07-01T09:01:00Z",
+      closed_at: "2026-07-01T09:02:00Z"
+    }
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
