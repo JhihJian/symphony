@@ -35,6 +35,7 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
           dispatch_plan_application: dispatch_plan_application(),
           worker_start_handoff: worker_start_handoff(),
           worker_lifecycle_reconciliation: worker_lifecycle_reconciliation(),
+          cutover_execution_outcome_ledger: execution_outcome_ledger(),
           legacy_projects: [%{project_id: "legacy", name: "Legacy project", service: "symphony@legacy.service"}],
           migration_boundary: %{
             direct_path_capabilities: ["legacy_poll_loop", "legacy_direct_writeback"],
@@ -65,6 +66,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.writeback.counts.unknown == 1
     assert projection.overview.writeback.manual_attention_count == 1
     assert projection.overview.lifecycle.unresolved_count >= 1
+    assert projection.overview.cutover_execution_outcome_ledger.status == "unknown"
+    assert projection.overview.cutover_execution_outcome_ledger.unknown_count == 1
+    assert projection.overview.cutover_execution_outcome_ledger.side_effect_entered_count == 1
     assert projection.overview.manual_attention.project_count == 1
     assert projection.migration_readiness.status == "blocked"
     assert projection.activation_plan.status == "blocked"
@@ -117,6 +121,8 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert "wait_provider_backoff" in readiness_action_codes(projects["beta"])
 
     assert projects["gamma"].status == "manual_attention"
+    assert projects["gamma"].cutover_execution_outcome_ledger.status == "unknown"
+    assert projects["gamma"].cutover_execution_outcome_ledger.counts.unresolved_count == 1
     assert projects["gamma"].writebacks.counts.unknown == 1
     assert projects["gamma"].writebacks.counts.manual_attention == 1
     assert Enum.member?(reason_names(projects["gamma"]), "writeback_unknown")
@@ -922,6 +928,40 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
       reason_counts: %{},
       workspace_action_counts: %{},
       results: [%{project_id: "alpha", issue_key: "alpha:github:o/r:1", attempt_id: "alpha-attempt-1", status: "running"}]
+    }
+  end
+
+  defp execution_outcome_ledger do
+    %{
+      version: 1,
+      generated_at: "2026-06-28T09:00:00Z",
+      status: "unknown",
+      counts: %{
+        outcome_count: 1,
+        unknown_count: 1,
+        side_effect_entered_count: 1,
+        side_effect_not_entered_count: 0,
+        unresolved_count: 1
+      },
+      projects: [
+        %{
+          project_id: "gamma",
+          status: "unknown",
+          counts: %{outcome_count: 1, unknown_count: 1, side_effect_entered_count: 1, unresolved_count: 1},
+          recent_outcomes: [
+            %{
+              project_id: "gamma",
+              provider_scope: %{kind: "gitlab", key: "gitlab:g/p", provider_scope_key: "gitlab:g/p", scope: %{project_slug: "g/p"}},
+              operation: "writeback",
+              side_effect_source: "writeback_executor",
+              status: "unknown",
+              reason_code: "provider_ack_lost",
+              side_effect_entered: true,
+              side_effect_may_have_happened: true
+            }
+          ]
+        }
+      ]
     }
   end
 

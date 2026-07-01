@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     CutoverAuditHistory,
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionAuthorization,
+    CutoverExecutionOutcomeLedger,
     CutoverGate,
     CutoverOperationAudit,
     CutoverReadinessPermit
@@ -170,6 +171,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     cutover_authorization_consumption_guard =
       source_map(sources, [:cutover_authorization_consumption_guard, :hub_cutover_authorization_consumption_guard])
 
+    cutover_execution_outcome_ledger =
+      source_map(sources, [:cutover_execution_outcome_ledger, :hub_cutover_execution_outcome_ledger])
+
     provider_queue = provider_queue_summary(sources, poll_coordination)
     legacy_projects = list_value(sources, :legacy_projects)
     managed_project_ids = managed_project_ids(sources, opts)
@@ -192,6 +196,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         cutover_readiness_permit |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         cutover_execution_authorization_ledger |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         cutover_authorization_consumption_guard |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
+        cutover_execution_outcome_ledger |> list_value(:projects) |> Enum.map(&required_string(&1, :project_id)),
         Enum.map(legacy_projects, &required_string(&1, :project_id))
       ]
       |> List.flatten()
@@ -217,7 +222,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_audit_history: cutover_audit_history,
       cutover_readiness_permit: cutover_readiness_permit,
       cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
-      cutover_authorization_consumption_guard: cutover_authorization_consumption_guard
+      cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      cutover_execution_outcome_ledger: cutover_execution_outcome_ledger
     }
 
     projects =
@@ -254,6 +260,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_readiness_permit: cutover_readiness_permit,
       cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
       cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
       migration_boundary: migration_boundary_summary(sources),
       provider_queue: sanitize_value(provider_queue),
       projects: projects,
@@ -397,6 +404,26 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         cutover_authorization_consumption_guard_overview_snapshot(cutover_authorization_consumption_guard)
       )
 
+    cutover_execution_outcome_ledger =
+      cutover_execution_outcome_ledger_snapshot(
+        value(projection, :cutover_execution_outcome_ledger),
+        projects,
+        generated_at
+      )
+
+    projects =
+      attach_project_cutover_execution_outcome_ledgers(
+        projects,
+        cutover_execution_outcome_ledger.projects
+      )
+
+    overview =
+      Map.put(
+        overview,
+        :cutover_execution_outcome_ledger,
+        cutover_execution_outcome_ledger_overview_snapshot(cutover_execution_outcome_ledger)
+      )
+
     %{
       version: positive_integer(value(projection, :version)) || @version,
       generated_at: generated_at,
@@ -411,6 +438,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_readiness_permit: cutover_readiness_permit,
       cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
       cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
       provider_queue: sanitize_value(value(projection, :provider_queue) || %{}),
       projects: projects,
@@ -595,6 +623,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     cutover_authorization_consumption_guard =
       cutover_authorization_consumption_guard_project_snapshot(value(project, :cutover_authorization_consumption_guard))
 
+    cutover_execution_outcome_ledger =
+      cutover_execution_outcome_ledger_project_snapshot(value(project, :cutover_execution_outcome_ledger))
+
     %{
       project_id: project_id,
       name: optional_string(project, :name),
@@ -618,6 +649,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_readiness_permit: cutover_readiness_permit_project_snapshot(value(project, :cutover_readiness_permit)),
       cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
       cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
       summary_error: summary_error_snapshot(value(project, :summary_error)),
       backpressure_reasons: reason_snapshots(list_value(project, :backpressure_reasons))
     }
@@ -638,6 +670,11 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       |> value(:cutover_authorization_consumption_guard)
       |> cutover_authorization_consumption_guard_overview_snapshot()
 
+    cutover_execution_outcome_ledger =
+      overview
+      |> value(:cutover_execution_outcome_ledger)
+      |> cutover_execution_outcome_ledger_overview_snapshot()
+
     %{
       hub_runtime: hub_runtime_overview_snapshot(value(overview, :hub_runtime)),
       scheduler: scheduler_overview_snapshot(value(overview, :scheduler)),
@@ -656,6 +693,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_readiness_permit: cutover_readiness_permit_overview_snapshot(value(overview, :cutover_readiness_permit)),
       cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
       cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
       lifecycle: lifecycle_overview_snapshot(value(overview, :lifecycle)),
       manual_attention: manual_attention_overview_snapshot(value(overview, :manual_attention)),
       summary_errors: sanitize_list(value(overview, :summary_errors))
@@ -1097,6 +1135,47 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
 
     Enum.map(projects, fn project ->
       Map.put(project, :cutover_authorization_consumption_guard, Map.get(guards_by_project, project.project_id))
+    end)
+  end
+
+  defp cutover_execution_outcome_ledger_snapshot(ledger, projects, generated_at) do
+    project_ledgers =
+      projects
+      |> Enum.map(&value(&1, :cutover_execution_outcome_ledger))
+      |> Enum.filter(&is_map/1)
+
+    cond do
+      is_map(ledger) and (list_value(ledger, :projects) != [] or list_value(ledger, :recent_outcomes) != []) ->
+        CutoverExecutionOutcomeLedger.to_snapshot(ledger)
+
+      project_ledgers != [] ->
+        CutoverExecutionOutcomeLedger.to_snapshot(%{
+          generated_at: generated_at,
+          projects: project_ledgers
+        })
+
+      true ->
+        CutoverExecutionOutcomeLedger.build(%{generated_at: generated_at}, now: generated_at)
+    end
+  end
+
+  defp cutover_execution_outcome_ledger_project_snapshot(nil), do: nil
+
+  defp cutover_execution_outcome_ledger_project_snapshot(ledger) when is_map(ledger) do
+    summary = CutoverExecutionOutcomeLedger.to_snapshot(%{projects: [ledger]})
+    Enum.find(summary.projects, &(required_string(&1, :project_id) == required_string(ledger, :project_id)))
+  end
+
+  defp cutover_execution_outcome_ledger_project_snapshot(_ledger), do: nil
+
+  defp attach_project_cutover_execution_outcome_ledgers(projects, ledgers) do
+    ledgers_by_project =
+      ledgers
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    Enum.map(projects, fn project ->
+      Map.put(project, :cutover_execution_outcome_ledger, Map.get(ledgers_by_project, project.project_id))
     end)
   end
 
@@ -2252,6 +2331,37 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
   end
 
   defp cutover_authorization_consumption_guard_overview_snapshot(_guard), do: cutover_authorization_consumption_guard_overview_snapshot(%{})
+
+  defp cutover_execution_outcome_ledger_overview_snapshot(ledger) when is_map(ledger) do
+    counts = value(ledger, :counts) || %{}
+    may_have_happened_count = non_negative_integer(value(counts, :side_effect_may_have_happened_count)) || 0
+
+    %{
+      status: safe_status(value(ledger, :status)) |> blank_to_default("no_outcome"),
+      outcome_count: non_negative_integer(value(counts, :outcome_count)) || 0,
+      not_executed_count: non_negative_integer(value(counts, :not_executed_count)) || 0,
+      blocked_count: non_negative_integer(value(counts, :blocked_count)) || 0,
+      succeeded_count: non_negative_integer(value(counts, :succeeded_count)) || 0,
+      failed_count: non_negative_integer(value(counts, :failed_count)) || 0,
+      retryable_count: non_negative_integer(value(counts, :retryable_count)) || 0,
+      unknown_count: non_negative_integer(value(counts, :unknown_count)) || 0,
+      manual_attention_count: non_negative_integer(value(counts, :manual_attention_count)) || 0,
+      unsupported_count: non_negative_integer(value(counts, :unsupported_count)) || 0,
+      malformed_count: non_negative_integer(value(counts, :malformed_count)) || 0,
+      side_effect_entered_count: non_negative_integer(value(counts, :side_effect_entered_count)) || 0,
+      side_effect_not_entered_count: non_negative_integer(value(counts, :side_effect_not_entered_count)) || 0,
+      side_effect_may_have_happened_count: may_have_happened_count,
+      unresolved_count: non_negative_integer(value(counts, :unresolved_count)) || 0,
+      terminal_count: non_negative_integer(value(counts, :terminal_count)) || 0,
+      operation_status_counts: sanitize_value(value(counts, :operation_status_counts) || %{}),
+      source_status_counts: sanitize_value(value(counts, :source_status_counts) || %{}),
+      guard_decision_counts: sanitize_value(value(counts, :guard_decision_counts) || %{}),
+      unresolved_outcomes: sanitize_list(value(ledger, :unresolved_outcomes)),
+      recent_outcomes: sanitize_list(value(ledger, :recent_outcomes))
+    }
+  end
+
+  defp cutover_execution_outcome_ledger_overview_snapshot(_ledger), do: cutover_execution_outcome_ledger_overview_snapshot(%{})
 
   defp lifecycle_overview_snapshot(lifecycle) when is_map(lifecycle) do
     %{

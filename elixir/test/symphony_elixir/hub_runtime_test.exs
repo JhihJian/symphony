@@ -121,6 +121,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_runtime.mode == "hub"
       assert payload.hub_cutover_gate.counts.project_count == 1
       assert payload.hub_cutover_readiness_permit.counts.permit_count == 0
+      assert payload.hub_cutover_execution_outcome_ledger.status == "no_outcome"
+      assert payload.hub_cutover_execution_outcome_ledger.counts.outcome_count == 0
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -150,6 +152,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_runtime)
       refute Map.has_key?(legacy_payload, :hub_cutover_gate)
       refute Map.has_key?(legacy_payload, :hub_cutover_readiness_permit)
+      refute Map.has_key?(legacy_payload, :hub_cutover_execution_outcome_ledger)
       refute Map.has_key?(legacy_payload, :hub_project_registry)
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)

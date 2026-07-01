@@ -136,6 +136,19 @@ mutation、worker start 或 provider writeback 前进入同一个 guard，即使
 cutover gate、readiness permit、authorization ledger、activation preflight、provider governance、
 runtime ledger、worker starter 或 writeback executor。没有发生真实消费事件时显示 `no_consumption`，
 不表示迁移或执行待处理。
+authorization consumption guard 之后，Hub 还会暴露 cutover execution outcome ledger：
+`hub_cutover_execution_outcome_ledger` 和
+`hub_device_observability.cutover_execution_outcome_ledger`。它把 guard 阻断记录成
+`not_executed` / no-side-effects outcome，把 guard allowed 后真实 executor / starter / writeback
+边界的安全返回归一成 `succeeded`、`failed`、`retryable`、`unknown` 或 `manual_attention` 等结果，并绑定
+project/provider scope、operation/source、cutover request、authorization request/record、permit、
+gate、dry-run audit、history/closeout、guard decision、executor mode、安全时间、reason/action code 和
+脱敏 evidence fingerprint。未知、超时、provider lookup required、worker start ack 不确定或不可安全重放的
+结果会保留为 `unknown` / `manual_attention`，后续 tick 不会因为同一份 authorization record 仍存在就重复触发
+同一个外部副作用。这个 ledger 是显式执行后的结果审计边界，不是 durable execution queue、一键迁移、
+migration executor 或 legacy service 接管，也不替代 gate / permit / authorization / consumption guard /
+provider governance / runtime ledger / worker starter / writeback executor。没有 outcome 时显示 `no_outcome`，
+不表示有迁移或执行在排队。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -182,7 +195,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_execution_authorization_ledger: .hub_cutover_execution_authorization_ledger,
   device_cutover_execution_authorization_ledger: .hub_device_observability.cutover_execution_authorization_ledger,
   cutover_authorization_consumption_guard: .hub_cutover_authorization_consumption_guard,
-  device_cutover_authorization_consumption_guard: .hub_device_observability.cutover_authorization_consumption_guard
+  device_cutover_authorization_consumption_guard: .hub_device_observability.cutover_authorization_consumption_guard,
+  cutover_execution_outcome_ledger: .hub_cutover_execution_outcome_ledger,
+  device_cutover_execution_outcome_ledger: .hub_device_observability.cutover_execution_outcome_ledger
 }'
 ```
 

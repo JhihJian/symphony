@@ -291,6 +291,21 @@ takeover; it does not replace the cutover gate, readiness permit, authorization 
 preflight, provider governance, runtime ledger, worker starter, or writeback executor. Empty or
 non-matching authorization records block as `no_authorization`; snapshots with no real consumption
 event report `no_consumption` and do not imply pending migration or execution.
+`hub_cutover_execution_outcome_ledger` /
+`hub_device_observability.cutover_execution_outcome_ledger` records the next safe audit boundary:
+what happened after the authorization consumption guard either blocked the entrypoint or allowed a
+real side-effect boundary to run. Outcome facts bind project/provider scope, operation,
+side-effect source, cutover request, authorization request/record, readiness permit, gate, dry-run
+audit, audit history, consumption guard decision, executor/starter/writeback mode, safe timestamps,
+reason/action codes, and sanitized evidence fingerprints. Statuses include `not_executed`,
+`blocked`, `succeeded`, `failed`, `retryable`, `unknown`, `manual_attention`, `unsupported`, and
+`malformed`, plus safe `side_effect_entered`, `no_side_effects`, and
+`side_effect_may_have_happened` semantics. Unresolved `unknown` or `manual_attention` outcomes
+block replay of the same explicit operation/request/authorization/source evidence instead of being
+silently overwritten as success. The ledger is not a durable execution queue, migration executor,
+one-click migration, or legacy service takeover, and it does not replace the gate, permit,
+authorization ledger, consumption guard, provider governance, runtime ledger, worker starter, or
+writeback executor. Snapshots with no outcome report `no_outcome`, not pending execution.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -317,7 +332,9 @@ and inspect `hub_activation_preflight`,
 `hub_device_observability.cutover_readiness_permit`, `hub_cutover_execution_authorization_ledger`,
 `hub_device_observability.cutover_execution_authorization_ledger`,
 `hub_cutover_authorization_consumption_guard`,
-`hub_device_observability.cutover_authorization_consumption_guard`, and the Dashboard Hub sections in
+`hub_device_observability.cutover_authorization_consumption_guard`,
+`hub_cutover_execution_outcome_ledger`, and
+`hub_device_observability.cutover_execution_outcome_ledger`, and the Dashboard Hub sections in
 `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not

@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
 
   alias SymphonyElixir.Hub.{
     CutoverAuthorizationConsumptionGuard,
+    CutoverExecutionOutcomeLedger,
     CutoverGate,
     ProviderGovernance,
     ProviderScope,
@@ -41,7 +42,8 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   end
 
   defp execute_candidate_scan(request, opts) do
-    with :ok <- authorization_consumption(request, opts),
+    with {:ok, authorization_decision} <- authorization_consumption(request, opts),
+         :ok <- execution_outcome_replay_guard(request, opts, authorization_decision),
          :ok <- cutover_gate(request, opts),
          :ok <- validate_provider_kind(request.provider_kind),
          {:ok, registry} <- registry(opts),
@@ -54,20 +56,31 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
       candidates = Enum.map(issues, &candidate_summary(&1, request, settings))
 
       ProviderGovernance.result(request, :success,
-        result_summary: %{
-          boundary: "hub_real_candidate_scan_executor",
-          executor: "real_candidate_scan",
-          provider_io: true,
-          issue_count: length(candidates),
-          candidate_count: length(candidates),
-          provider_kind: request.provider_kind,
-          provider_scope_key: request.provider_scope_key,
-          candidates: candidates
-        }
+        result_summary:
+          attach_execution_outcome(
+            %{
+              boundary: "hub_real_candidate_scan_executor",
+              executor: "real_candidate_scan",
+              provider_io: true,
+              issue_count: length(candidates),
+              candidate_count: length(candidates),
+              provider_kind: request.provider_kind,
+              provider_scope_key: request.provider_scope_key,
+              candidates: candidates
+            },
+            request,
+            "succeeded",
+            "candidate_scan_succeeded",
+            true,
+            authorization_decision
+          )
       )
     else
       {:authorization_blocked, decision} ->
         authorization_blocked_result(request, decision)
+
+      {:execution_outcome_replay_blocked, outcome} ->
+        execution_outcome_replay_blocked_result(request, outcome)
 
       {:cutover_blocked, reason} ->
         cutover_blocked_result(request, reason)
@@ -138,17 +151,22 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
             }
           })
 
-        case CutoverAuthorizationConsumptionGuard.require_allowed(input) do
-          :ok -> :ok
-          {:blocked, decision} -> {:authorization_blocked, decision}
+        case CutoverAuthorizationConsumptionGuard.evaluate(input) do
+          %{allowed: true} = decision -> {:ok, decision}
+          decision -> {:authorization_blocked, decision}
         end
 
       _guard ->
-        :ok
+        {:ok, nil}
     end
   end
 
   defp authorization_blocked_result(request, decision) do
+    outcome =
+      CutoverExecutionOutcomeLedger.from_guard_decision(decision,
+        executor_mode: %{mode: "real_candidate_scan", provider_io: false}
+      )
+
     ProviderGovernance.result(request, :permanent_failure,
       error_class: authorization_error_class(decision),
       result_summary: %{
@@ -157,9 +175,46 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         provider_io: false,
         error: "authorization_consumption_blocked",
         authorization_consumption: decision,
+        execution_outcome: outcome,
         decision: decision.decision,
         reason: decision.reason_code,
         action: value(decision, :action_code)
+      }
+    )
+  end
+
+  defp execution_outcome_replay_guard(request, opts, authorization_decision) do
+    case Keyword.get(opts, :cutover_execution_outcome_ledger) || Keyword.get(opts, :execution_outcome_ledger) do
+      ledger when is_map(ledger) ->
+        candidate =
+          outcome_candidate(request,
+            status: "unknown",
+            reason_code: "candidate_scan_replay_check",
+            authorization_consumption_guard: authorization_decision,
+            side_effect_entered: true,
+            side_effect_may_have_happened: true
+          )
+
+        case CutoverExecutionOutcomeLedger.find_unresolved(ledger, candidate) do
+          nil -> :ok
+          outcome -> {:execution_outcome_replay_blocked, outcome}
+        end
+
+      _ledger ->
+        :ok
+    end
+  end
+
+  defp execution_outcome_replay_blocked_result(request, outcome) do
+    ProviderGovernance.result(request, :unknown_result,
+      error_class: :unknown,
+      result_summary: %{
+        boundary: "hub_real_candidate_scan_executor",
+        executor: "real_candidate_scan",
+        provider_io: false,
+        error: "execution_outcome_replay_blocked",
+        reason: "unresolved_execution_outcome",
+        execution_outcome: outcome
       }
     )
   end
@@ -173,19 +228,27 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   defp cutover_blocked_result(request, reason) do
     ProviderGovernance.result(request, :permanent_failure,
       error_class: :conflict,
-      result_summary: %{
-        boundary: "hub_real_candidate_scan_executor",
-        executor: "real_candidate_scan",
-        provider_io: false,
-        error: "cutover_gate_blocked",
-        reason: safe_reason(value(reason, :reason) || :cutover_gate_blocked),
-        status: safe_reason(value(reason, :status)),
-        blocked_operations: list_value(reason, :blocked_operations),
-        allowed_operations: list_value(reason, :allowed_operations),
-        required_operator_actions: list_value(reason, :required_operator_actions),
-        sources: list_value(reason, :sources),
-        cutover_gate: SafeSummary.sanitize_map(value(reason, :cutover_gate) || %{}, output_keys: :preserve)
-      }
+      result_summary:
+        attach_execution_outcome(
+          %{
+            boundary: "hub_real_candidate_scan_executor",
+            executor: "real_candidate_scan",
+            provider_io: false,
+            error: "cutover_gate_blocked",
+            reason: safe_reason(value(reason, :reason) || :cutover_gate_blocked),
+            status: safe_reason(value(reason, :status)),
+            blocked_operations: list_value(reason, :blocked_operations),
+            allowed_operations: list_value(reason, :allowed_operations),
+            required_operator_actions: list_value(reason, :required_operator_actions),
+            sources: list_value(reason, :sources),
+            cutover_gate: SafeSummary.sanitize_map(value(reason, :cutover_gate) || %{}, output_keys: :preserve)
+          },
+          request,
+          "blocked",
+          "cutover_gate_blocked",
+          false,
+          nil
+        )
     )
   end
 
@@ -338,17 +401,26 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
 
   defp provider_failure_result(request, reason) do
     {status, error_class, retry_after_ms} = provider_failure_classification(reason)
+    outcome_status = provider_failure_outcome_status(status)
 
     opts =
       [
         error_class: error_class,
         retry_after_ms: retry_after_ms,
-        result_summary: failure_summary(request, :provider_error, reason)
+        result_summary:
+          request
+          |> failure_summary(:provider_error, reason)
+          |> attach_execution_outcome(request, outcome_status, "provider_error", true, nil)
       ]
       |> maybe_put_backoff(status, retry_after_ms)
 
     ProviderGovernance.result(request, status, opts)
   end
+
+  defp provider_failure_outcome_status(:retryable_failure), do: "retryable"
+  defp provider_failure_outcome_status(:rate_limited), do: "retryable"
+  defp provider_failure_outcome_status(:unknown_result), do: "unknown"
+  defp provider_failure_outcome_status(_status), do: "failed"
 
   defp provider_failure_classification(reason) do
     cond do
@@ -383,6 +455,34 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
       error: Atom.to_string(error),
       reason: safe_reason(reason)
     }
+  end
+
+  defp attach_execution_outcome(summary, request, status, reason, side_effect_entered?, authorization_decision) do
+    Map.put(
+      summary,
+      :execution_outcome,
+      outcome_candidate(request,
+        status: status,
+        reason_code: reason,
+        authorization_consumption_guard: authorization_decision,
+        executor_result: summary,
+        side_effect_entered: side_effect_entered?,
+        side_effect_may_have_happened: side_effect_entered? or status in ["unknown", "retryable", "manual_attention"]
+      )
+    )
+  end
+
+  defp outcome_candidate(request, attrs) do
+    attrs
+    |> Map.new()
+    |> Map.merge(%{
+      project_id: request.project_id,
+      provider_scope: request.provider_scope,
+      operation: "poll",
+      side_effect_source: "candidate_scan",
+      executor_mode: %{mode: "real_candidate_scan", provider_io: true, supported_operations: ["candidate_scan"]}
+    })
+    |> CutoverExecutionOutcomeLedger.fact_snapshot()
   end
 
   defp rate_limited?(reason) do
