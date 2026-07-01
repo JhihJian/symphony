@@ -584,6 +584,19 @@ cutover gate, readiness permit, authorization ledger, activation preflight, prov
 runtime ledger, worker starter, or writeback executor. Empty or non-matching authorization records
 block as `no_authorization`; snapshots with no real consumption event stay at `no_consumption`
 rather than implying pending execution.
+`hub_cutover_execution_outcome_ledger` and
+`hub_device_observability.cutover_execution_outcome_ledger` add the execution outcome audit boundary
+after authorization consumption. It records guard-blocked attempts as no-side-effect outcomes and
+normalizes safe executor/starter/writeback returns into `succeeded`, `failed`, `retryable`,
+`unknown`, or `manual_attention` facts bound to project/provider scope, operation, side-effect
+source, cutover request, authorization request/record, readiness permit, gate, dry-run audit,
+history/closeout, guard decision, executor mode, safe timestamps, reason/action codes, and
+sanitized evidence fingerprints. Unresolved `unknown` or `manual_attention` outcomes are preserved
+so later refreshes do not repeat the same unsafe external side effect or overwrite an unknown result
+as success. The ledger is not a durable execution queue, one-click migration, migration executor, or
+legacy service takeover, and it does not replace gate/permit/authorization/consumption guard,
+provider governance, runtime ledger, worker starter, or writeback executor. No outcome facts are
+reported as `no_outcome`, not pending execution.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -620,11 +633,13 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.cutover_readiness_permit`, `hub_cutover_execution_authorization_ledger`,
    `hub_device_observability.cutover_execution_authorization_ledger`,
    `hub_cutover_authorization_consumption_guard`, and
-   `hub_device_observability.cutover_authorization_consumption_guard`. The Dashboard shows the
+   `hub_device_observability.cutover_authorization_consumption_guard`,
+   `hub_cutover_execution_outcome_ledger`, and
+   `hub_device_observability.cutover_execution_outcome_ledger`. The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
-   permit status, authorization-ledger counts, consumption-guard counts and blocked sources, leading
-   reasons, allowed/blocked operations, request counts, and action codes when Hub summary fields
-   exist.
+   permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
+   execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,
+   allowed/blocked operations, request counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -664,6 +679,12 @@ Use readiness for migration preparation only; it does not execute a migration.
     authorization ledger, blocks as `no_authorization` before provider calls, dispatch mutation,
     worker start, or writeback, but the guard still does not replace the existing gate, permit,
     provider governance, runtime ledger, starter, or writeback checks.
+11. After a guard decision, inspect `hub_cutover_execution_outcome_ledger` for the safe execution
+    result summary. Guard-blocked paths should appear as `not_executed` with no side effects; real
+    side-effect boundaries should normalize their safe return into success, failure, retryable,
+    unknown, or manual-attention outcomes. Unresolved unknown/manual-attention outcomes require
+    operator review and should not be replayed automatically just because the same authorization
+    record still exists.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

@@ -1693,6 +1693,39 @@ Runtime entrypoint:
   evidence fingerprints, and sources blocked because authorization was missing or mismatched.
   Malformed consumption input for one project MUST be isolated to that project summary and MUST NOT
   crash Hub runtime, `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations SHOULD expose a cutover execution outcome ledger after the
+  authorization consumption guard. Each outcome fact SHOULD bind project identity, provider scope,
+  operation, side-effect source, cutover operation request fingerprint, execution authorization
+  request/record fingerprint, readiness permit fingerprint/decision, cutover gate/staged ownership
+  evidence fingerprint, dry-run audit and audit-history/closeout evidence fingerprints, consumption
+  guard decision/fingerprint, executor/starter/writeback mode, safe started/completed timestamps,
+  reason/action codes, and sanitized evidence fingerprints.
+- Outcome status SHOULD distinguish `not_executed`, `blocked`, `succeeded`, `failed`, `retryable`,
+  `unknown`, `manual_attention`, `unsupported`, and `malformed` or implementation-defined
+  equivalent categories. Each fact SHOULD include safe side-effect semantics such as
+  `no_side_effects`, `side_effect_entered`, and `side_effect_may_have_happened`.
+- When the consumption guard blocks, the outcome ledger SHOULD produce a `not_executed`/blocked
+  style outcome with `no_side_effects: true` and MUST NOT call providers, mutate dispatch/runtime
+  ledgers, start workers, write providers, operate systemd, or edit configuration. When the guard
+  allows a real side-effect boundary, the boundary's safe return value SHOULD be normalized into a
+  `succeeded`, `failed`, `retryable`, `unknown`, or `manual_attention` outcome rather than remaining
+  only in executor-private summaries.
+- Unknown, timed-out, provider-lookup-required, ambiguous writeback, uncertain worker-start ack, or
+  otherwise unsafe-to-replay results MUST NOT be treated as success and MUST NOT trigger blind
+  replay. For the same operation request, authorization record, operation, side-effect source, and
+  safe evidence fingerprint, an unresolved `unknown` or `manual_attention` outcome SHOULD block a
+  later tick from repeating the same external side effect.
+- Dashboard/API summaries SHOULD expose device-level and project-level execution outcome counts by
+  operation/source/status, recent safe reason/action codes, unresolved unknown/manual-attention
+  counts, safe side-effect-entered/not-entered counts, and relevant request/permit/gate/guard
+  fingerprints. Projects without outcome facts MUST show a non-misleading `no_outcome` summary
+  rather than pending migration or pending execution.
+- The outcome ledger MUST NOT be a durable execution queue, migration executor, one-click
+  migration, or legacy service takeover, and MUST NOT replace the cutover gate, readiness permit,
+  authorization ledger, consumption guard, activation preflight, provider governance, runtime
+  ledger, worker starter, or writeback executor. Malformed outcome input for one project MUST be
+  isolated to that project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or
+  other project summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

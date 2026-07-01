@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     CutoverAuditHistory,
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionAuthorization,
+    CutoverExecutionOutcomeLedger,
     CutoverGate,
     CutoverOperationAudit,
     CutoverReadinessPermit,
@@ -76,6 +77,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:cutover_gate) => map(),
           required(:cutover_execution_authorization_ledger) => map(),
           required(:cutover_authorization_consumption_guard) => map(),
+          required(:cutover_execution_outcome_ledger) => map(),
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
@@ -492,6 +494,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
       cutover_execution_authorization_ledger = initial_snapshot.hub_cutover_execution_authorization_ledger
       cutover_authorization_consumption_guard = initial_snapshot.hub_cutover_authorization_consumption_guard
+      cutover_execution_outcome_ledger = initial_snapshot.hub_cutover_execution_outcome_ledger
 
       state = %{
         config_path: config_path,
@@ -509,6 +512,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_execution_authorization_requests: cutover_execution_authorization_requests,
         cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
         cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+        cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
@@ -648,6 +652,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_cutover_readiness_permit",
              "hub_cutover_execution_authorization_ledger",
              "hub_cutover_authorization_consumption_guard",
+             "hub_cutover_execution_outcome_ledger",
              "hub_device_observability"
            ],
            poll_tick: tick_summary
@@ -687,6 +692,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     cutover_execution_authorization_requests = Keyword.get(opts, :cutover_execution_authorization_requests)
     provided_cutover_execution_authorization_ledger = Keyword.get(opts, :cutover_execution_authorization_ledger)
     provided_cutover_authorization_consumption_guard = Keyword.get(opts, :cutover_authorization_consumption_guard)
+    provided_cutover_execution_outcome_ledger = Keyword.get(opts, :cutover_execution_outcome_ledger)
 
     activation_preflight =
       Keyword.get(opts, :activation_preflight) ||
@@ -767,6 +773,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           cutover_readiness_permit: %{},
           cutover_execution_authorization_ledger: %{},
           cutover_authorization_consumption_guard: provided_cutover_authorization_consumption_guard || %{},
+          cutover_execution_outcome_ledger: provided_cutover_execution_outcome_ledger || %{},
           writeback: writeback,
           migration_boundary: migration_boundary()
         },
@@ -848,6 +855,21 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now
       )
 
+    cutover_execution_outcome_ledger =
+      CutoverExecutionOutcomeLedger.build(
+        %{
+          generated_at: now,
+          previous_ledger: provided_cutover_execution_outcome_ledger,
+          provider_queue: provider_queue,
+          tick: tick,
+          dispatch_plan_application: dispatch_plan_application,
+          worker_start_handoff: worker_start_handoff,
+          writeback: writeback,
+          cutover_authorization_consumption_guard: cutover_authorization_consumption_guard
+        },
+        now: now
+      )
+
     device_observability =
       device_observability
       |> Map.put(:cutover_operation_audit, cutover_operation_audit)
@@ -855,6 +877,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       |> Map.put(:cutover_readiness_permit, cutover_readiness_permit)
       |> Map.put(:cutover_execution_authorization_ledger, cutover_execution_authorization_ledger)
       |> Map.put(:cutover_authorization_consumption_guard, cutover_authorization_consumption_guard)
+      |> Map.put(:cutover_execution_outcome_ledger, cutover_execution_outcome_ledger)
       |> DeviceObservability.to_snapshot()
 
     %{
@@ -887,6 +910,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_readiness_permit: cutover_readiness_permit,
         cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
         cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+        cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
         writeback: writeback,
         scheduler: scheduler,
         poll_tick: tick,
@@ -907,6 +931,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_cutover_readiness_permit: cutover_readiness_permit,
       hub_cutover_execution_authorization_ledger: cutover_execution_authorization_ledger,
       hub_cutover_authorization_consumption_guard: cutover_authorization_consumption_guard,
+      hub_cutover_execution_outcome_ledger: cutover_execution_outcome_ledger,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -1033,7 +1058,8 @@ defmodule SymphonyElixir.Hub.Runtime do
             state.config_path,
             state.activation_preflight,
             state.cutover_gate,
-            authorization_consumption_guard
+            authorization_consumption_guard,
+            state.cutover_execution_outcome_ledger
           )
           |> normalize_provider_result(request, queue)
 
@@ -1079,7 +1105,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: finished_at,
         activation_preflight: state.activation_preflight,
         cutover_gate: state.cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger
       )
 
     {runtime_ledger, worker_start_handoff} =
@@ -1088,7 +1115,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         starter: state.worker_start_starter,
         activation_preflight: state.activation_preflight,
         cutover_gate: state.cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger
       )
 
     {runtime_ledger, worker_lifecycle_reconciliation} =
@@ -1148,6 +1176,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         dispatch_plan_application: dispatch_plan_application,
         worker_start_handoff: worker_start_handoff,
         worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
         tick: tick,
         scheduler: state.scheduler
       )
@@ -1164,6 +1193,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
         cutover_execution_authorization_ledger: snapshot.hub_cutover_execution_authorization_ledger,
         cutover_authorization_consumption_guard: snapshot.hub_cutover_authorization_consumption_guard,
+        cutover_execution_outcome_ledger: snapshot.hub_cutover_execution_outcome_ledger,
         tick: tick,
         snapshot: snapshot
     }
@@ -1227,6 +1257,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         "hub_cutover_readiness_permit",
         "hub_cutover_execution_authorization_ledger",
         "hub_cutover_authorization_consumption_guard",
+        "hub_cutover_execution_outcome_ledger",
         "hub_device_observability"
       ]
     }
@@ -1379,6 +1410,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_execution_authorization_requests: state.cutover_execution_authorization_requests,
         cutover_execution_authorization_ledger: state.cutover_execution_authorization_ledger,
         cutover_authorization_consumption_guard: state.cutover_authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
         worker_start_starter: state.worker_start_starter,
@@ -2004,11 +2036,31 @@ defmodule SymphonyElixir.Hub.Runtime do
     end
   end
 
-  defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path, _activation_preflight, _cutover_gate, _authorization_consumption_guard) do
+  defp execute_provider_request(
+         nil,
+         _executor,
+         _started_at,
+         _registry,
+         _config_path,
+         _activation_preflight,
+         _cutover_gate,
+         _authorization_consumption_guard,
+         _cutover_execution_outcome_ledger
+       ) do
     {:error, :missing_provider_request}
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight, cutover_gate, authorization_consumption_guard)
+  defp execute_provider_request(
+         request,
+         executor,
+         started_at,
+         registry,
+         config_path,
+         activation_preflight,
+         cutover_gate,
+         authorization_consumption_guard,
+         cutover_execution_outcome_ledger
+       )
        when is_function(executor, 2) do
     safe_execute_provider_request(fn ->
       executor.(request,
@@ -2017,12 +2069,23 @@ defmodule SymphonyElixir.Hub.Runtime do
         hub_config_path: config_path,
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: cutover_execution_outcome_ledger
       )
     end)
   end
 
-  defp execute_provider_request(request, executor, started_at, registry, config_path, activation_preflight, cutover_gate, authorization_consumption_guard)
+  defp execute_provider_request(
+         request,
+         executor,
+         started_at,
+         registry,
+         config_path,
+         activation_preflight,
+         cutover_gate,
+         authorization_consumption_guard,
+         cutover_execution_outcome_ledger
+       )
        when is_atom(executor) do
     safe_execute_provider_request(fn ->
       executor.execute(request,
@@ -2031,12 +2094,23 @@ defmodule SymphonyElixir.Hub.Runtime do
         hub_config_path: config_path,
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: cutover_execution_outcome_ledger
       )
     end)
   end
 
-  defp execute_provider_request(_request, _executor, _started_at, _registry, _config_path, _activation_preflight, _cutover_gate, _authorization_consumption_guard) do
+  defp execute_provider_request(
+         _request,
+         _executor,
+         _started_at,
+         _registry,
+         _config_path,
+         _activation_preflight,
+         _cutover_gate,
+         _authorization_consumption_guard,
+         _cutover_execution_outcome_ledger
+       ) do
     {:error, :invalid_provider_executor}
   end
 

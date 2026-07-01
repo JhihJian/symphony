@@ -3,6 +3,7 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverExecutionOutcomeLedger,
     ProviderToolRouting,
     RealWritebackExecutor,
     RuntimeLedger,
@@ -52,6 +53,8 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
       assert result.result_summary.provider_scope_key == "memory:alpha"
       assert result.result_summary.logical_action == "status_set"
       assert result.result_summary.target.state == "in_progress"
+      assert result.result_summary.execution_outcome.status == "succeeded"
+      assert result.result_summary.execution_outcome.side_effect_entered == true
 
       assert_receive {:memory_tracker_state_update, "shared-1", "in_progress"}, 1_000
       refute_receive {:memory_tracker_state_update, "legacy", _state}, 50
@@ -293,6 +296,52 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
       assert result.result_summary.error == "authorization_consumption_blocked"
       assert result.result_summary.authorization_consumption.decision == "no_authorization"
       assert result.result_summary.authorization_consumption.side_effect_source == "writeback_executor"
+      assert result.result_summary.execution_outcome.status == "not_executed"
+      assert result.result_summary.execution_outcome.no_side_effects == true
+      refute_received {:unexpected_provider_call, _issue_id, _state}
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "unresolved execution outcome blocks writeback replay before provider I/O" do
+    root = tmp_root("hub-real-writeback-outcome-replay")
+    test_pid = self()
+
+    try do
+      project = write_memory_project!(root, "alpha")
+      routed = routed_call!("tracker_issue", "set_status", %{issue_id: "129", state: "in_progress"}, "alpha", "memory")
+
+      unresolved =
+        CutoverExecutionOutcomeLedger.fact_snapshot(%{
+          project_id: "alpha",
+          provider_scope: %{kind: "memory", key: "memory:alpha", provider_scope_key: "memory:alpha", scope: %{namespace: "alpha"}},
+          operation: "writeback",
+          side_effect_source: "writeback_executor",
+          status: "unknown",
+          reason_code: "writeback_ack_lost",
+          executor_result: %{provider_io: true, operation_kind: "stage_writeback"},
+          side_effect_entered: true,
+          side_effect_may_have_happened: true
+        })
+
+      outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]})
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          cutover_execution_outcome_ledger: outcome_ledger,
+          tracker_update_issue_state: fn issue_id, state ->
+            send(test_pid, {:unexpected_provider_call, issue_id, state})
+            :ok
+          end
+        )
+
+      assert result.status == :unknown_result
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.error == "execution_outcome_replay_blocked"
+      assert result.result_summary.execution_outcome.status == "unknown"
       refute_received {:unexpected_provider_call, _issue_id, _state}
     after
       File.rm_rf(root)

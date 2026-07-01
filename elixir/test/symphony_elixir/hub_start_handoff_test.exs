@@ -3,6 +3,7 @@ defmodule SymphonyElixir.HubStartHandoffTest do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverExecutionOutcomeLedger,
     DispatchBoundary,
     IssueRef,
     RealWorkerStarter,
@@ -217,9 +218,46 @@ defmodule SymphonyElixir.HubStartHandoffTest do
              %{
                status: "skipped",
                reason: "authorization_consumption_blocked",
-               authorization_consumption: %{decision: "no_authorization", side_effect_source: "worker_start_handoff"}
+               authorization_consumption: %{decision: "no_authorization", side_effect_source: "worker_start_handoff"},
+               execution_outcome: %{status: "not_executed", no_side_effects: true}
              }
            ] = handoff.results
+  end
+
+  test "unresolved execution outcome skips worker start handoff without calling starter" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+    replay = RuntimeLedger.replay(ledger)
+    [pending] = hd(replay.projects).pending_start_intents
+
+    unresolved =
+      CutoverExecutionOutcomeLedger.fact_snapshot(%{
+        project_id: "alpha",
+        provider_scope: %{kind: "github", key: "github:jhihjian/symphony", provider_scope_key: "github:jhihjian/symphony", scope: %{owner: "JhihJian", repo: "symphony"}},
+        operation: "worker_start",
+        side_effect_source: "worker_start_handoff",
+        status: "unknown",
+        reason_code: "worker_start_ack_lost",
+        executor_result: %{start_intent_id: pending.intent_id, attempt_id: pending.attempt_id},
+        side_effect_entered: true,
+        side_effect_may_have_happened: true
+      })
+
+    outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]}, now: @now)
+
+    fail_if_called = fn _request, _opts ->
+      flunk("starter must not be called when execution outcome replay guard blocks worker_start")
+    end
+
+    assert {same_ledger, handoff} =
+             WorkerStartHandoff.run(registry(), ledger,
+               now: @now,
+               starter: fail_if_called,
+               cutover_execution_outcome_ledger: outcome_ledger
+             )
+
+    assert same_ledger == ledger
+    assert handoff.counts.skipped_count == 1
+    assert [%{status: "skipped", reason: "execution_outcome_replay_blocked", execution_outcome: %{status: "unknown"}}] = handoff.results
   end
 
   test "real worker starter opt-in launches through injectable runner and returns safe ack" do

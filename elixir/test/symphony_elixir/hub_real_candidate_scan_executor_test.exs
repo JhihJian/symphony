@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{ProviderGovernance, RealCandidateScanExecutor}
+  alias SymphonyElixir.Hub.{CutoverExecutionOutcomeLedger, ProviderGovernance, RealCandidateScanExecutor}
 
   test "rejects unsupported provider kinds without provider I/O" do
     request =
@@ -97,6 +97,8 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
     assert result.result_summary.error == "authorization_consumption_blocked"
     assert result.result_summary.authorization_consumption.decision == "no_authorization"
     assert result.result_summary.authorization_consumption.side_effect_source == "candidate_scan"
+    assert result.result_summary.execution_outcome.status == "not_executed"
+    assert result.result_summary.execution_outcome.no_side_effects == true
   end
 
   test "matching authorization consumption record allows candidate scan provider I/O" do
@@ -128,7 +130,61 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
       assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
       assert result.status == :success
       assert result.result_summary.provider_io == true
+      assert result.result_summary.execution_outcome.status == "succeeded"
+      assert result.result_summary.execution_outcome.authorization_request_fingerprint == "auth-alpha-poll"
       assert [%{id: "alpha-1", title: "Alpha issue"}] = result.result_summary.candidates
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "unresolved outcome ledger blocks replay before candidate provider I/O" do
+    root = Path.join(System.tmp_dir!(), "hub-real-candidate-replay-#{System.unique_integer([:positive])}")
+
+    try do
+      project = write_memory_project!(root, "alpha")
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [%Issue{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue", state: "Todo"}]
+      })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      request =
+        provider_request!(
+          project_id: "alpha",
+          provider_scope: %{kind: "memory", key: "memory:alpha", scope: %{namespace: "alpha"}},
+          operation_kind: :candidate_scan,
+          logical_key: "hub-poll:alpha:candidate_scan"
+        )
+
+      allowed_result =
+        RealCandidateScanExecutor.execute(request,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()}
+        )
+
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
+
+      unresolved =
+        allowed_result.result_summary.execution_outcome
+        |> Map.put(:status, "unknown")
+        |> Map.put(:reason_code, "provider_ack_lost")
+        |> CutoverExecutionOutcomeLedger.fact_snapshot()
+
+      ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]})
+
+      result =
+        RealCandidateScanExecutor.execute(request,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()},
+          cutover_execution_outcome_ledger: ledger
+        )
+
+      assert result.status == :unknown_result
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.error == "execution_outcome_replay_blocked"
+      refute_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
     after
       File.rm_rf(root)
     end
@@ -234,6 +290,7 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
               operation: "poll",
               status: "authorized_for_explicit_execution",
               provider_scope: %{},
+              authorization_record_fingerprint: "record-alpha-poll",
               authorization_request: %{authorization_request_fingerprint: "auth-alpha-poll"},
               evidence_fingerprints: %{}
             }
