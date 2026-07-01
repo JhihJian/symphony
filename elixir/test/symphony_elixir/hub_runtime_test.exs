@@ -128,6 +128,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_execution_outcome_closeout.status == "no_outcome"
       assert payload.hub_cutover_execution_outcome_closeout.counts.unresolved_outcome_count == 0
       assert payload.hub_cutover_execution_outcome_closeout.auto_replay_allowed == false
+      assert payload.hub_cutover_replay_decision.status == "no_replay_decision"
+      assert payload.hub_cutover_replay_decision.counts.decision_count == 0
+      assert payload.hub_cutover_replay_decision.auto_replay_allowed == false
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -137,6 +140,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_device_observability.device.project_count == 1
       assert payload.hub_device_observability.cutover_execution_outcome_closeout.status == "no_outcome"
       assert payload.hub_device_observability.overview.cutover_execution_outcome_closeout.status == "no_outcome"
+      assert payload.hub_device_observability.cutover_replay_decision.status == "no_replay_decision"
+      assert payload.hub_device_observability.overview.cutover_replay_decision.status == "no_replay_decision"
 
       safe_text = inspect(payload)
       refute safe_text =~ "GITHUB_TOKEN"
@@ -190,10 +195,15 @@ defmodule SymphonyElixir.HubRuntimeTest do
       {:ok, registry} = ProjectRegistry.load(hub_path)
       outcome = unresolved_outcome("alpha", false)
       outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [outcome]}, now: ~U[2026-07-01 09:00:00Z])
+      consumption_guard = outcome.authorization_consumption_guard
 
       snapshot =
         Runtime.build_snapshot(hub_path, ~U[2026-07-01 09:00:00Z], registry,
           now: ~U[2026-07-01 09:00:00Z],
+          cutover_authorization_consumption_guard: %{
+            generated_at: "2026-07-01T09:00:00Z",
+            decisions: [consumption_guard]
+          },
           cutover_execution_outcome_ledger: outcome_ledger,
           cutover_execution_outcome_closeouts: [
             outcome_closeout(outcome, "allow_explicit_retry_consideration")
@@ -206,11 +216,19 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_cutover_execution_outcome_closeout.auto_replay_allowed == false
       assert snapshot.hub_runtime.cutover_execution_outcome_closeout.status == "resolved"
       assert snapshot.hub_device_observability.overview.cutover_execution_outcome_closeout.status == "resolved"
+      assert snapshot.hub_cutover_replay_decision.status == "retry_consideration_allowed"
+      assert snapshot.hub_cutover_replay_decision.counts.retry_consideration_allowed_count == 1
+      assert snapshot.hub_cutover_replay_decision.auto_replay_allowed == false
+      assert snapshot.hub_runtime.cutover_replay_decision.status == "retry_consideration_allowed"
+      assert snapshot.hub_device_observability.overview.cutover_replay_decision.status == "retry_consideration_allowed"
 
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_execution_outcome_closeout.status == "resolved"
       assert project.cutover_execution_outcome_closeout.allow_explicit_retry_consideration == true
       assert project.detail.outcome_closeout.allow_explicit_retry_consideration == true
+      assert project.cutover_replay_decision.status == "retry_consideration_allowed"
+      assert project.detail.replay_decision.status == "retry_consideration_allowed"
+      assert project.detail.replay_decision.requires_operator_attention == false
 
       runtime_name = Module.concat(__MODULE__, :OutcomeCloseoutPresenter)
       static_snapshot_module = Module.concat(__MODULE__, :StaticSnapshot)
@@ -222,15 +240,20 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       payload = Presenter.state_payload(runtime_name, 100)
       assert payload.hub_cutover_execution_outcome_closeout.status == "resolved"
+      assert payload.hub_cutover_replay_decision.status == "retry_consideration_allowed"
+      assert payload.hub_cutover_replay_decision.counts.retry_consideration_allowed_count == 1
 
       payload_closeout = payload.hub_device_observability.overview.cutover_execution_outcome_closeout
       assert payload_closeout.allow_explicit_retry_consideration_count == 1
+      assert payload.hub_device_observability.overview.cutover_replay_decision.retry_consideration_allowed_count == 1
 
       safe_text =
         inspect(
           {
             payload.hub_cutover_execution_outcome_closeout,
-            payload.hub_device_observability.cutover_execution_outcome_closeout
+            payload.hub_cutover_replay_decision,
+            payload.hub_device_observability.cutover_execution_outcome_closeout,
+            payload.hub_device_observability.cutover_replay_decision
           },
           limit: :infinity,
           printable_limit: :infinity

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionOutcomeLedger,
     CutoverGate,
+    CutoverReplayDecision,
     DispatchBoundary,
     DispatchPlanning,
     RuntimeLedger,
@@ -64,6 +65,10 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       cutover_execution_outcome_ledger:
         Keyword.get(opts, :cutover_execution_outcome_ledger) ||
           Keyword.get(opts, :execution_outcome_ledger),
+      cutover_execution_outcome_closeout:
+        Keyword.get(opts, :cutover_execution_outcome_closeout) ||
+          Keyword.get(opts, :execution_outcome_closeout) ||
+          Keyword.get(opts, :closeout_summary),
       ledger_changed?: false
     }
 
@@ -284,18 +289,18 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
 
         {application_outcome, ledger, state}
 
-      {:ok, authorization_decision} ->
-        dispatch_planned_outcome(outcome, ledger, state, candidate, authorization_decision)
+      {:ok, authorization_decision, replay_decision} ->
+        dispatch_planned_outcome(outcome, ledger, state, candidate, authorization_decision, replay_decision)
     end
   end
 
   defp dispatch_preflight(project, ledger, candidate, state) do
     with {:ok, authorization_decision} <- authorization_consumption(state, candidate),
-         :ok <- execution_outcome_replay_guard(state, candidate, authorization_decision),
+         {:ok, replay_decision} <- execution_outcome_replay_guard(state, candidate, authorization_decision),
          :ok <- no_block(cutover_gate(state, candidate)),
          :ok <- no_block(activation_preflight(state, candidate)),
          :ok <- no_block(capacity_preflight(project, ledger, candidate, state)) do
-      {:ok, authorization_decision}
+      {:ok, authorization_decision, replay_decision}
     end
   end
 
@@ -346,36 +351,37 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   end
 
   defp execution_outcome_replay_guard(state, candidate, authorization_decision) do
-    case Map.get(state, :cutover_execution_outcome_ledger) do
-      ledger when is_map(ledger) ->
-        outcome =
-          dispatch_execution_outcome(candidate, %{
-            status: "unknown",
-            reason_code: "dispatch_application_replay_check",
-            authorization_consumption_guard: authorization_decision,
-            side_effect_entered: true,
-            side_effect_may_have_happened: true
-          })
+    outcome =
+      dispatch_execution_outcome(candidate, %{
+        status: "unknown",
+        reason_code: "dispatch_application_replay_check",
+        authorization_consumption_guard: authorization_decision,
+        side_effect_entered: true,
+        side_effect_may_have_happened: true
+      })
 
-        case CutoverExecutionOutcomeLedger.find_unresolved(ledger, outcome) do
-          nil ->
-            :ok
+    replay_decision =
+      CutoverReplayDecision.evaluate(%{
+        candidate: outcome,
+        authorization_consumption_guard: authorization_decision,
+        cutover_execution_outcome_ledger: Map.get(state, :cutover_execution_outcome_ledger),
+        cutover_execution_outcome_closeout: Map.get(state, :cutover_execution_outcome_closeout)
+      })
 
-          existing ->
-            {:blocked, "execution_outcome_replay_blocked", "Execution outcome ledger has unresolved dispatch application outcome",
-             %{
-               execution_outcome: existing,
-               preflight:
-                 preflight_snapshot(%{
-                   status: "blocked",
-                   reason: "execution_outcome_replay_blocked",
-                   message: "Execution outcome ledger has unresolved dispatch application outcome"
-                 })
-             }}
-        end
-
-      _ledger ->
-        :ok
+    if replay_decision.allowed do
+      {:ok, replay_decision}
+    else
+      {:blocked, "execution_outcome_replay_blocked", "Execution outcome ledger has unresolved dispatch application outcome",
+       %{
+         replay_decision: replay_decision,
+         execution_outcome: replay_decision.unresolved_outcome,
+         preflight:
+           preflight_snapshot(%{
+             status: "blocked",
+             reason: "execution_outcome_replay_blocked",
+             message: "Execution outcome ledger has unresolved dispatch application outcome"
+           })
+       }}
     end
   end
 
@@ -407,7 +413,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
     end
   end
 
-  defp dispatch_planned_outcome(outcome, ledger, state, candidate, authorization_decision) do
+  defp dispatch_planned_outcome(outcome, ledger, state, candidate, authorization_decision, replay_decision) do
     case safe_dispatch(ledger, candidate, now: state.now) do
       {:ok, applied_ledger, context} ->
         application_outcome =
@@ -423,12 +429,13 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
             correlation_id: context.correlation_id,
             preflight: preflight_snapshot(context.preflight),
             authorization_consumption: authorization_decision,
+            replay_decision: replay_decision,
             execution_outcome:
               dispatch_execution_outcome(candidate, %{
                 status: "succeeded",
                 reason_code: "dispatch_application_applied",
                 authorization_consumption_guard: authorization_decision,
-                executor_result: context,
+                executor_result: Map.put(context, :replay_decision, replay_decision),
                 side_effect_entered: true,
                 side_effect_may_have_happened: true
               })
@@ -451,12 +458,13 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
             correlation_id: optional_string(context, :correlation_id) || optional_string(outcome.intent, :correlation_id),
             preflight: preflight_snapshot(preflight),
             authorization_consumption: authorization_decision,
+            replay_decision: replay_decision,
             execution_outcome:
               dispatch_execution_outcome(candidate, %{
                 status: "not_executed",
                 reason_code: safe_status(value(preflight, :reason)) || "already_active",
                 authorization_consumption_guard: authorization_decision,
-                executor_result: preflight,
+                executor_result: Map.put(preflight, :replay_decision, replay_decision),
                 side_effect_entered: false,
                 side_effect_may_have_happened: false
               })
@@ -479,12 +487,13 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
             correlation_id: optional_string(context, :correlation_id) || optional_string(outcome.intent, :correlation_id),
             preflight: preflight_snapshot(preflight),
             authorization_consumption: authorization_decision,
+            replay_decision: replay_decision,
             execution_outcome:
               dispatch_execution_outcome(candidate, %{
                 status: "blocked",
                 reason_code: safe_status(value(preflight, :reason)) || safe_status(value(preflight, :status)) || "dispatch_preflight_blocked",
                 authorization_consumption_guard: authorization_decision,
-                executor_result: preflight,
+                executor_result: Map.put(preflight, :replay_decision, replay_decision),
                 side_effect_entered: false,
                 side_effect_may_have_happened: false
               })
@@ -505,12 +514,13 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
             attempt_id: optional_string(outcome.intent, :attempt_id),
             correlation_id: optional_string(outcome.intent, :correlation_id),
             authorization_consumption: authorization_decision,
+            replay_decision: replay_decision,
             execution_outcome:
               dispatch_execution_outcome(candidate, %{
                 status: "manual_attention",
                 reason_code: "dispatch_application_error",
                 authorization_consumption_guard: authorization_decision,
-                executor_result: %{error: safe_error(reason)},
+                executor_result: %{error: safe_error(reason), replay_decision: replay_decision},
                 side_effect_entered: false,
                 side_effect_may_have_happened: true
               })
@@ -874,6 +884,10 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       :execution_outcome,
       execution_outcome_snapshot(value(outcome, :execution_outcome))
     )
+    |> maybe_put(
+      :replay_decision,
+      replay_decision_snapshot(value(outcome, :replay_decision))
+    )
   end
 
   defp outcome_snapshot(_outcome), do: outcome_snapshot(%{})
@@ -972,6 +986,12 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   end
 
   defp execution_outcome_snapshot(_outcome), do: nil
+
+  defp replay_decision_snapshot(decision) when is_map(decision) do
+    CutoverReplayDecision.to_decision(decision)
+  end
+
+  defp replay_decision_snapshot(_decision), do: nil
 
   defp dispatch_execution_outcome(candidate, attrs) do
     attrs

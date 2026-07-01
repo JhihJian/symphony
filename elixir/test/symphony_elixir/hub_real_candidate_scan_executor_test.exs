@@ -1,7 +1,12 @@
 defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{CutoverExecutionOutcomeLedger, ProviderGovernance, RealCandidateScanExecutor}
+  alias SymphonyElixir.Hub.{
+    CutoverExecutionOutcomeCloseout,
+    CutoverExecutionOutcomeLedger,
+    ProviderGovernance,
+    RealCandidateScanExecutor
+  }
 
   test "rejects unsupported provider kinds without provider I/O" do
     request =
@@ -184,7 +189,64 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
       assert result.status == :unknown_result
       assert result.result_summary.provider_io == false
       assert result.result_summary.error == "execution_outcome_replay_blocked"
+      assert result.result_summary.replay_decision.decision == "blocked_unresolved_outcome"
       refute_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "matching retry-consideration closeout lets explicit candidate scan reconsider through provider I/O" do
+    root = Path.join(System.tmp_dir!(), "hub-real-candidate-retry-closeout-#{System.unique_integer([:positive])}")
+
+    try do
+      project = write_memory_project!(root, "alpha")
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [%Issue{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue", state: "Todo"}]
+      })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      request =
+        provider_request!(
+          project_id: "alpha",
+          provider_scope: %{kind: "memory", key: "memory:alpha", provider_scope_key: "memory:alpha", scope: %{namespace: "alpha"}},
+          operation_kind: :candidate_scan,
+          logical_key: "hub-poll:alpha:candidate_scan"
+        )
+
+      allowed_result =
+        RealCandidateScanExecutor.execute(request,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()}
+        )
+
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
+
+      unresolved =
+        allowed_result.result_summary.execution_outcome
+        |> Map.put(:status, "unknown")
+        |> Map.put(:reason_code, "provider_ack_lost")
+        |> CutoverExecutionOutcomeLedger.fact_snapshot()
+
+      ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]})
+      closeout = closeout_summary(ledger, unresolved, "allow_explicit_retry_consideration")
+
+      result =
+        RealCandidateScanExecutor.execute(request,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()},
+          cutover_execution_outcome_ledger: ledger,
+          cutover_execution_outcome_closeout: closeout
+        )
+
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
+      assert result.status == :success
+      assert result.result_summary.provider_io == true
+      assert result.result_summary.replay_decision.decision == "retry_consideration_allowed"
+      assert result.result_summary.replay_decision.auto_replay_allowed == false
+      assert result.result_summary.execution_outcome.status == "succeeded"
     after
       File.rm_rf(root)
     end
@@ -289,14 +351,59 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
               project_id: "alpha",
               operation: "poll",
               status: "authorized_for_explicit_execution",
-              provider_scope: %{},
+              provider_scope: %{kind: "memory", key: "memory:alpha", provider_scope_key: "memory:alpha", scope: %{namespace: "alpha"}},
               authorization_record_fingerprint: "record-alpha-poll",
               authorization_request: %{authorization_request_fingerprint: "auth-alpha-poll"},
-              evidence_fingerprints: %{}
+              cutover_operation_request: %{request_fingerprint: "request-alpha-poll"},
+              readiness_permit: %{permit_fingerprint: "permit-alpha-poll", decision: "ready_for_execution_consideration"},
+              cutover_gate: %{fingerprint: "gate-alpha-poll"},
+              evidence_fingerprints: %{
+                dry_run_audit: "audit-alpha-poll",
+                audit_history: "history-alpha-poll"
+              }
             }
           ]
         }
       ]
+    }
+  end
+
+  defp closeout_summary(ledger, outcome, resolution_code) do
+    CutoverExecutionOutcomeCloseout.build(
+      %{
+        cutover_execution_outcome_ledger: ledger,
+        execution_outcome_closeouts: [closeout_from_outcome(outcome, resolution_code)]
+      },
+      now: ~U[2026-07-01 09:00:00Z]
+    )
+  end
+
+  defp closeout_from_outcome(outcome, resolution_code) do
+    %{
+      project_id: outcome.project_id,
+      provider_scope: outcome.provider_scope,
+      operation: outcome.operation,
+      side_effect_source: outcome.side_effect_source,
+      replay_key: outcome.replay_key,
+      outcome_fingerprint: outcome.evidence_fingerprint,
+      outcome_status: outcome.status,
+      side_effect_entered: outcome.side_effect_entered,
+      side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+      cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+      authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+      authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+      readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+      readiness_permit_decision: outcome.readiness_permit_decision,
+      cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+      dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+      audit_history_fingerprint: outcome.audit_history_fingerprint,
+      consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+      resolution_code: resolution_code,
+      reason_code: "operator_checked_external_state",
+      action_code: "record_manual_resolution",
+      source: "operator_file",
+      created_at: "2026-07-01T09:01:00Z",
+      closed_at: "2026-07-01T09:02:00Z"
     }
   end
 

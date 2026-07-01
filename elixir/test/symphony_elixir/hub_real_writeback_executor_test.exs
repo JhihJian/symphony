@@ -3,6 +3,7 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
     ProviderToolRouting,
     RealWritebackExecutor,
@@ -341,8 +342,133 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
       assert result.status == :unknown_result
       assert result.result_summary.provider_io == false
       assert result.result_summary.error == "execution_outcome_replay_blocked"
+      assert result.result_summary.replay_decision.decision == "blocked_unresolved_outcome"
       assert result.result_summary.execution_outcome.status == "unknown"
       refute_received {:unexpected_provider_call, _issue_id, _state}
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "matching retry-consideration closeout lets idempotent writeback reconsider through existing guards" do
+    root = tmp_root("hub-real-writeback-retry-closeout")
+    test_pid = self()
+
+    try do
+      project = write_memory_project!(root, "alpha")
+      routed = routed_call!("tracker_issue", "set_status", %{issue_id: "129", state: "in_progress"}, "alpha", "memory")
+
+      first =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()}
+        )
+
+      unresolved =
+        first.result_summary.execution_outcome
+        |> Map.put(:status, "unknown")
+        |> Map.put(:reason_code, "writeback_ack_lost")
+        |> CutoverExecutionOutcomeLedger.fact_snapshot()
+
+      outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]})
+      closeout = closeout_summary(outcome_ledger, unresolved, "allow_explicit_retry_consideration")
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()},
+          cutover_execution_outcome_ledger: outcome_ledger,
+          cutover_execution_outcome_closeout: closeout,
+          tracker_update_issue_state: fn issue_id, state ->
+            send(test_pid, {:retry_provider_call, issue_id, state})
+            :ok
+          end
+        )
+
+      assert result.status == :success
+      assert result.result_summary.provider_io == true
+      assert result.result_summary.replay_decision.decision == "retry_consideration_allowed"
+      assert result.result_summary.replay_decision.auto_replay_allowed == false
+      assert_received {:retry_provider_call, "129", "in_progress"}
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "retry-consideration closeout does not bypass unknown non-idempotent writeback guardrail" do
+    root = tmp_root("hub-real-writeback-non-idempotent-closeout")
+    test_pid = self()
+
+    try do
+      project = write_github_project!(root, "alpha")
+
+      assert {:ok, routed} =
+               ProviderToolRouting.build_request(
+                 "github_issue",
+                 "upsert_workpad_comment",
+                 %{issue_id: "129", header: "## Codex Workpad", body: "safe body"},
+                 routing_opts("alpha", "github")
+               )
+
+      first =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger("github", "writeback")},
+          raw_target: %{issue_id: "129", header: "## Codex Workpad", body: "safe body"},
+          github_upsert_workpad_comment: fn issue_id, body, header ->
+            send(test_pid, {:first_provider_call, issue_id, body, header})
+            {:ok, %{"comment" => %{"id" => "comment-1", "url" => "https://example.test/comment-1"}}}
+          end
+        )
+
+      assert_received {:first_provider_call, "129", "safe body", "## Codex Workpad"}
+
+      unresolved =
+        first.result_summary.execution_outcome
+        |> Map.put(:status, "unknown")
+        |> Map.put(:reason_code, "writeback_ack_lost")
+        |> CutoverExecutionOutcomeLedger.fact_snapshot()
+
+      outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [unresolved]})
+      closeout = closeout_summary(outcome_ledger, unresolved, "allow_explicit_retry_consideration")
+
+      unknown_summary =
+        routed_summary(
+          "github_issue",
+          "upsert_workpad_comment",
+          %{issue_id: "129", header: "## Codex Workpad", body: "safe body"},
+          {:provider_result, :unknown_result, result_summary: %{message: "lost acknowledgement"}},
+          "alpha",
+          "github"
+        )
+
+      assert {:ok, unknown_fact} = WritebackProcessor.normalize(unknown_summary, replay_policy: "non_idempotent")
+      assert {:ok, runtime_ledger} = WritebackProcessor.apply_fact(RuntimeLedger.new(), unknown_fact)
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: Map.put(routed.writeback_intent, :replay_policy, "non_idempotent"),
+          registry: registry([project]),
+          runtime_ledger: runtime_ledger,
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger("github", "writeback")},
+          cutover_execution_outcome_ledger: outcome_ledger,
+          cutover_execution_outcome_closeout: closeout,
+          raw_target: %{issue_id: "129", header: "## Codex Workpad", body: "safe body"},
+          github_upsert_workpad_comment: fn issue_id, body, header ->
+            send(test_pid, {:unexpected_retry_provider_call, issue_id, body, header})
+            {:ok, %{"comment" => %{"id" => "comment-2"}}}
+          end
+        )
+
+      assert result.status == :permanent_failure
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.decision in ["manual_attention", "conflict"]
+      assert result.result_summary.reason in ["unknown_non_idempotent_writeback", "writeback_conflict"]
+      assert result.result_summary.replay_decision.decision == "retry_consideration_allowed"
+      refute_received {:unexpected_retry_provider_call, _issue_id, _body, _header}
     after
       File.rm_rf(root)
     end
@@ -602,6 +728,81 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
   end
 
   defp registry(projects), do: %{projects: projects, warnings: [], errors: []}
+
+  defp authorization_ledger(provider_kind \\ "memory", operation \\ "writeback") do
+    %{
+      projects: [
+        %{
+          project_id: "alpha",
+          authorization_request_count: 1,
+          records: [
+            %{
+              project_id: "alpha",
+              operation: operation,
+              status: "authorized_for_explicit_execution",
+              provider_scope: authorization_provider_scope(provider_kind),
+              authorization_record_fingerprint: "record-alpha-#{operation}-#{provider_kind}",
+              authorization_request: %{authorization_request_fingerprint: "auth-alpha-#{operation}-#{provider_kind}"},
+              cutover_operation_request: %{request_fingerprint: "request-alpha-#{operation}-#{provider_kind}"},
+              readiness_permit: %{permit_fingerprint: "permit-alpha-#{operation}-#{provider_kind}", decision: "ready_for_execution_consideration"},
+              cutover_gate: %{fingerprint: "gate-alpha-#{operation}-#{provider_kind}"},
+              evidence_fingerprints: %{
+                dry_run_audit: "audit-alpha-#{operation}-#{provider_kind}",
+                audit_history: "history-alpha-#{operation}-#{provider_kind}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  end
+
+  defp authorization_provider_scope("github") do
+    %{kind: "github", key: "github:jhihjian/alpha", provider_scope_key: "github:jhihjian/alpha", scope: %{owner: "JhihJian", repo: "alpha", project_number: 1}}
+  end
+
+  defp authorization_provider_scope("memory") do
+    %{kind: "memory", key: "memory:alpha", provider_scope_key: "memory:alpha", scope: %{namespace: "alpha"}}
+  end
+
+  defp closeout_summary(ledger, outcome, resolution_code) do
+    CutoverExecutionOutcomeCloseout.build(
+      %{
+        cutover_execution_outcome_ledger: ledger,
+        execution_outcome_closeouts: [closeout_from_outcome(outcome, resolution_code)]
+      },
+      now: ~U[2026-07-01 09:00:00Z]
+    )
+  end
+
+  defp closeout_from_outcome(outcome, resolution_code) do
+    %{
+      project_id: outcome.project_id,
+      provider_scope: outcome.provider_scope,
+      operation: outcome.operation,
+      side_effect_source: outcome.side_effect_source,
+      replay_key: outcome.replay_key,
+      outcome_fingerprint: outcome.evidence_fingerprint,
+      outcome_status: outcome.status,
+      side_effect_entered: outcome.side_effect_entered,
+      side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+      cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+      authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+      authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+      readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+      readiness_permit_decision: outcome.readiness_permit_decision,
+      cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+      dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+      audit_history_fingerprint: outcome.audit_history_fingerprint,
+      consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+      resolution_code: resolution_code,
+      reason_code: "operator_checked_external_state",
+      action_code: "record_manual_resolution",
+      source: "operator_file",
+      created_at: "2026-07-01T09:01:00Z",
+      closed_at: "2026-07-01T09:02:00Z"
+    }
+  end
 
   defp routed_call!(tool, operation, target, project_id, provider_kind) do
     assert {:ok, routed} =

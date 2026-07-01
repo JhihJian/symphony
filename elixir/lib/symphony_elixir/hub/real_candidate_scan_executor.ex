@@ -19,6 +19,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionOutcomeLedger,
     CutoverGate,
+    CutoverReplayDecision,
     ProviderGovernance,
     ProviderScope,
     SafeSummary
@@ -43,7 +44,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
 
   defp execute_candidate_scan(request, opts) do
     with {:ok, authorization_decision} <- authorization_consumption(request, opts),
-         :ok <- execution_outcome_replay_guard(request, opts, authorization_decision),
+         {:ok, replay_decision} <- execution_outcome_replay_guard(request, opts, authorization_decision),
          :ok <- cutover_gate(request, opts),
          :ok <- validate_provider_kind(request.provider_kind),
          {:ok, registry} <- registry(opts),
@@ -72,15 +73,16 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
             "succeeded",
             "candidate_scan_succeeded",
             true,
-            authorization_decision
+            authorization_decision,
+            replay_decision
           )
       )
     else
       {:authorization_blocked, decision} ->
         authorization_blocked_result(request, decision)
 
-      {:execution_outcome_replay_blocked, outcome} ->
-        execution_outcome_replay_blocked_result(request, outcome)
+      {:execution_outcome_replay_blocked, replay_decision} ->
+        execution_outcome_replay_blocked_result(request, replay_decision)
 
       {:cutover_blocked, reason} ->
         cutover_blocked_result(request, reason)
@@ -141,7 +143,7 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         input =
           Map.merge(guard, %{
             project_id: request.project_id,
-            provider_scope: request.provider_scope,
+            provider_scope: provider_scope_for_request(request),
             operation: "poll",
             side_effect_source: "candidate_scan",
             execution_mode: %{
@@ -184,28 +186,36 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   end
 
   defp execution_outcome_replay_guard(request, opts, authorization_decision) do
-    case Keyword.get(opts, :cutover_execution_outcome_ledger) || Keyword.get(opts, :execution_outcome_ledger) do
-      ledger when is_map(ledger) ->
-        candidate =
-          outcome_candidate(request,
-            status: "unknown",
-            reason_code: "candidate_scan_replay_check",
-            authorization_consumption_guard: authorization_decision,
-            side_effect_entered: true,
-            side_effect_may_have_happened: true
-          )
+    candidate =
+      outcome_candidate(request,
+        status: "unknown",
+        reason_code: "candidate_scan_replay_check",
+        authorization_consumption_guard: authorization_decision,
+        side_effect_entered: true,
+        side_effect_may_have_happened: true
+      )
 
-        case CutoverExecutionOutcomeLedger.find_unresolved(ledger, candidate) do
-          nil -> :ok
-          outcome -> {:execution_outcome_replay_blocked, outcome}
-        end
+    replay_decision =
+      CutoverReplayDecision.evaluate(%{
+        candidate: candidate,
+        authorization_consumption_guard: authorization_decision,
+        cutover_execution_outcome_ledger:
+          Keyword.get(opts, :cutover_execution_outcome_ledger) ||
+            Keyword.get(opts, :execution_outcome_ledger),
+        cutover_execution_outcome_closeout:
+          Keyword.get(opts, :cutover_execution_outcome_closeout) ||
+            Keyword.get(opts, :execution_outcome_closeout) ||
+            Keyword.get(opts, :closeout_summary)
+      })
 
-      _ledger ->
-        :ok
+    if replay_decision.allowed do
+      {:ok, replay_decision}
+    else
+      {:execution_outcome_replay_blocked, replay_decision}
     end
   end
 
-  defp execution_outcome_replay_blocked_result(request, outcome) do
+  defp execution_outcome_replay_blocked_result(request, replay_decision) do
     ProviderGovernance.result(request, :unknown_result,
       error_class: :unknown,
       result_summary: %{
@@ -213,8 +223,9 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         executor: "real_candidate_scan",
         provider_io: false,
         error: "execution_outcome_replay_blocked",
-        reason: "unresolved_execution_outcome",
-        execution_outcome: outcome
+        reason: replay_decision.reason_code,
+        replay_decision: replay_decision,
+        execution_outcome: replay_decision.unresolved_outcome
       }
     )
   end
@@ -445,6 +456,9 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
 
   defp maybe_put_backoff(opts, _status, _retry_after_ms), do: opts
 
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
   defp failure_summary(request, error, reason) do
     %{
       boundary: "hub_real_candidate_scan_executor",
@@ -457,9 +471,10 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
     }
   end
 
-  defp attach_execution_outcome(summary, request, status, reason, side_effect_entered?, authorization_decision) do
-    Map.put(
-      summary,
+  defp attach_execution_outcome(summary, request, status, reason, side_effect_entered?, authorization_decision, replay_decision \\ nil) do
+    summary
+    |> maybe_put(:replay_decision, replay_decision)
+    |> Map.put(
       :execution_outcome,
       outcome_candidate(request,
         status: status,
@@ -477,12 +492,21 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
     |> Map.new()
     |> Map.merge(%{
       project_id: request.project_id,
-      provider_scope: request.provider_scope,
+      provider_scope: provider_scope_for_request(request),
       operation: "poll",
       side_effect_source: "candidate_scan",
       executor_mode: %{mode: "real_candidate_scan", provider_io: true, supported_operations: ["candidate_scan"]}
     })
     |> CutoverExecutionOutcomeLedger.fact_snapshot()
+  end
+
+  defp provider_scope_for_request(request) do
+    %{
+      kind: request.provider_kind,
+      key: request.provider_scope_key,
+      provider_scope_key: request.provider_scope_key,
+      scope: request.provider_scope || %{}
+    }
   end
 
   defp rate_limited?(reason) do

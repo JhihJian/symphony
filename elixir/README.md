@@ -403,6 +403,16 @@ and calls the project-local tracker/GitHub write path under `Config.with_setting
 providers or operations return governed non-success results. Success, rate limits, retryable
 network/provider failures, config/auth/not-found/validation failures, and unknown/manual-attention
 outcomes are mapped into safe `ProviderGovernance` result summaries linked to the writeback intent.
+Hub cutover replay decisions are closeout-aware but still pre-side-effect guard summaries. After the
+execution outcome ledger and outcome closeout read model identify an unresolved `unknown` or
+`manual_attention` outcome, `SymphonyElixir.Hub.CutoverReplayDecision` can report whether the same
+project/provider scope, operation/source, replay key, outcome fingerprint/status, side-effect
+safety, permit, authorization, consumption guard, and safe evidence fingerprints still block a later
+explicit execution or allow retry consideration. A matching closeout with
+`allow_explicit_retry_consideration` only clears the old unresolved-outcome replay block after the
+current authorization consumption guard is already allowed. It does not create or consume
+authorization, call providers, apply dispatch mutations, start workers, write back, operate systemd,
+edit configuration, or bypass provider/runtime/writeback guardrails.
 Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
 `hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
 snapshot plus an injected `activation_probe` map or function and returns a serializable,
@@ -448,8 +458,8 @@ migration explicitly changes ownership.
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_scheduler`, `hub_activation_preflight`, `hub_cutover_gate`, `hub_project_registry`,
 `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
-`hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, and
-`hub_device_observability`.
+`hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_cutover_replay_decision`,
+`hub_dispatch_boundary`, and `hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
 planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
@@ -461,13 +471,16 @@ last/next tick times, duration, reason, coalesced/error counts, per-project due/
 summary, provider executor mode (`skeleton`, `real_candidate_scan`, or `real_writeback`), candidate
 counts, writeback executor supported/rejected operations, pending/succeeded/failed/unknown/manual
 attention counts, per-project writeback pressure, recent safe error categories, cutover gate
-decision counts, allowed/blocked operation sets, staged ownership record counts, error
+decision counts, allowed/blocked operation sets, staged ownership record counts, cutover replay
+decision counts for unresolved blocks, retry-consideration allowed/denied, stale/conflict/malformed/
+manual-attention decisions, safe replay/closeout/authorization/permit/guard fingerprints, error
 class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
 adds the operator-oriented device summary: scheduler enabled/disabled/queued/running/coalesced
 state and next-tick reason, project status counts, provider queue/backoff/circuit/recent-failure
 pressure, active attempts, pending start intents, workspace leases, unreleased capacity, writeback
 conflict/unknown/manual-attention/provider-lookup state, activation preflight blocks/unknowns,
-lifecycle unknown/manual-attention state, cutover gate status, and summary errors. Each project in
+lifecycle unknown/manual-attention state, cutover gate status, closeout-aware replay decision
+status, and summary errors. Each project in
 `hub_device_observability.projects` also includes a `detail` block for safe identity/provider scope,
 migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
 cutover gate decision, candidate intake, dispatch planning/application, worker start handoff,

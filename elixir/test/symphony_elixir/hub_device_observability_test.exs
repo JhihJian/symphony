@@ -36,6 +36,7 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
           worker_start_handoff: worker_start_handoff(),
           worker_lifecycle_reconciliation: worker_lifecycle_reconciliation(),
           cutover_execution_outcome_ledger: execution_outcome_ledger(),
+          cutover_replay_decision: replay_decision_summary(),
           legacy_projects: [%{project_id: "legacy", name: "Legacy project", service: "symphony@legacy.service"}],
           migration_boundary: %{
             direct_path_capabilities: ["legacy_poll_loop", "legacy_direct_writeback"],
@@ -73,6 +74,11 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.cutover_execution_outcome_closeout.unresolved_outcome_count == 1
     assert projection.overview.cutover_execution_outcome_closeout.closeout_count == 0
     assert projection.overview.cutover_execution_outcome_closeout.auto_replay_allowed == false
+    assert projection.overview.cutover_replay_decision.status == "blocked_unresolved_outcome"
+    assert projection.overview.cutover_replay_decision.unresolved_outcome_blocked_count == 1
+    assert projection.overview.cutover_replay_decision.no_unresolved_outcome_count == 1
+    assert projection.overview.cutover_replay_decision.requires_operator_attention_count == 1
+    assert projection.overview.cutover_replay_decision.auto_replay_allowed == false
     assert projection.overview.manual_attention.project_count == 1
     assert projection.migration_readiness.status == "blocked"
     assert projection.activation_plan.status == "blocked"
@@ -106,6 +112,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["alpha"].detail.dispatch_application.counts["applied_count"] == 1
     assert projects["alpha"].detail.worker_start.counts["selected_count"] == 1
     assert projects["alpha"].detail.lifecycle.counts.running == 1
+    assert projects["alpha"].cutover_replay_decision.status == "no_unresolved_outcome"
+    assert projects["alpha"].detail.replay_decision.status == "no_unresolved_outcome"
+    assert projects["alpha"].detail.replay_decision.requires_operator_attention == false
     assert projects["alpha"].migration_readiness.decision == "unknown_manual_attention"
     assert projects["alpha"].activation_plan.status == "unknown_manual_attention"
     assert projects["alpha"].activation_plan.operator_acknowledgement.status == "missing"
@@ -130,6 +139,12 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["gamma"].cutover_execution_outcome_closeout.status == "no_closeout"
     assert projects["gamma"].cutover_execution_outcome_closeout.counts.still_requires_operator_count == 1
     assert projects["gamma"].detail.outcome_closeout.status == "no_closeout"
+    assert projects["gamma"].cutover_replay_decision.status == "blocked_unresolved_outcome"
+    assert projects["gamma"].cutover_replay_decision.counts.unresolved_outcome_blocked_count == 1
+    assert projects["gamma"].cutover_replay_decision.blocked_replay != []
+    assert projects["gamma"].detail.replay_decision.status == "blocked_unresolved_outcome"
+    assert projects["gamma"].detail.replay_decision.requires_operator_attention == true
+    assert projects["gamma"].detail.replay_decision.safe_evidence_fingerprints.consumption_guard == "gamma-consumption-fp"
     assert projects["gamma"].writebacks.counts.unknown == 1
     assert projects["gamma"].writebacks.counts.manual_attention == 1
     assert Enum.member?(reason_names(projects["gamma"]), "writeback_unknown")
@@ -969,6 +984,55 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
           ]
         }
       ]
+    }
+  end
+
+  defp replay_decision_summary do
+    %{
+      version: 1,
+      generated_at: "2026-06-28T09:00:00Z",
+      recent_decisions: [
+        %{
+          project_id: "alpha",
+          provider_scope: %{kind: "github", key: "github:o/r", provider_scope_key: "github:o/r", scope: %{owner: "o", repo: "r"}},
+          operation: "poll",
+          side_effect_source: "candidate_scan",
+          replay_key: "alpha-poll-replay",
+          decision: "no_unresolved_outcome",
+          allowed: true,
+          reason_code: "no_matching_unresolved_outcome",
+          evaluated_at: "2026-06-28T09:00:00Z",
+          no_side_effects: true,
+          auto_replay_allowed: false
+        },
+        %{
+          project_id: "gamma",
+          provider_scope: %{kind: "gitlab", key: "gitlab:g/p", provider_scope_key: "gitlab:g/p", scope: %{project_slug: "g/p"}},
+          operation: "writeback",
+          side_effect_source: "writeback_executor",
+          replay_key: "gamma-writeback-replay",
+          outcome_replay_key: "gamma-writeback-replay",
+          outcome_fingerprint: "gamma-outcome-fp",
+          outcome_status: "unknown",
+          decision: "blocked_unresolved_outcome",
+          allowed: false,
+          reason_code: "matching_closeout_missing",
+          action_code: "record_execution_outcome_closeout",
+          authorization_record_fingerprint: "gamma-auth-record-fp",
+          readiness_permit_fingerprint: "gamma-permit-fp",
+          consumption_guard_fingerprint: "gamma-consumption-fp",
+          safe_evidence_fingerprints: %{
+            authorization_record: "gamma-auth-record-fp",
+            readiness_permit: "gamma-permit-fp",
+            consumption_guard: "gamma-consumption-fp"
+          },
+          evaluated_at: "2026-06-28T09:00:00Z",
+          no_side_effects: true,
+          auto_replay_allowed: false
+        }
+      ],
+      no_side_effects: true,
+      auto_replay_allowed: false
     }
   end
 

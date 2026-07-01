@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionOutcomeLedger,
     CutoverGate,
+    CutoverReplayDecision,
     DispatchBoundary,
     RuntimeLedger,
     SafeSummary
@@ -72,6 +73,11 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       Keyword.get(opts, :cutover_execution_outcome_ledger) ||
         Keyword.get(opts, :execution_outcome_ledger)
 
+    execution_outcome_closeout =
+      Keyword.get(opts, :cutover_execution_outcome_closeout) ||
+        Keyword.get(opts, :execution_outcome_closeout) ||
+        Keyword.get(opts, :closeout_summary)
+
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
     registry_projects = registry_projects_by_id(registry)
     initial_replay = RuntimeLedger.replay(initial_ledger)
@@ -88,6 +94,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
             cutover_gate,
             authorization_consumption_guard,
             execution_outcome_ledger,
+            execution_outcome_closeout,
             now
           )
 
@@ -221,9 +228,37 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     end)
   end
 
-  defp process_request(request, ledger, starter, activation_preflight, cutover_gate, authorization_consumption_guard, execution_outcome_ledger, now) do
-    cond do
-      authorization_block = authorization_consumption_block(authorization_consumption_guard, request) ->
+  defp process_request(
+         request,
+         ledger,
+         starter,
+         activation_preflight,
+         cutover_gate,
+         authorization_consumption_guard,
+         execution_outcome_ledger,
+         execution_outcome_closeout,
+         now
+       ) do
+    with {:ok, authorization_decision} <- authorization_consumption_result(authorization_consumption_guard, request),
+         {:ok, replay_decision} <-
+           execution_outcome_replay_result(
+             execution_outcome_ledger,
+             execution_outcome_closeout,
+             request,
+             authorization_decision
+           ),
+         :ok <-
+           worker_start_preflight(
+             request,
+             ledger,
+             activation_preflight,
+             cutover_gate,
+             authorization_decision,
+             replay_decision
+           ) do
+      execute_allowed_request(request, ledger, starter, now, authorization_decision, replay_decision)
+    else
+      {:authorization_blocked, authorization_block} ->
         result = %{
           status: "skipped",
           reason: "authorization_consumption_blocked",
@@ -233,33 +268,79 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
         {result_summary(request, result, "skipped", false), ledger, false}
 
-      replay_block = execution_outcome_replay_block(execution_outcome_ledger, request) ->
+      {:replay_blocked, replay_decision, authorization_decision} ->
         result = %{
           status: "skipped",
           reason: "execution_outcome_replay_blocked",
           error_summary: "Execution outcome ledger has unresolved worker start outcome",
-          execution_outcome: replay_block
+          authorization_consumption: authorization_decision,
+          replay_decision: replay_decision,
+          execution_outcome: replay_decision.unresolved_outcome
         }
 
         {result_summary(request, result, "skipped", false), ledger, false}
 
-      cutover_block = cutover_gate_block(cutover_gate, request.project_id) ->
+      {:cutover_blocked, cutover_block, authorization_decision, replay_decision} ->
         result = %{
           status: "skipped",
           reason: "cutover_gate_blocked",
           error_summary: optional_string(cutover_block, :message) || "Cutover gate blocked worker start"
         }
 
-        {result_summary(request, result, "skipped", false), ledger, false}
+        {result_summary(request, result, "skipped", false, authorization_decision, replay_decision), ledger, false}
 
-      activation_block = ActivationPreflight.block_reason(activation_preflight, request.project_id, :worker_start) ->
+      {:activation_blocked, activation_block, authorization_decision, replay_decision} ->
         result = %{
           status: "skipped",
           reason: "activation_preflight_blocked",
           error_summary: optional_string(activation_block, :message) || "Activation preflight blocked worker start"
         }
 
-        {result_summary(request, result, "skipped", false), ledger, false}
+        {result_summary(request, result, "skipped", false, authorization_decision, replay_decision), ledger, false}
+
+      {:start_intent_terminal, authorization_decision, replay_decision} ->
+        {already_acked_result(request, "start_intent_already_terminal", authorization_decision, replay_decision), ledger, false}
+
+      {:start_intent_unresolved, authorization_decision, replay_decision} ->
+        result = %{
+          status: "skipped",
+          reason: "start_intent_unresolved",
+          error_summary: "Worker start intent is unresolved"
+        }
+
+        {result_summary(request, result, "skipped", false, authorization_decision, replay_decision), ledger, false}
+    end
+  end
+
+  defp execute_allowed_request(request, ledger, starter, now, authorization_decision, replay_decision) do
+    case execute_starter(starter, request, now) |> normalize_starter_result() do
+      %{status: "ack"} = result ->
+        apply_ack_result(ledger, request, result, now, authorization_decision, replay_decision)
+
+      %{status: "failed"} = result ->
+        apply_failed_result(ledger, request, result, now, authorization_decision, replay_decision)
+
+      %{status: "manual_attention"} = result ->
+        apply_manual_attention_result(ledger, request, result, now, authorization_decision, replay_decision)
+
+      %{status: "unknown"} = result ->
+        apply_unknown_result(ledger, request, result, now, authorization_decision, replay_decision)
+
+      %{status: "already_acked"} = result ->
+        {result_summary(request, result, "already_acked", false, authorization_decision, replay_decision), ledger, false}
+
+      %{status: "skipped"} = result ->
+        {result_summary(request, result, "skipped", false, authorization_decision, replay_decision), ledger, false}
+    end
+  end
+
+  defp worker_start_preflight(request, ledger, activation_preflight, cutover_gate, authorization_decision, replay_decision) do
+    cond do
+      cutover_block = cutover_gate_block(cutover_gate, request.project_id) ->
+        {:cutover_blocked, cutover_block, authorization_decision, replay_decision}
+
+      activation_block = ActivationPreflight.block_reason(activation_preflight, request.project_id, :worker_start) ->
+        {:activation_blocked, activation_block, authorization_decision, replay_decision}
 
       start_intent_terminal?(
         ledger,
@@ -268,64 +349,49 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
         request.attempt_id,
         request.start_intent_id
       ) ->
-        {already_acked_result(request, "start_intent_already_terminal"), ledger, false}
+        {:start_intent_terminal, authorization_decision, replay_decision}
 
       request.start_intent_status in ["unknown", "manual_attention"] ->
-        result = %{
-          status: "skipped",
-          reason: "start_intent_unresolved",
-          error_summary: "Worker start intent is unresolved"
-        }
-
-        {result_summary(request, result, "skipped", false), ledger, false}
+        {:start_intent_unresolved, authorization_decision, replay_decision}
 
       true ->
-        case execute_starter(starter, request, now) |> normalize_starter_result() do
-          %{status: "ack"} = result ->
-            apply_ack_result(ledger, request, result, now)
-
-          %{status: "failed"} = result ->
-            apply_failed_result(ledger, request, result, now)
-
-          %{status: "manual_attention"} = result ->
-            apply_manual_attention_result(ledger, request, result, now)
-
-          %{status: "unknown"} = result ->
-            apply_unknown_result(ledger, request, result, now)
-
-          %{status: "already_acked"} = result ->
-            {result_summary(request, result, "already_acked", false), ledger, false}
-
-          %{status: "skipped"} = result ->
-            {result_summary(request, result, "skipped", false), ledger, false}
-        end
+        :ok
     end
   end
 
   defp cutover_gate_block(nil, _project_id), do: nil
   defp cutover_gate_block(cutover_gate, project_id), do: CutoverGate.block_reason(cutover_gate, project_id, :worker_start)
 
-  defp execution_outcome_replay_block(nil, _request), do: nil
-
-  defp execution_outcome_replay_block(ledger, request) when is_map(ledger) do
+  defp execution_outcome_replay_result(ledger, closeout, request, authorization_decision) do
     candidate =
       request
       |> outcome_candidate(%{
         status: "unknown",
         reason_code: "worker_start_replay_check",
+        authorization_consumption_guard: authorization_decision,
         executor_result: %{start_intent_id: request.start_intent_id, attempt_id: request.attempt_id},
         side_effect_entered: true,
         side_effect_may_have_happened: true
       })
 
-    CutoverExecutionOutcomeLedger.find_unresolved(ledger, candidate)
+    replay_decision =
+      CutoverReplayDecision.evaluate(%{
+        candidate: candidate,
+        authorization_consumption_guard: authorization_decision,
+        cutover_execution_outcome_ledger: ledger,
+        cutover_execution_outcome_closeout: closeout
+      })
+
+    if replay_decision.allowed do
+      {:ok, replay_decision}
+    else
+      {:replay_blocked, replay_decision, authorization_decision}
+    end
   end
 
-  defp execution_outcome_replay_block(_ledger, _request), do: nil
+  defp authorization_consumption_result(nil, _request), do: {:ok, nil}
 
-  defp authorization_consumption_block(nil, _request), do: nil
-
-  defp authorization_consumption_block(guard, request) when is_map(guard) do
+  defp authorization_consumption_result(guard, request) when is_map(guard) do
     input =
       Map.merge(guard, %{
         project_id: request.project_id,
@@ -344,30 +410,33 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       })
 
     case CutoverAuthorizationConsumptionGuard.evaluate(input) do
-      %{allowed: true} -> nil
-      decision -> decision
+      %{allowed: true} = decision -> {:ok, decision}
+      decision -> {:authorization_blocked, decision}
     end
   end
 
-  defp authorization_consumption_block(_guard, request) do
-    %{
-      project_id: request.project_id,
-      provider_scope: %{
-        kind: request.provider_kind,
-        key: request.provider_scope_key,
-        provider_scope_key: request.provider_scope_key,
-        scope: request.provider_scope || %{}
-      },
-      operation: "worker_start",
-      side_effect_source: "worker_start_handoff",
-      decision: "malformed",
-      reason_code: "authorization_consumption_guard_malformed",
-      action_code: "fix_authorization_consumption_guard"
-    }
-    |> CutoverAuthorizationConsumptionGuard.to_decision()
+  defp authorization_consumption_result(_guard, request) do
+    decision =
+      %{
+        project_id: request.project_id,
+        provider_scope: %{
+          kind: request.provider_kind,
+          key: request.provider_scope_key,
+          provider_scope_key: request.provider_scope_key,
+          scope: request.provider_scope || %{}
+        },
+        operation: "worker_start",
+        side_effect_source: "worker_start_handoff",
+        decision: "malformed",
+        reason_code: "authorization_consumption_guard_malformed",
+        action_code: "fix_authorization_consumption_guard"
+      }
+      |> CutoverAuthorizationConsumptionGuard.to_decision()
+
+    {:authorization_blocked, decision}
   end
 
-  defp apply_ack_result(ledger, request, result, now) do
+  defp apply_ack_result(ledger, request, result, now, authorization_decision, replay_decision) do
     ack =
       %{
         project_id: request.project_id,
@@ -387,12 +456,15 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       |> Map.new()
 
     case DispatchBoundary.acknowledge_start(ledger, ack, now: now) do
-      {:ok, ledger} -> {result_summary(request, result, "ack", true), ledger, true}
-      {:error, reason} -> {apply_error_result(request, result, reason), ledger, false}
+      {:ok, ledger} ->
+        {result_summary(request, result, "ack", true, authorization_decision, replay_decision), ledger, true}
+
+      {:error, reason} ->
+        {apply_error_result(request, result, reason, authorization_decision, replay_decision), ledger, false}
     end
   end
 
-  defp apply_failed_result(ledger, request, result, now) do
+  defp apply_failed_result(ledger, request, result, now, authorization_decision, replay_decision) do
     failure_status = failure_status(result)
 
     failure =
@@ -409,10 +481,19 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
 
-    apply_failure_boundary(ledger, request, result, failure_status, failure, now)
+    apply_failure_boundary(
+      ledger,
+      request,
+      result,
+      failure_status,
+      failure,
+      now,
+      authorization_decision,
+      replay_decision
+    )
   end
 
-  defp apply_manual_attention_result(ledger, request, result, now) do
+  defp apply_manual_attention_result(ledger, request, result, now, authorization_decision, replay_decision) do
     failure =
       %{
         project_id: request.project_id,
@@ -426,20 +507,32 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
 
-    apply_failure_boundary(ledger, request, result, :manual_attention, failure, now)
+    apply_failure_boundary(
+      ledger,
+      request,
+      result,
+      :manual_attention,
+      failure,
+      now,
+      authorization_decision,
+      replay_decision
+    )
   end
 
-  defp apply_failure_boundary(ledger, request, result, failure_status, failure, now) do
+  defp apply_failure_boundary(ledger, request, result, failure_status, failure, now, authorization_decision, replay_decision) do
     case DispatchBoundary.record_start_failure(ledger, failure, failure_status,
            now: now,
            due_at: value(result, :due_at)
          ) do
-      {:ok, ledger} -> {result_summary(request, result, result.status, true), ledger, true}
-      {:error, reason} -> {apply_error_result(request, result, reason), ledger, false}
+      {:ok, ledger} ->
+        {result_summary(request, result, result.status, true, authorization_decision, replay_decision), ledger, true}
+
+      {:error, reason} ->
+        {apply_error_result(request, result, reason, authorization_decision, replay_decision), ledger, false}
     end
   end
 
-  defp apply_unknown_result(ledger, request, result, now) do
+  defp apply_unknown_result(ledger, request, result, now, authorization_decision, replay_decision) do
     unknown =
       %{
         project_id: request.project_id,
@@ -450,8 +543,11 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       }
 
     case DispatchBoundary.record_start_unknown(ledger, unknown, now: now) do
-      {:ok, ledger} -> {result_summary(request, result, "unknown", true), ledger, true}
-      {:error, reason} -> {apply_error_result(request, result, reason), ledger, false}
+      {:ok, ledger} ->
+        {result_summary(request, result, "unknown", true, authorization_decision, replay_decision), ledger, true}
+
+      {:error, reason} ->
+        {apply_error_result(request, result, reason, authorization_decision, replay_decision), ledger, false}
     end
   end
 
@@ -582,7 +678,12 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     |> request_snapshot()
   end
 
-  defp result_summary(request, result, status, ledger_changed?) do
+  defp result_summary(request, result, status, ledger_changed?, authorization_decision \\ nil, replay_decision \\ nil) do
+    result =
+      result
+      |> maybe_put(:authorization_consumption, authorization_decision)
+      |> maybe_put(:replay_decision, replay_decision)
+
     summary = %{
       status: status,
       reason: safe_status(value(result, :reason)) || default_reason(status),
@@ -605,6 +706,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       request: request,
       starter_result: safe_preserved_map(result),
       authorization_consumption: authorization_consumption_snapshot(value(result, :authorization_consumption)),
+      replay_decision: replay_decision_snapshot(value(result, :replay_decision)),
       execution_outcome: execution_outcome_snapshot(request, result, status, ledger_changed?),
       ledger_changed: ledger_changed?,
       safety: safety_summary()
@@ -613,15 +715,15 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     result_snapshot(summary)
   end
 
-  defp already_acked_result(request, reason) do
-    result_summary(request, %{status: "already_acked", reason: reason}, "already_acked", false)
+  defp already_acked_result(request, reason, authorization_decision, replay_decision) do
+    result_summary(request, %{status: "already_acked", reason: reason}, "already_acked", false, authorization_decision, replay_decision)
   end
 
-  defp apply_error_result(request, result, reason) do
+  defp apply_error_result(request, result, reason, authorization_decision, replay_decision) do
     result
     |> Map.put(:reason, "ledger_apply_error")
     |> Map.put(:error_summary, safe_error(reason))
-    |> then(&result_summary(request, &1, "skipped", false))
+    |> then(&result_summary(request, &1, "skipped", false, authorization_decision, replay_decision))
   end
 
   defp result_snapshot(result) when is_map(result) do
@@ -649,6 +751,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       request: maybe_request_snapshot(value(result, :request)),
       starter_result: safe_preserved_map(value(result, :starter_result) || %{}),
       authorization_consumption: authorization_consumption_snapshot(value(result, :authorization_consumption)),
+      replay_decision: replay_decision_snapshot(value(result, :replay_decision)),
       execution_outcome: execution_outcome_value_snapshot(value(result, :execution_outcome)),
       ledger_changed: value(result, :ledger_changed) == true,
       safety: safety_snapshot(value(result, :safety))
@@ -699,6 +802,12 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   end
 
   defp authorization_consumption_snapshot(_consumption), do: nil
+
+  defp replay_decision_snapshot(decision) when is_map(decision) do
+    CutoverReplayDecision.to_decision(decision)
+  end
+
+  defp replay_decision_snapshot(_decision), do: nil
 
   defp execution_outcome_snapshot(request, result, status, ledger_changed?) do
     case value(result, :execution_outcome) do

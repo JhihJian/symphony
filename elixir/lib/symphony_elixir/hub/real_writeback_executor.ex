@@ -19,6 +19,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     CutoverAuthorizationConsumptionGuard,
     CutoverExecutionOutcomeLedger,
     CutoverGate,
+    CutoverReplayDecision,
     ProviderGovernance,
     ProviderScope,
     RuntimeLedger,
@@ -44,22 +45,22 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   def execute(request, opts \\ []) when is_map(request) and is_list(opts) do
     with :ok <- validate_operation_kind(request),
          {:ok, authorization_decision} <- authorization_consumption(request, opts),
-         :ok <- execution_outcome_replay_guard(request, opts, authorization_decision),
+         {:ok, replay_decision} <- execution_outcome_replay_guard(request, opts, authorization_decision),
          :ok <- cutover_gate(request, opts),
          :ok <- activation_preflight(request, opts),
          {:ok, pending_fact} <- pending_fact(request, opts),
          {:ok, decision} <- WritebackProcessor.decide(runtime_ledger(opts), pending_fact),
-         :ok <- allow_execution(decision),
+         :ok <- allow_execution(decision, replay_decision),
          {:ok, context} <- project_context(request, opts),
          :ok <- validate_context_scope(request, context),
          {:ok, execution} <- execute_writeback(request, pending_fact, context, opts) do
-      result_from_execution(request, pending_fact, execution, authorization_decision)
+      result_from_execution(request, pending_fact, execution, authorization_decision, replay_decision)
     else
       {:authorization_blocked, decision} ->
         authorization_blocked_result(request, decision)
 
-      {:execution_outcome_replay_blocked, outcome} ->
-        execution_outcome_replay_blocked_result(request, outcome)
+      {:execution_outcome_replay_blocked, replay_decision} ->
+        execution_outcome_replay_blocked_result(request, replay_decision)
 
       {:manual_attention, reason} ->
         manual_attention_result(request, reason)
@@ -70,8 +71,8 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
       {:cutover_blocked, reason} ->
         cutover_blocked_result(request, reason)
 
-      {:decision_blocked, decision} ->
-        blocked_decision_result(request, decision)
+      {:decision_blocked, decision, replay_decision} ->
+        blocked_decision_result(request, decision, replay_decision)
 
       {:unsupported_operation, reason} ->
         unsupported_result(request, reason)
@@ -183,7 +184,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
         input =
           Map.merge(guard, %{
             project_id: request.project_id,
-            provider_scope: request.provider_scope,
+            provider_scope: provider_scope_for_request(request),
             operation: "writeback",
             side_effect_source: "writeback_executor",
             execution_mode: %{
@@ -205,25 +206,33 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   end
 
   defp execution_outcome_replay_guard(request, opts, authorization_decision) do
-    case Keyword.get(opts, :cutover_execution_outcome_ledger) || Keyword.get(opts, :execution_outcome_ledger) do
-      ledger when is_map(ledger) ->
-        candidate =
-          outcome_candidate(request,
-            status: "unknown",
-            reason_code: "writeback_replay_check",
-            authorization_consumption_guard: authorization_decision,
-            executor_result: replay_guard_summary(request, opts),
-            side_effect_entered: true,
-            side_effect_may_have_happened: true
-          )
+    candidate =
+      outcome_candidate(request,
+        status: "unknown",
+        reason_code: "writeback_replay_check",
+        authorization_consumption_guard: authorization_decision,
+        executor_result: replay_guard_summary(request, opts),
+        side_effect_entered: true,
+        side_effect_may_have_happened: true
+      )
 
-        case CutoverExecutionOutcomeLedger.find_unresolved(ledger, candidate) do
-          nil -> :ok
-          outcome -> {:execution_outcome_replay_blocked, outcome}
-        end
+    replay_decision =
+      CutoverReplayDecision.evaluate(%{
+        candidate: candidate,
+        authorization_consumption_guard: authorization_decision,
+        cutover_execution_outcome_ledger:
+          Keyword.get(opts, :cutover_execution_outcome_ledger) ||
+            Keyword.get(opts, :execution_outcome_ledger),
+        cutover_execution_outcome_closeout:
+          Keyword.get(opts, :cutover_execution_outcome_closeout) ||
+            Keyword.get(opts, :execution_outcome_closeout) ||
+            Keyword.get(opts, :closeout_summary)
+      })
 
-      _ledger ->
-        :ok
+    if replay_decision.allowed do
+      {:ok, replay_decision}
+    else
+      {:execution_outcome_replay_blocked, replay_decision}
     end
   end
 
@@ -250,8 +259,8 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   defp normalize_writeback_processor_result({:ok, fact}), do: {:ok, fact}
   defp normalize_writeback_processor_result({:error, diagnostics}), do: {:error, {:writeback_normalize_failed, diagnostic_codes(diagnostics)}}
 
-  defp allow_execution(%{action: action}) when action in [:execute_once, :retry_writeback], do: :ok
-  defp allow_execution(decision), do: {:decision_blocked, decision}
+  defp allow_execution(%{action: action}, _replay_decision) when action in [:execute_once, :retry_writeback], do: :ok
+  defp allow_execution(decision, replay_decision), do: {:decision_blocked, decision, replay_decision}
 
   defp project_context(request, opts) do
     with :ok <- validate_provider_kind(request.provider_kind),
@@ -441,13 +450,13 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   defp normalize_provider_call_result({:manual_attention, reason}), do: {:manual_attention, reason}
   defp normalize_provider_call_result(other), do: {:provider_error, {:unexpected_provider_result, other}}
 
-  defp result_from_execution(request, fact, payload, authorization_decision) do
+  defp result_from_execution(request, fact, payload, authorization_decision, replay_decision) do
     ProviderGovernance.result(request, :success,
       writeback_intent_key: fact.writeback.intent_key,
       external_ref: external_ref(payload),
       result_summary:
         success_summary(request, fact, payload)
-        |> attach_execution_outcome(request, "succeeded", "writeback_succeeded", true, authorization_decision)
+        |> attach_execution_outcome(request, "succeeded", "writeback_succeeded", true, authorization_decision, replay_decision)
     )
   end
 
@@ -477,7 +486,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     )
   end
 
-  defp blocked_decision_result(request, decision) do
+  defp blocked_decision_result(request, decision, replay_decision) do
     status =
       case decision.decision do
         :completed -> :success
@@ -508,7 +517,8 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
           outcome_status_for_blocked_decision(decision),
           safe_reason(decision.reason),
           false,
-          nil
+          nil,
+          replay_decision
         )
     )
   end
@@ -586,7 +596,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     )
   end
 
-  defp execution_outcome_replay_blocked_result(request, outcome) do
+  defp execution_outcome_replay_blocked_result(request, replay_decision) do
     ProviderGovernance.result(request, :unknown_result,
       error_class: :unknown,
       result_summary: %{
@@ -594,8 +604,9 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
         executor: "real_writeback",
         provider_io: false,
         error: "execution_outcome_replay_blocked",
-        reason: "unresolved_execution_outcome",
-        execution_outcome: outcome
+        reason: replay_decision.reason_code,
+        replay_decision: replay_decision,
+        execution_outcome: replay_decision.unresolved_outcome
       }
     )
   end
@@ -699,6 +710,9 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
 
   defp maybe_put_backoff(opts, _status, _retry_after_ms), do: opts
 
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
   defp failure_summary(request, error, reason) do
     %{
       boundary: "hub_real_writeback_executor",
@@ -715,9 +729,10 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     |> SafeSummary.sanitize_map(atom_values: :preserve)
   end
 
-  defp attach_execution_outcome(summary, request, status, reason, side_effect_entered?, authorization_decision) do
-    Map.put(
-      summary,
+  defp attach_execution_outcome(summary, request, status, reason, side_effect_entered?, authorization_decision, replay_decision \\ nil) do
+    summary
+    |> maybe_put(:replay_decision, replay_decision)
+    |> Map.put(
       :execution_outcome,
       outcome_candidate(request,
         status: status,
@@ -735,7 +750,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
     |> Map.new()
     |> Map.merge(%{
       project_id: request.project_id,
-      provider_scope: request.provider_scope,
+      provider_scope: provider_scope_for_request(request),
       operation: "writeback",
       side_effect_source: "writeback_executor",
       executor_mode: %{
@@ -746,6 +761,15 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
       }
     })
     |> CutoverExecutionOutcomeLedger.fact_snapshot()
+  end
+
+  defp provider_scope_for_request(request) do
+    %{
+      kind: request.provider_kind,
+      key: request.provider_scope_key,
+      provider_scope_key: request.provider_scope_key,
+      scope: request.provider_scope || %{}
+    }
   end
 
   defp replay_guard_summary(request, opts) do
@@ -994,8 +1018,6 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
       diagnostic -> safe_reason(diagnostic)
     end)
   end
-
-  defp diagnostic_codes(_diagnostics), do: []
 
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
   defp non_negative_integer(_value), do: nil

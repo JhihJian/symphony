@@ -161,6 +161,20 @@ resolution/reason/action code 和安全时间。匹配当前 evidence 时可显�
 attention。closeout 只影响 Dashboard/API 审计摘要，不会调用 provider、dispatch、worker starter、
 writeback、systemd 或配置修改，也不会自动重放旧副作用或接管 legacy service。没有 outcome 显示
 `no_outcome`；有 unresolved outcome 但没有有效 closeout 显示 `no_closeout`。
+outcome closeout 之后，Hub 还会在真实 Hub-owned side-effect 入口前暴露 closeout-aware replay
+decision 摘要：`hub_cutover_replay_decision` 和
+`hub_device_observability.cutover_replay_decision`。它把 unresolved `unknown` / `manual_attention`
+outcome、matching closeout、当前 authorization consumption guard、permit、authorization record 和
+safe evidence fingerprint 绑定成 `no_unresolved_outcome`、`blocked_unresolved_outcome`、
+`retry_consideration_allowed`、`retry_consideration_denied`、`stale_closeout`、`conflict`、
+`manual_attention`、`malformed` 或 `unsupported` 等状态。只有当前 consumption guard 已经对同一
+project/operation/source 返回 allowed，且 closeout 是当前有效的
+`allow_explicit_retry_consideration`，并且 replay key、outcome fingerprint/status、project/provider
+scope、operation/source、side-effect safety 和证据 fingerprint 都匹配时，real candidate scan、
+dispatch plan application、real worker start handoff 和 real writeback 才能越过 unresolved outcome
+replay block。这个 decision 不会创建 authorization、不会消费 authorization、不会调用 provider/worker/
+writeback/systemd/config，也不会把 closeout 当作外部副作用成功；后续显式执行仍必须通过 permit、
+authorization ledger、consumption guard 以及 provider/runtime/writeback 自身 guardrail。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -209,7 +223,11 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_authorization_consumption_guard: .hub_cutover_authorization_consumption_guard,
   device_cutover_authorization_consumption_guard: .hub_device_observability.cutover_authorization_consumption_guard,
   cutover_execution_outcome_ledger: .hub_cutover_execution_outcome_ledger,
-  device_cutover_execution_outcome_ledger: .hub_device_observability.cutover_execution_outcome_ledger
+  device_cutover_execution_outcome_ledger: .hub_device_observability.cutover_execution_outcome_ledger,
+  cutover_execution_outcome_closeout: .hub_cutover_execution_outcome_closeout,
+  device_cutover_execution_outcome_closeout: .hub_device_observability.cutover_execution_outcome_closeout,
+  cutover_replay_decision: .hub_cutover_replay_decision,
+  device_cutover_replay_decision: .hub_device_observability.cutover_replay_decision
 }'
 ```
 

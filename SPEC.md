@@ -1756,6 +1756,37 @@ Runtime entrypoint:
   facts but no valid closeout MUST show `no_closeout`, not pending migration, pending execution, or
   pending retry. Malformed closeout input for one project MUST NOT crash Hub runtime,
   `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations SHOULD expose a closeout-aware cutover replay decision summary
+  before real Hub-owned side-effect entrypoints. The summary SHOULD bind project identity, provider
+  scope, operation, side-effect source, outcome replay key, outcome evidence fingerprint/status,
+  side-effect-entered/may-have-happened semantics, matching closeout fingerprint/resolution/operator
+  request/timestamps, current cutover operation request, readiness permit, execution authorization
+  record, authorization consumption guard, and related safe evidence fingerprints.
+- Replay decisions SHOULD distinguish `no_unresolved_outcome`, `blocked_unresolved_outcome`,
+  `retry_consideration_allowed`, `retry_consideration_denied`, `stale_closeout`, `conflict`,
+  `manual_attention`, `malformed`, and `unsupported` or implementation-defined equivalent
+  categories. `no_unresolved_outcome` MUST NOT imply pending migration, pending execution, or
+  pending retry.
+- Real candidate scan, dispatch plan application, real worker start handoff, and real provider
+  writeback SHOULD consume the closeout-aware replay decision before provider I/O, dispatch/runtime
+  mutation, worker start, or writeback. An unresolved `unknown` or `manual_attention` outcome MAY be
+  allowed past the replay block only when the current authorization consumption guard is already
+  `allowed`, a matching current closeout is resolved with `allow_explicit_retry_consideration`, and
+  project/provider scope, operation/source, replay key, outcome fingerprint/status, side-effect
+  safety, and current safe evidence fingerprints still match.
+- `allow_explicit_retry_consideration` MUST NOT create an authorization request or record, consume
+  authorization, call providers, mutate dispatch/runtime ledgers, start workers, write providers,
+  operate systemd, edit configuration, interpret an old authorization/consumption event as current
+  permission, or treat a closeout as external side-effect success. Stale/conflicting/malformed/
+  unsupported closeouts, side-effect safety conflicts, missing authorization/permit/guard evidence,
+  and non-idempotent or may-have-happened writeback paths MUST remain blocked or manual-attention
+  rather than silently replayed.
+- Dashboard/API summaries SHOULD expose device-level and project-level replay decision counts for
+  blocked unresolved outcomes, retry consideration allowed/denied, stale/conflict/manual-attention/
+  malformed/unsupported decisions, recent safe reason/action codes, blocked replay entries, and
+  safe replay/closeout/authorization/permit/guard fingerprints. Malformed replay decision or
+  closeout input for one project MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other
+  project summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

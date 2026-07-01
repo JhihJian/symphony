@@ -35,6 +35,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.CutoverGate,
           SymphonyElixir.Hub.CutoverOperationAudit,
           SymphonyElixir.Hub.CutoverReadinessPermit,
+          SymphonyElixir.Hub.CutoverReplayDecision,
           SymphonyElixir.Hub.DispatchBoundary,
           SymphonyElixir.Hub.DispatchPlanApplication,
           SymphonyElixir.Hub.DispatchPlanning,
