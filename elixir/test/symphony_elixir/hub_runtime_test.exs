@@ -131,7 +131,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       safe_text = inspect(payload)
       refute safe_text =~ "GITHUB_TOKEN"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "secret"
       refute safe_text =~ "raw_config"
@@ -333,7 +333,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
         }
       }
 
-      snapshot =
+      permit_snapshot =
         Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
           now: ~U[2026-06-28 09:04:00Z],
           activation_probe: activation_probe,
@@ -344,16 +344,61 @@ defmodule SymphonyElixir.HubRuntimeTest do
           cutover_operation_requests: [request]
         )
 
+      [operation_permit] =
+        permit_snapshot.hub_device_observability.projects
+        |> hd()
+        |> get_in([:cutover_readiness_permit, :permits])
+
+      authorization_request = %{
+        authorization_request_id: "authorization-alpha-writeback",
+        project_id: "alpha",
+        provider_scope: %{kind: "memory", provider_scope_key: "memory:alpha"},
+        operation: "writeback",
+        cutover_operation_request_fingerprint: operation_permit.request.request_fingerprint,
+        readiness_permit_fingerprint: operation_permit.permit_fingerprint,
+        readiness_permit_decision: operation_permit.decision,
+        activation_plan_fingerprint: operation_permit.activation_plan.fingerprint,
+        operator_acknowledgement_fingerprint: operation_permit.operator_acknowledgement.fingerprint,
+        cutover_gate_decision: operation_permit.cutover_gate.decision,
+        cutover_gate_fingerprint: operation_permit.cutover_gate.fingerprint,
+        dry_run_audit_fingerprint: operation_permit.evidence_fingerprints.dry_run_audit,
+        audit_history_fingerprint: operation_permit.evidence_fingerprints.audit_history,
+        evidence_fingerprints: %{runtime_modes: operation_permit.evidence_fingerprints.runtime_modes},
+        executor_modes: operation_permit.executor_modes,
+        skeleton_mode: operation_permit.executor_modes.skeleton_mode,
+        dry_run_mode: operation_permit.executor_modes.dry_run_mode,
+        unsupported_mode: operation_permit.executor_modes.unsupported_mode,
+        source: "operator-file",
+        requested_at: "2026-06-28T09:04:30Z",
+        operator_intent: %{action_codes: ["authorize_explicit_execution"], note: "Authorization Bearer token should not leak"}
+      }
+
+      snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-28 09:00:00Z], loaded_registry,
+          now: ~U[2026-06-28 09:04:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-28 09:04:00Z], probe: activation_probe),
+          provider_executor: RealWritebackExecutor,
+          scheduler: %{enabled: true, status: "scheduled"},
+          operator_acknowledgements: [ack],
+          cutover_operation_requests: [request],
+          cutover_execution_authorization_requests: [authorization_request]
+        )
+
       assert snapshot.hub_cutover_operation_audit.status == "dry_run_ready"
       assert snapshot.hub_cutover_audit_history.status == "history_ready"
       assert snapshot.hub_cutover_readiness_permit.status == "ready_for_execution_consideration"
+      assert snapshot.hub_cutover_execution_authorization_ledger.status == "authorized_for_explicit_execution"
       assert snapshot.hub_runtime.cutover_operation_audit.counts.request_count == 1
       assert snapshot.hub_runtime.cutover_audit_history.counts.history_entry_count == 1
       assert snapshot.hub_runtime.cutover_readiness_permit.counts.permit_count == 1
       assert snapshot.hub_runtime.cutover_readiness_permit.counts.ready_count == 1
+      assert snapshot.hub_runtime.cutover_execution_authorization_ledger.counts.record_count == 1
+      assert snapshot.hub_runtime.cutover_execution_authorization_ledger.counts.authorized_count == 1
       assert snapshot.hub_device_observability.cutover_operation_audit.counts.dry_run_ready_count == 1
       assert snapshot.hub_device_observability.cutover_audit_history.counts.unresolved_manual_attention_count == 0
       assert snapshot.hub_device_observability.cutover_readiness_permit.counts.ready_count == 1
+      assert snapshot.hub_device_observability.cutover_execution_authorization_ledger.counts.authorized_count == 1
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_operation_audit.request.request_id == "cutover-dry-run-alpha"
       assert [%{decision: "would_allow", dry_run_only: true, operation: "writeback"}] = project.cutover_operation_audit.operation_results
@@ -361,6 +406,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert project.cutover_audit_history.dry_run_only == true
       assert project.cutover_audit_history.no_side_effects == true
       assert [%{decision: "ready_for_execution_consideration", operation: "writeback"}] = project.cutover_readiness_permit.permits
+      assert [%{status: "authorized_for_explicit_execution", operation: "writeback"}] = project.cutover_execution_authorization_ledger.records
 
       runtime_name = Module.concat(__MODULE__, :CutoverOperationAuditSnapshot)
 
@@ -373,15 +419,23 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_operation_audit.counts.request_count == 1
       assert payload.hub_cutover_audit_history.counts.history_entry_count == 1
       assert payload.hub_cutover_readiness_permit.counts.ready_count == 1
+      assert payload.hub_cutover_execution_authorization_ledger.counts.authorized_count == 1
       assert payload.hub_device_observability.overview.cutover_operation_audit.request_count == 1
       assert payload.hub_device_observability.overview.cutover_audit_history.history_entry_count == 1
       assert payload.hub_device_observability.overview.cutover_readiness_permit.ready_count == 1
+      assert payload.hub_device_observability.overview.cutover_execution_authorization_ledger.authorized_count == 1
       assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_audit_history, :status]) == "history_ready"
       assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_readiness_permit, :status]) == "ready_for_execution_consideration"
+
+      assert payload.hub_device_observability.projects
+             |> hd()
+             |> get_in([:cutover_execution_authorization_ledger, :status]) ==
+               "authorized_for_explicit_execution"
 
       safe_text = inspect(payload)
       refute safe_text =~ "full prompt"
       refute safe_text =~ "should not leak"
+      refute safe_text =~ "Bearer token"
     after
       File.rm_rf(root)
     end
@@ -489,7 +543,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "append comment body should not leak"
       refute safe_text =~ "ghp_secret_token"
       refute safe_text =~ "Bearer"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "raw_provider"
       refute safe_text =~ "full prompt"
       refute safe_text =~ "transcript"
@@ -1055,7 +1109,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "full prompt"
       refute safe_text =~ "complete transcript"
       refute safe_text =~ "complete comment body"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "raw_config"
     after
       File.rm_rf(root)
@@ -1215,7 +1269,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "transcript"
       refute safe_text =~ "raw provider body"
       refute safe_text =~ "complete comment body"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "ghp_"
     after
@@ -1399,7 +1453,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "description"
       refute safe_text =~ "GITHUB_TOKEN"
       refute safe_text =~ "ghp_"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "raw_config"
     after
@@ -1483,7 +1537,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       safe_text = inspect(Presenter.state_payload(runtime_name, 100))
       refute safe_text =~ "github_api_status"
       refute safe_text =~ "GITHUB_TOKEN"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "raw_provider"
     after
@@ -2016,7 +2070,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       safe_text = inspect(payload)
       refute safe_text =~ "GITHUB_TOKEN"
-      refute safe_text =~ "authorization"
+      refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "secret"
       refute safe_text =~ "raw_config"
