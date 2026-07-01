@@ -1,0 +1,377 @@
+name: open-code-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: OpenCodeReview audit
+    runs-on: [self-hosted, linux, x64, symphony-ocr]
+    # Self-hosted runners only process same-repository PRs here. Fork PRs are
+    # intentionally excluded because this workflow has local tool and model access.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCR_LLM_URL: http://127.0.0.1:8280/v1
+      OCR_LLM_MODEL: gpt-5.4-mini
+      OCR_BIN: /home/jhihjian/.local/bin/ocr
+      SUMM_BIN: /home/jhihjian/.nvm/versions/node/v24.13.1/bin/summ
+      PATH: /home/jhihjian/.local/bin:/home/jhihjian/.nvm/versions/node/v24.13.1/bin:/usr/local/bin:/usr/bin:/bin
+
+    steps:
+      - name: Checkout trusted workflow repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve audit target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_ref="${{ github.event.pull_request.base.ref }}"
+            pr_number="${{ github.event.pull_request.number }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+
+            git fetch origin "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}"
+            git fetch origin "+refs/pull/${pr_number}/head:refs/remotes/pull/${pr_number}/head"
+            pr_head_ref="refs/remotes/pull/${pr_number}/head"
+            fetched_head_sha="$(git rev-parse "$pr_head_ref")"
+
+            if [ "$fetched_head_sha" != "$head_sha" ]; then
+              echo "Fetched PR head $fetched_head_sha does not match event head $head_sha." >&2
+              exit 1
+            fi
+
+            {
+              echo "mode=pr"
+              echo "base_ref=origin/${base_ref}"
+              echo "head_ref=${pr_head_ref}"
+              echo "title=PR #${pr_number} 合并前审查"
+              echo "target_url=${{ github.server_url }}/${{ github.repository }}/pull/${pr_number}"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            default_branch="${{ github.event.repository.default_branch }}"
+            git fetch origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+            target_sha="${{ github.sha }}"
+            git cat-file -e "${target_sha}^{commit}" 2>/dev/null || git fetch origin "$target_sha"
+            base_ref="${{ github.event.before }}"
+            audit_mode="push"
+
+            if [ -z "$base_ref" ] || printf '%s' "$base_ref" | grep -Eq '^0+$'; then
+              echo "Unable to determine a reliable base ref for push audit." >&2
+              base_ref=""
+              audit_mode="push_unavailable"
+            elif git cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+              base_ref="$(git merge-base "$target_sha" "$base_ref" 2>/dev/null || true)"
+              if [ -z "$base_ref" ]; then
+                echo "Failed to compute merge-base for push audit." >&2
+                audit_mode="push_unavailable"
+              fi
+            else
+              echo "Base commit $base_ref is not available locally for push audit." >&2
+              base_ref=""
+              audit_mode="push_unavailable"
+            fi
+
+            git checkout --detach "$target_sha"
+
+            {
+              echo "mode=${audit_mode}"
+              echo "base_ref=${base_ref}"
+              echo "head_ref=${target_sha}"
+              echo "title=main 合并后审计"
+              echo "target_url=${{ github.server_url }}/${{ github.repository }}/commit/${target_sha}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            git checkout --detach "${{ github.sha }}"
+
+            {
+              echo "mode=manual"
+              echo "base_ref="
+              echo "head_ref=${{ github.sha }}"
+              echo "title=手动 OpenCodeReview 审计"
+              echo "target_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure OpenCodeReview
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "Repository secret OPENAI_API_KEY is required." >&2
+            exit 1
+          fi
+
+          "$OCR_BIN" config set provider openai
+          "$OCR_BIN" config set providers.openai.url "$OCR_LLM_URL"
+          "$OCR_BIN" config set providers.openai.model "$OCR_LLM_MODEL"
+          "$OCR_BIN" config set language Chinese
+          "$OCR_BIN" llm test
+
+      - name: Run OpenCodeReview
+        id: ocr
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mode="${{ steps.target.outputs.mode }}"
+          base_ref="${{ steps.target.outputs.base_ref }}"
+          head_ref="${{ steps.target.outputs.head_ref }}"
+          status=1
+
+          if [ "$mode" = "pr" ]; then
+            if "$OCR_BIN" review \
+              --from "$base_ref" \
+              --to "$head_ref" \
+              --format json \
+              --audience agent \
+              > ocr-result.json 2> ocr-stderr.log; then
+              status=0
+            else
+              status=$?
+              echo "OpenCodeReview command failed with exit code $status." >> ocr-stderr.log
+            fi
+          elif [ "$mode" = "push" ] && [ -n "$base_ref" ] && ! printf '%s' "$base_ref" | grep -Eq '^0+$'; then
+            if "$OCR_BIN" review \
+              --from "$base_ref" \
+              --to "$head_ref" \
+              --format json \
+              --audience agent \
+              > ocr-result.json 2> ocr-stderr.log; then
+              status=0
+            else
+              status=$?
+              echo "OpenCodeReview command failed with exit code $status." >> ocr-stderr.log
+            fi
+          elif [ "$mode" = "push_unavailable" ]; then
+            printf '%s\n' '{"status":"unavailable","message":"main push 审计不可用：无法确定可靠的基线提交，已跳过单提交替代审计。","summary":{"files_reviewed":0,"comments":0,"total_tokens":0,"elapsed":""},"comments":[]}' > ocr-result.json
+            echo "Unable to determine a reliable base ref for push audit." > ocr-stderr.log
+            status=2
+          else
+            if "$OCR_BIN" review \
+              --commit "$head_ref" \
+              --format json \
+              --audience agent \
+              > ocr-result.json 2> ocr-stderr.log; then
+              status=0
+            else
+              status=$?
+              echo "OpenCodeReview command failed with exit code $status." >> ocr-stderr.log
+            fi
+          fi
+
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Build audit report
+        id: report
+        if: always()
+        shell: bash
+        env:
+          AUDIT_TITLE: ${{ steps.target.outputs.title }}
+          AUDIT_URL: ${{ steps.target.outputs.target_url }}
+          AUDIT_MODE: ${{ steps.target.outputs.mode }}
+          OCR_EXIT_CODE: ${{ steps.ocr.outputs.exit_code }}
+          OCR_STEP_OUTCOME: ${{ steps.ocr.outcome }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          title = os.environ["AUDIT_TITLE"]
+          target_url = os.environ["AUDIT_URL"]
+          mode = os.environ["AUDIT_MODE"]
+          step_outcome = os.environ.get("OCR_STEP_OUTCOME") or "unknown"
+          exit_code = int(os.environ.get("OCR_EXIT_CODE") or ("0" if step_outcome == "success" else "1"))
+          result_path = Path("ocr-result.json")
+          stderr = Path("ocr-stderr.log").read_text(encoding="utf-8", errors="replace") if Path("ocr-stderr.log").exists() else ""
+
+          parsed = None
+          parse_error = None
+
+          def as_int(value, default=0):
+              try:
+                  return int(value)
+              except (TypeError, ValueError):
+                  return default
+
+          def as_text(value, default=""):
+              if value is None:
+                  return default
+              return str(value)
+
+          def fenced_text(value):
+              return as_text(value).replace("```", "`\u200b``")
+
+          if result_path.exists() and result_path.stat().st_size > 0:
+              try:
+                  parsed = json.loads(result_path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  parse_error = str(exc)
+          else:
+              parse_error = "ocr-result.json is empty or missing"
+
+          comments = parsed.get("comments", []) if isinstance(parsed, dict) else []
+          if not isinstance(comments, list):
+              comments = []
+          comments = [comment for comment in comments if isinstance(comment, dict)]
+
+          summary = parsed.get("summary", {}) if isinstance(parsed, dict) else {}
+          if not isinstance(summary, dict):
+              summary = {}
+
+          message = as_text(parsed.get("message", "")) if isinstance(parsed, dict) else ""
+          status = as_text(parsed.get("status", "failed"), "failed") if isinstance(parsed, dict) else "failed"
+
+          files_reviewed = as_int(summary.get("files_reviewed", 0))
+          total_tokens = as_int(summary.get("total_tokens", 0))
+          elapsed = as_text(summary.get("elapsed", ""))
+          comment_count = len(comments)
+          audit_failed = exit_code != 0 or parse_error is not None
+
+          lines = [
+              f"## {title}",
+              "",
+              f"- 目标：{target_url}",
+              f"- 模式：{mode}",
+              f"- OCR 步骤：{step_outcome}",
+              f"- OCR 状态：{status}",
+              f"- OCR 退出码：{exit_code}",
+              f"- 审查文件数：{files_reviewed}",
+              f"- 问题数：{comment_count}",
+              f"- Token：{total_tokens}",
+              f"- 耗时：{elapsed}",
+          ]
+
+          if message:
+              lines.extend(["", f"结论：{message}"])
+
+          if parse_error:
+              lines.extend(["", "### 审计失败", "", f"OCR 输出无法解析：`{parse_error}`"])
+          elif exit_code != 0:
+              lines.extend(["", "### 审计失败", "", "OpenCodeReview 没有完成一次有效审计。"])
+
+          if stderr.strip():
+              clipped = stderr.strip()
+              if len(clipped) > 3000:
+                  clipped = clipped[:3000] + "\n...<truncated>"
+              lines.extend(["", "### stderr", "", "```text", fenced_text(clipped), "```"])
+
+          if comments:
+              lines.extend(["", "### 审查意见"])
+              for index, comment in enumerate(comments, 1):
+                  path = comment.get("path", "(unknown path)")
+                  start = comment.get("start_line")
+                  end = comment.get("end_line")
+                  if start and end and start != end:
+                      location = f"{path}:{start}-{end}"
+                  elif end:
+                      location = f"{path}:{end}"
+                  elif start:
+                      location = f"{path}:{start}"
+                  else:
+                      location = path
+                  content = str(comment.get("content", "")).strip()
+                  lines.extend(["", f"{index}. `{location}`", "", content])
+                  suggestion = str(comment.get("suggestion_code", "")).strip()
+                  if suggestion:
+                      lines.extend(["", "建议代码：", "", "```text", fenced_text(suggestion), "```"])
+
+          report = "\n".join(lines).strip() + "\n"
+          Path("ocr-summary.md").write_text(report, encoding="utf-8")
+
+          if audit_failed:
+              result_text = "审计失败/输出异常"
+          elif comment_count:
+              result_text = f"发现 {comment_count} 条问题"
+          else:
+              result_text = "未发现问题"
+
+          notify = (
+              f"{title}\n"
+              f"目标：{target_url}\n"
+              f"结果：{result_text}\n"
+              f"审查文件数：{files_reviewed}，耗时：{elapsed}，Token：{total_tokens}\n"
+              f"Actions：{os.environ.get('GITHUB_SERVER_URL')}/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}"
+          )
+          if exit_code != 0 or parse_error:
+              notify += f"\n注意：OCR 执行异常，退出码 {exit_code}，解析错误：{parse_error or '无'}"
+          Path("ocr-notify.txt").write_text(notify, encoding="utf-8")
+
+          try:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write(f"comment_count={comment_count}\n")
+                  out.write(f"parse_error={'true' if parse_error else 'false'}\n")
+          except Exception as exc:
+              Path("ocr-notify.txt").write_text(
+                  f"{title}\n目标：{target_url}\n结果：审计失败/输出异常\n注意：report 输出写入失败：{exc}",
+                  encoding="utf-8",
+              )
+              raise
+          PY
+
+          cat ocr-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify via summ
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          notify_status=0
+          if [ -x "$SUMM_BIN" ]; then
+            notify_message="OpenCodeReview workflow finished but no summary was generated."
+            if [ -s ocr-notify.txt ]; then
+              notify_message="$(<ocr-notify.txt)"
+            fi
+            "$SUMM_BIN" notify "$notify_message"
+            notify_status=$?
+          elif command -v summ >/dev/null 2>&1; then
+            notify_message="OpenCodeReview workflow finished but no summary was generated."
+            if [ -s ocr-notify.txt ]; then
+              notify_message="$(<ocr-notify.txt)"
+            fi
+            summ notify "$notify_message"
+            notify_status=$?
+          else
+            echo "summ command not found; notification skipped." >&2
+            notify_status=127
+          fi
+
+          if [ "$notify_status" -ne 0 ]; then
+            {
+              echo
+              echo "### summ notify"
+              echo
+              echo "summ 通知失败，退出码：$notify_status"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fail when OpenCodeReview failed
+        if: always() && (steps.ocr.outcome != 'success' || steps.ocr.outputs.exit_code != '0' || steps.report.outcome != 'success' || steps.report.outputs.parse_error == 'true')
+        shell: bash
+        run: |
+          echo "OpenCodeReview did not complete cleanly." >&2
+          echo "ocr_step=${{ steps.ocr.outcome }}, ocr_exit=${{ steps.ocr.outputs.exit_code }}, report_step=${{ steps.report.outcome }}, parse_error=${{ steps.report.outputs.parse_error }}" >&2
+          exit 1
