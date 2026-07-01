@@ -3,6 +3,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverAuthorizationConsumptionGuard,
+    CutoverExecutionOutcomeLedger,
     HostServiceProbe,
     ProjectRegistry,
     ProviderExecutor,
@@ -123,6 +125,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_readiness_permit.counts.permit_count == 0
       assert payload.hub_cutover_execution_outcome_ledger.status == "no_outcome"
       assert payload.hub_cutover_execution_outcome_ledger.counts.outcome_count == 0
+      assert payload.hub_cutover_execution_outcome_closeout.status == "no_outcome"
+      assert payload.hub_cutover_execution_outcome_closeout.counts.unresolved_outcome_count == 0
+      assert payload.hub_cutover_execution_outcome_closeout.auto_replay_allowed == false
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -130,6 +135,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_dispatch_plan_application.counts.applied_count == 0
       assert payload.hub_worker_start_handoff.counts.selected_count == 0
       assert payload.hub_device_observability.device.project_count == 1
+      assert payload.hub_device_observability.cutover_execution_outcome_closeout.status == "no_outcome"
+      assert payload.hub_device_observability.overview.cutover_execution_outcome_closeout.status == "no_outcome"
 
       safe_text = inspect(payload)
       refute safe_text =~ "GITHUB_TOKEN"
@@ -161,6 +168,77 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
       refute Map.has_key?(legacy_payload, :hub_worker_lifecycle_reconciliation)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "snapshot and presenter expose execution outcome closeout summary without replay side effects" do
+    root = tmp_root("hub-runtime-outcome-closeout")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      {:ok, registry} = ProjectRegistry.load(hub_path)
+      outcome = unresolved_outcome("alpha", false)
+      outcome_ledger = CutoverExecutionOutcomeLedger.build(%{events: [outcome]}, now: ~U[2026-07-01 09:00:00Z])
+
+      snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-07-01 09:00:00Z], registry,
+          now: ~U[2026-07-01 09:00:00Z],
+          cutover_execution_outcome_ledger: outcome_ledger,
+          cutover_execution_outcome_closeouts: [
+            outcome_closeout(outcome, "allow_explicit_retry_consideration")
+          ]
+        )
+
+      assert snapshot.hub_cutover_execution_outcome_closeout.status == "resolved"
+      assert snapshot.hub_cutover_execution_outcome_closeout.counts.resolved_count == 1
+      assert snapshot.hub_cutover_execution_outcome_closeout.counts.allow_explicit_retry_consideration_count == 1
+      assert snapshot.hub_cutover_execution_outcome_closeout.auto_replay_allowed == false
+      assert snapshot.hub_runtime.cutover_execution_outcome_closeout.status == "resolved"
+      assert snapshot.hub_device_observability.overview.cutover_execution_outcome_closeout.status == "resolved"
+
+      [project] = snapshot.hub_device_observability.projects
+      assert project.cutover_execution_outcome_closeout.status == "resolved"
+      assert project.cutover_execution_outcome_closeout.allow_explicit_retry_consideration == true
+      assert project.detail.outcome_closeout.allow_explicit_retry_consideration == true
+
+      runtime_name = Module.concat(__MODULE__, :OutcomeCloseoutPresenter)
+      static_snapshot_module = Module.concat(__MODULE__, :StaticSnapshot)
+
+      start_supervised!(
+        {static_snapshot_module, name: runtime_name, snapshot: snapshot},
+        id: :hub_runtime_outcome_closeout_presenter
+      )
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_cutover_execution_outcome_closeout.status == "resolved"
+
+      payload_closeout = payload.hub_device_observability.overview.cutover_execution_outcome_closeout
+      assert payload_closeout.allow_explicit_retry_consideration_count == 1
+
+      safe_text =
+        inspect(
+          {
+            payload.hub_cutover_execution_outcome_closeout,
+            payload.hub_device_observability.cutover_execution_outcome_closeout
+          },
+          limit: :infinity,
+          printable_limit: :infinity
+        )
+
+      refute safe_text =~ "ghp_secret"
+      refute safe_text =~ "raw_provider_response"
+      refute safe_text =~ "/home/jhihjian/private"
     after
       File.rm_rf(root)
     end
@@ -2574,6 +2652,77 @@ defmodule SymphonyElixir.HubRuntimeTest do
   defp provider_request!(attrs) do
     assert {:ok, request} = ProviderGovernance.new_request(Map.new(attrs))
     request
+  end
+
+  defp unresolved_outcome(project_id, side_effect_entered?) do
+    guard =
+      CutoverAuthorizationConsumptionGuard.to_decision(%{
+        project_id: project_id,
+        provider_scope: %{kind: "github", key: "github:o/r", provider_scope_key: "github:o/r", scope: %{owner: "o", repo: "r"}},
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        decision: "allowed",
+        allowed: true,
+        authorization_record_fingerprint: "#{project_id}-record-fp",
+        authorization_request_fingerprint: "#{project_id}-auth-request-fp",
+        safe_evidence_fingerprints: %{
+          cutover_operation_request: "#{project_id}-request-fp",
+          readiness_permit: "#{project_id}-permit-fp",
+          readiness_permit_decision: "ready_for_execution_consideration",
+          cutover_gate: "#{project_id}-gate-fp",
+          dry_run_audit: "#{project_id}-audit-fp",
+          audit_history: "#{project_id}-history-fp"
+        }
+      })
+
+    CutoverExecutionOutcomeLedger.fact_snapshot(%{
+      project_id: project_id,
+      provider_scope: %{kind: "github", key: "github:o/r", provider_scope_key: "github:o/r", scope: %{owner: "o", repo: "r"}},
+      operation: "writeback",
+      side_effect_source: "writeback_executor",
+      status: "unknown",
+      reason_code: "provider_ack_lost",
+      authorization_consumption_guard: guard,
+      executor_result: %{
+        provider_io: side_effect_entered?,
+        raw_provider_response: "full provider response with ghp_secret",
+        local_path: "/home/jhihjian/private/runtime.log"
+      },
+      side_effect_entered: side_effect_entered?,
+      side_effect_may_have_happened: side_effect_entered?,
+      started_at: ~U[2026-07-01 09:00:00Z],
+      completed_at: ~U[2026-07-01 09:00:00Z]
+    })
+  end
+
+  defp outcome_closeout(outcome, resolution_code) do
+    %{
+      project_id: outcome.project_id,
+      provider_scope: outcome.provider_scope,
+      operation: outcome.operation,
+      side_effect_source: outcome.side_effect_source,
+      replay_key: outcome.replay_key,
+      outcome_fingerprint: outcome.evidence_fingerprint,
+      outcome_status: outcome.status,
+      side_effect_entered: outcome.side_effect_entered,
+      side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+      cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+      authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+      authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+      readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+      readiness_permit_decision: outcome.readiness_permit_decision,
+      cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+      dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+      audit_history_fingerprint: outcome.audit_history_fingerprint,
+      consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+      resolution_code: resolution_code,
+      reason_code: "operator_checked_external_state",
+      action_code: "record_manual_resolution",
+      source: "operator_file",
+      created_at: "2026-07-01T09:01:00Z",
+      closed_at: "2026-07-01T09:02:00Z",
+      operator_note: "operator note with raw_provider_response and ghp_secret redacted by digest"
+    }
   end
 
   defp write_project!(root, project_id, overrides) do

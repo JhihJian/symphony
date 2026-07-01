@@ -1726,6 +1726,36 @@ Runtime entrypoint:
   ledger, worker starter, or writeback executor. Malformed outcome input for one project MUST be
   isolated to that project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or
   other project summaries.
+- Hub-compatible implementations SHOULD expose a cutover execution outcome closeout read model for
+  unresolved `unknown` or `manual_attention` outcomes. A closeout record SHOULD bind project
+  identity, provider scope, operation, side-effect source, outcome replay key, safe outcome
+  evidence fingerprint/status, side-effect-entered/may-have-happened semantics, cutover operation
+  request fingerprint, execution authorization request/record fingerprint, readiness permit
+  fingerprint/decision, cutover gate/staged evidence fingerprint, dry-run audit and audit-history
+  fingerprints, consumption guard fingerprint, safe resolution code, operator request fingerprint,
+  safe created/closed timestamps, and safe reason/action codes.
+- Closeout currentness MUST be evaluated against the current unresolved outcome. Outcome drift,
+  replay-key/fingerprint mismatch, non-unresolved outcome status, cross-project/source references,
+  malformed or missing fields, unsupported resolution codes, missing referenced evidence, and
+  side-effect safety conflicts MUST NOT be displayed as resolved. They SHOULD surface as
+  `stale`, `conflict`, `manual_attention`, `malformed`, or `unsupported` summaries scoped to the
+  affected project/operation.
+- A closeout resolution such as `allow_explicit_retry_consideration` MAY report that a future
+  operator-controlled execution can be considered, but MUST NOT itself call providers, mutate
+  dispatch/runtime ledgers, start workers, write providers, operate systemd, edit configuration,
+  create authorization, consume authorization, or replay an external side effect. Any later explicit
+  execution MUST still pass readiness permit, execution authorization ledger, authorization
+  consumption guard, and existing provider/runtime/writeback guardrails. Unresolved outcomes without
+  a valid closeout, or with stale/conflicting/malformed closeout input, MUST continue to block
+  silent replay.
+- Dashboard/API summaries SHOULD expose device-level and project-level outcome closeout status,
+  unresolved outcome counts, resolved/stale/conflict/manual-attention/malformed/unsupported/
+  `no_closeout` counts, recent safe reason/action codes, relevant replay/authorization/permit/guard
+  fingerprints, whether explicit retry consideration is allowed, and why operator handling is still
+  required. Projects without outcome facts MUST show `no_outcome`; projects with unresolved outcome
+  facts but no valid closeout MUST show `no_closeout`, not pending migration, pending execution, or
+  pending retry. Malformed closeout input for one project MUST NOT crash Hub runtime,
+  `/api/v1/state`, Dashboard, or other project summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

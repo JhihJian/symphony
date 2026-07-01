@@ -149,6 +149,18 @@ gate、dry-run audit、history/closeout、guard decision、executor mode、安�
 migration executor 或 legacy service 接管，也不替代 gate / permit / authorization / consumption guard /
 provider governance / runtime ledger / worker starter / writeback executor。没有 outcome 时显示 `no_outcome`，
 不表示有迁移或执行在排队。
+在 execution outcome ledger 之后，Hub 还会暴露 execution outcome closeout 摘要：
+`hub_cutover_execution_outcome_closeout` 和
+`hub_device_observability.cutover_execution_outcome_closeout`。可通过
+`--hub-cutover-execution-outcome-closeout /path/to/closeout.yaml` 输入 operator closeout 记录，
+用于说明某个 unresolved `unknown` / `manual_attention` outcome 后续如何人工处理。记录需要绑定
+project/provider scope、operation/source、outcome replay key/fingerprint/status、side-effect safety、
+cutover request、authorization record、permit、gate/audit/history、consumption guard fingerprint、
+resolution/reason/action code 和安全时间。匹配当前 evidence 时可显示 `resolved` 或允许“后续重新考虑显式
+执行”；过期、冲突、畸形、不支持或 side-effect safety 不一致时显示 stale/conflict/malformed/manual
+attention。closeout 只影响 Dashboard/API 审计摘要，不会调用 provider、dispatch、worker starter、
+writeback、systemd 或配置修改，也不会自动重放旧副作用或接管 legacy service。没有 outcome 显示
+`no_outcome`；有 unresolved outcome 但没有有效 closeout 显示 `no_closeout`。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

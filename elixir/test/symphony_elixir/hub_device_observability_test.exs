@@ -69,6 +69,10 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.cutover_execution_outcome_ledger.status == "unknown"
     assert projection.overview.cutover_execution_outcome_ledger.unknown_count == 1
     assert projection.overview.cutover_execution_outcome_ledger.side_effect_entered_count == 1
+    assert projection.overview.cutover_execution_outcome_closeout.status == "no_closeout"
+    assert projection.overview.cutover_execution_outcome_closeout.unresolved_outcome_count == 1
+    assert projection.overview.cutover_execution_outcome_closeout.closeout_count == 0
+    assert projection.overview.cutover_execution_outcome_closeout.auto_replay_allowed == false
     assert projection.overview.manual_attention.project_count == 1
     assert projection.migration_readiness.status == "blocked"
     assert projection.activation_plan.status == "blocked"
@@ -123,6 +127,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["gamma"].status == "manual_attention"
     assert projects["gamma"].cutover_execution_outcome_ledger.status == "unknown"
     assert projects["gamma"].cutover_execution_outcome_ledger.counts.unresolved_count == 1
+    assert projects["gamma"].cutover_execution_outcome_closeout.status == "no_closeout"
+    assert projects["gamma"].cutover_execution_outcome_closeout.counts.still_requires_operator_count == 1
+    assert projects["gamma"].detail.outcome_closeout.status == "no_closeout"
     assert projects["gamma"].writebacks.counts.unknown == 1
     assert projects["gamma"].writebacks.counts.manual_attention == 1
     assert Enum.member?(reason_names(projects["gamma"]), "writeback_unknown")
