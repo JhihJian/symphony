@@ -1664,6 +1664,32 @@ Runtime entrypoint:
   record, permit, history, closeout, or evidence input for one project MUST be isolated to that
   project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
   summaries.
+- Hub-compatible implementations SHOULD expose a cutover authorization consumption guard after the
+  execution authorization ledger. The guard is the shared pre-side-effect authorization boundary for
+  explicit Hub cutover execution paths, and SHOULD accept project identity, provider scope,
+  operation, side-effect source (`candidate_scan`, `dispatch_application`, `worker_start_handoff`,
+  or `writeback_executor`), the current authorization ledger record, current request/permit/gate/
+  activation/audit/history/closeout evidence fingerprints, and executor/starter/writeback mode.
+  It SHOULD return a stable, serializable, sanitized decision summary with `allowed`, `blocked`,
+  `no_authorization`, `stale`, `manual_attention`, `unsupported`, or `malformed`, plus reason/action
+  codes, safe evidence fingerprints, and `no_side_effects: true`.
+- In explicit Hub cutover execution paths, real provider candidate scan, dispatch plan application,
+  real worker start handoff, and real provider writeback MUST consume the same authorization record
+  before provider I/O, runtime-ledger dispatch mutation, worker start, provider writeback, systemd
+  operations, or configuration writes. Missing or non-matching `authorized_for_explicit_execution`
+  records, operation/scope mismatch, non-ready permits, gate/preflight blocks, dry-run/history/
+  closeout staleness, unresolved manual attention, mode incompatibility, unknown/malformed/
+  unsupported inputs, or evidence fingerprint drift MUST block before external side effects.
+- The consumption guard MUST NOT execute migration work, queue execution, take over legacy services,
+  bypass or replace the cutover gate, readiness permit, execution authorization ledger, activation
+  preflight, legacy ownership guardrail, provider governance, runtime ledger, worker starter, or
+  writeback executor. Projects without explicit authorization request/consumption MUST show a
+  non-misleading `no_consumption` summary rather than pending migration or pending execution.
+- Dashboard/API summaries SHOULD expose device-level and project-level authorization consumption
+  counts by decision, operation, and side-effect source, recent safe reason/action codes, safe
+  evidence fingerprints, and sources blocked because authorization was missing or mismatched.
+  Malformed consumption input for one project MUST be isolated to that project summary and MUST NOT
+  crash Hub runtime, `/api/v1/state`, Dashboard, or other project summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

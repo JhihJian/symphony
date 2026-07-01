@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverAuthorizationConsumptionGuard,
     CutoverGate,
     DispatchBoundary,
     DispatchPlanning,
@@ -56,6 +57,9 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       registry_projects: registry_projects,
       activation_preflight: activation_preflight,
       cutover_gate: cutover_gate,
+      authorization_consumption_guard:
+        Keyword.get(opts, :authorization_consumption_guard) ||
+          Keyword.get(opts, :cutover_authorization_consumption_guard),
       ledger_changed?: false
     }
 
@@ -224,9 +228,27 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   defp apply_planned_outcome(project, outcome, ledger, state) do
     candidate = dispatch_candidate(project, outcome, state)
 
-    case cutover_gate(state, candidate) ||
+    case authorization_consumption(state, candidate) ||
+           cutover_gate(state, candidate) ||
            activation_preflight(state, candidate) ||
            capacity_preflight(project, ledger, candidate, state) do
+      {:blocked, reason, message, extras} ->
+        application_outcome =
+          outcome
+          |> base_application_outcome()
+          |> Map.merge(%{
+            status: "blocked",
+            reason: reason,
+            message: message,
+            intent_id: optional_string(outcome.intent, :intent_id),
+            attempt_id: optional_string(outcome.intent, :attempt_id),
+            correlation_id: optional_string(outcome.intent, :correlation_id)
+          })
+          |> Map.merge(extras)
+          |> outcome_snapshot()
+
+        {application_outcome, ledger, state}
+
       {:blocked, reason, message} ->
         application_outcome =
           outcome
@@ -245,6 +267,44 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
 
       :ok ->
         dispatch_planned_outcome(outcome, ledger, state, candidate)
+    end
+  end
+
+  defp authorization_consumption(state, candidate) do
+    guard = Map.get(state, :authorization_consumption_guard)
+
+    if is_map(guard) do
+      input =
+        Map.merge(guard, %{
+          project_id: optional_string(candidate, :project_id),
+          provider_scope: provider_scope_from_candidate(candidate),
+          operation: "dispatch",
+          side_effect_source: "dispatch_application",
+          execution_mode: %{
+            mode: "dispatch_application",
+            dispatch_application: true,
+            dispatch_mutation: true
+          }
+        })
+
+      case CutoverAuthorizationConsumptionGuard.evaluate(input) do
+        %{allowed: true} ->
+          nil
+
+        decision ->
+          message = "Authorization consumption guard blocked dispatch application"
+
+          {:blocked, "authorization_consumption_blocked", message,
+           %{
+             authorization_consumption: decision,
+             preflight:
+               preflight_snapshot(%{
+                 status: "blocked",
+                 reason: "authorization_consumption_blocked",
+                 message: message
+               })
+           }}
+      end
     end
   end
 
@@ -458,6 +518,21 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       true ->
         :ok
     end
+  end
+
+  defp provider_scope_from_candidate(candidate) do
+    tracker = value(candidate, :tracker) || %{}
+    issue_ref = value(candidate, :issue_ref) || %{}
+    tracker_scope_key = optional_string(tracker, :provider_scope_key)
+    issue_scope_key = optional_string(issue_ref, :provider_scope_key)
+    provider_scope_key = tracker_scope_key || issue_scope_key
+
+    %{
+      kind: optional_string(tracker, :kind) || optional_string(issue_ref, :tracker_kind),
+      key: provider_scope_key,
+      provider_scope_key: provider_scope_key,
+      scope: value(tracker, :provider_scope) || value(issue_ref, :provider_scope) || %{}
+    }
   end
 
   defp project_capacity_full?(project, ledger, project_id) do
@@ -680,6 +755,10 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
       preflight: preflight_snapshot(value(outcome, :preflight) || %{}),
       safety: safety_snapshot(value(outcome, :safety))
     }
+    |> maybe_put(
+      :authorization_consumption,
+      authorization_consumption_snapshot(value(outcome, :authorization_consumption))
+    )
   end
 
   defp outcome_snapshot(_outcome), do: outcome_snapshot(%{})
@@ -766,6 +845,12 @@ defmodule SymphonyElixir.Hub.DispatchPlanApplication do
   end
 
   defp source_poll_snapshot(_source_poll), do: source_poll_snapshot(%{})
+
+  defp authorization_consumption_snapshot(consumption) when is_map(consumption) do
+    CutoverAuthorizationConsumptionGuard.to_decision(consumption)
+  end
+
+  defp authorization_consumption_snapshot(_consumption), do: nil
 
   defp preflight_snapshot(preflight) when is_map(preflight) do
     %{

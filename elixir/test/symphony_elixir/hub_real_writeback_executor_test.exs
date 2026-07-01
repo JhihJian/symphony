@@ -268,6 +268,37 @@ defmodule SymphonyElixir.HubRealWritebackExecutorTest do
     end
   end
 
+  test "authorization consumption guard blocks real writeback before provider I/O" do
+    root = tmp_root("hub-real-writeback-authorization-consumption")
+    test_pid = self()
+
+    try do
+      project = write_memory_project!(root, "alpha") |> Map.put(:migration_state, "hub_managed")
+      routed = routed_call!("tracker_issue", "set_status", %{issue_id: "129", state: "in_progress"}, "alpha", "memory")
+
+      result =
+        RealWritebackExecutor.execute(routed.request,
+          writeback_intent: routed.writeback_intent,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: %{projects: []}},
+          tracker_update_issue_state: fn issue_id, state ->
+            send(test_pid, {:unexpected_provider_call, issue_id, state})
+            :ok
+          end
+        )
+
+      assert result.status == :permanent_failure
+      assert result.error_class == :conflict
+      assert result.result_summary.provider_io == false
+      assert result.result_summary.error == "authorization_consumption_blocked"
+      assert result.result_summary.authorization_consumption.decision == "no_authorization"
+      assert result.result_summary.authorization_consumption.side_effect_source == "writeback_executor"
+      refute_received {:unexpected_provider_call, _issue_id, _state}
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "maps provider failures, unsupported providers, and unsafe operations to governed safe results" do
     root = tmp_root("hub-real-writeback-failures")
 

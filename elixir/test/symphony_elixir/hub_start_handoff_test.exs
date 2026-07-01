@@ -193,6 +193,35 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     assert [%{status: "skipped", reason: "cutover_gate_blocked"}] = handoff.results
   end
 
+  test "authorization consumption guard skips real worker start handoff without calling starter" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    fail_if_called = fn _request, _opts ->
+      flunk("starter must not be called when authorization consumption guard blocks worker_start")
+    end
+
+    assert {same_ledger, handoff} =
+             WorkerStartHandoff.run(registry(), ledger,
+               now: @now,
+               starter: fail_if_called,
+               authorization_consumption_guard: %{authorization_ledger: %{projects: []}}
+             )
+
+    assert same_ledger == ledger
+    assert handoff.counts.selected_count == 1
+    assert handoff.counts.skipped_count == 1
+    assert handoff.counts.unresolved_start_intent_count == 1
+    assert handoff.reason_counts == %{"authorization_consumption_blocked" => 1}
+
+    assert [
+             %{
+               status: "skipped",
+               reason: "authorization_consumption_blocked",
+               authorization_consumption: %{decision: "no_authorization", side_effect_source: "worker_start_handoff"}
+             }
+           ] = handoff.results
+  end
+
   test "real worker starter opt-in launches through injectable runner and returns safe ack" do
     parent = self()
     previous_runner = Application.get_env(:symphony_elixir, :hub_worker_start_runner)

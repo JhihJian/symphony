@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
 
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
+    CutoverAuthorizationConsumptionGuard,
     CutoverGate,
     ProviderGovernance,
     ProviderScope,
@@ -41,6 +42,7 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
   @spec execute(ProviderGovernance.request(), keyword()) :: ProviderGovernance.result()
   def execute(request, opts \\ []) when is_map(request) and is_list(opts) do
     with :ok <- validate_operation_kind(request),
+         :ok <- authorization_consumption(request, opts),
          :ok <- cutover_gate(request, opts),
          :ok <- activation_preflight(request, opts),
          {:ok, pending_fact} <- pending_fact(request, opts),
@@ -51,6 +53,9 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
          {:ok, execution} <- execute_writeback(request, pending_fact, context, opts) do
       result_from_execution(request, pending_fact, execution)
     else
+      {:authorization_blocked, decision} ->
+        authorization_blocked_result(request, decision)
+
       {:manual_attention, reason} ->
         manual_attention_result(request, reason)
 
@@ -162,6 +167,34 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
         end
 
       _preflight ->
+        :ok
+    end
+  end
+
+  defp authorization_consumption(request, opts) do
+    case Keyword.get(opts, :authorization_consumption_guard) ||
+           Keyword.get(opts, :cutover_authorization_consumption_guard) do
+      guard when is_map(guard) ->
+        input =
+          Map.merge(guard, %{
+            project_id: request.project_id,
+            provider_scope: request.provider_scope,
+            operation: "writeback",
+            side_effect_source: "writeback_executor",
+            execution_mode: %{
+              mode: "real_writeback",
+              provider_io: true,
+              supported_operations: supported_operations(),
+              supported_logical_actions: supported_logical_actions()
+            }
+          })
+
+        case CutoverAuthorizationConsumptionGuard.require_allowed(input) do
+          :ok -> :ok
+          {:blocked, decision} -> {:authorization_blocked, decision}
+        end
+
+      _guard ->
         :ok
     end
   end
@@ -474,6 +507,28 @@ defmodule SymphonyElixir.Hub.RealWritebackExecutor do
       }
     )
   end
+
+  defp authorization_blocked_result(request, decision) do
+    ProviderGovernance.result(request, :permanent_failure,
+      error_class: authorization_error_class(decision),
+      result_summary: %{
+        boundary: "hub_real_writeback_executor",
+        executor: "real_writeback",
+        provider_io: false,
+        error: "authorization_consumption_blocked",
+        authorization_consumption: decision,
+        decision: decision.decision,
+        reason: decision.reason_code,
+        action: value(decision, :action_code)
+      }
+    )
+  end
+
+  defp authorization_error_class(%{decision: "manual_attention"}), do: :unknown
+  defp authorization_error_class(%{decision: "stale"}), do: :conflict
+  defp authorization_error_class(%{decision: "no_authorization"}), do: :conflict
+  defp authorization_error_class(%{decision: "blocked"}), do: :conflict
+  defp authorization_error_class(_decision), do: :validation
 
   defp error_class_for_decision(%{decision: :conflict}), do: :conflict
   defp error_class_for_decision(%{manual_attention: true}), do: :unknown

@@ -9,7 +9,14 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   hooks, or write tracker/provider state.
   """
 
-  alias SymphonyElixir.Hub.{ActivationPreflight, CutoverGate, DispatchBoundary, RuntimeLedger, SafeSummary}
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    CutoverAuthorizationConsumptionGuard,
+    CutoverGate,
+    DispatchBoundary,
+    RuntimeLedger,
+    SafeSummary
+  }
 
   @version 1
   @terminal_start_intent_statuses ["acknowledged", "failed", "cancelled"]
@@ -56,6 +63,10 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       |> Keyword.get(:cutover_gate)
       |> CutoverGate.observability_snapshot()
 
+    authorization_consumption_guard =
+      Keyword.get(opts, :authorization_consumption_guard) ||
+        Keyword.get(opts, :cutover_authorization_consumption_guard)
+
     initial_ledger = RuntimeLedger.to_snapshot(runtime_ledger)
     registry_projects = registry_projects_by_id(registry)
     initial_replay = RuntimeLedger.replay(initial_ledger)
@@ -63,7 +74,17 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
     {results, ledger, ledger_changed?} =
       Enum.reduce(requests, {[], initial_ledger, false}, fn request, {results, ledger, ledger_changed?} ->
-        {result, ledger, changed?} = process_request(request, ledger, starter, activation_preflight, cutover_gate, now)
+        {result, ledger, changed?} =
+          process_request(
+            request,
+            ledger,
+            starter,
+            activation_preflight,
+            cutover_gate,
+            authorization_consumption_guard,
+            now
+          )
+
         {[result | results], ledger, ledger_changed? or changed?}
       end)
 
@@ -194,8 +215,18 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     end)
   end
 
-  defp process_request(request, ledger, starter, activation_preflight, cutover_gate, now) do
+  defp process_request(request, ledger, starter, activation_preflight, cutover_gate, authorization_consumption_guard, now) do
     cond do
+      authorization_block = authorization_consumption_block(authorization_consumption_guard, request) ->
+        result = %{
+          status: "skipped",
+          reason: "authorization_consumption_blocked",
+          error_summary: "Authorization consumption guard blocked worker start handoff",
+          authorization_consumption: authorization_block
+        }
+
+        {result_summary(request, result, "skipped", false), ledger, false}
+
       cutover_block = cutover_gate_block(cutover_gate, request.project_id) ->
         result = %{
           status: "skipped",
@@ -257,6 +288,50 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
   defp cutover_gate_block(nil, _project_id), do: nil
   defp cutover_gate_block(cutover_gate, project_id), do: CutoverGate.block_reason(cutover_gate, project_id, :worker_start)
+
+  defp authorization_consumption_block(nil, _request), do: nil
+
+  defp authorization_consumption_block(guard, request) when is_map(guard) do
+    input =
+      Map.merge(guard, %{
+        project_id: request.project_id,
+        provider_scope: %{
+          kind: request.provider_kind,
+          key: request.provider_scope_key,
+          provider_scope_key: request.provider_scope_key,
+          scope: request.provider_scope || %{}
+        },
+        operation: "worker_start",
+        side_effect_source: "worker_start_handoff",
+        execution_mode: %{
+          mode: "real_worker_starter",
+          worker_start: true
+        }
+      })
+
+    case CutoverAuthorizationConsumptionGuard.evaluate(input) do
+      %{allowed: true} -> nil
+      decision -> decision
+    end
+  end
+
+  defp authorization_consumption_block(_guard, request) do
+    %{
+      project_id: request.project_id,
+      provider_scope: %{
+        kind: request.provider_kind,
+        key: request.provider_scope_key,
+        provider_scope_key: request.provider_scope_key,
+        scope: request.provider_scope || %{}
+      },
+      operation: "worker_start",
+      side_effect_source: "worker_start_handoff",
+      decision: "malformed",
+      reason_code: "authorization_consumption_guard_malformed",
+      action_code: "fix_authorization_consumption_guard"
+    }
+    |> CutoverAuthorizationConsumptionGuard.to_decision()
+  end
 
   defp apply_ack_result(ledger, request, result, now) do
     ack =
@@ -495,6 +570,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       correlation_id: request.correlation_id,
       request: request,
       starter_result: safe_preserved_map(result),
+      authorization_consumption: authorization_consumption_snapshot(value(result, :authorization_consumption)),
       ledger_changed: ledger_changed?,
       safety: safety_summary()
     }
@@ -536,6 +612,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
       correlation_id: optional_string(result, :correlation_id),
       request: maybe_request_snapshot(value(result, :request)),
       starter_result: safe_preserved_map(value(result, :starter_result) || %{}),
+      authorization_consumption: authorization_consumption_snapshot(value(result, :authorization_consumption)),
       ledger_changed: value(result, :ledger_changed) == true,
       safety: safety_snapshot(value(result, :safety))
     }
@@ -579,6 +656,12 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
   defp maybe_request_snapshot(request) when is_map(request), do: request_snapshot(request)
   defp maybe_request_snapshot(_request), do: nil
+
+  defp authorization_consumption_snapshot(consumption) when is_map(consumption) do
+    CutoverAuthorizationConsumptionGuard.to_decision(consumption)
+  end
+
+  defp authorization_consumption_snapshot(_consumption), do: nil
 
   defp pending_start_intents(replay) do
     replay

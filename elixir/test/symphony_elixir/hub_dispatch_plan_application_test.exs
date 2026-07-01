@@ -129,6 +129,36 @@ defmodule SymphonyElixir.HubDispatchPlanApplicationTest do
     assert RuntimeLedger.replay(ledger).projects == []
   end
 
+  test "authorization consumption guard blocks planned intent application before ledger mutation" do
+    registry = registry([project("alpha", migration_state: "hub_managed")])
+    intake = CandidateIntake.build(registry, [source("alpha", [%{id: "123", identifier: "ALPHA-123"}])], now: @now)
+    plan = DispatchPlanning.build(registry, intake, now: @now)
+
+    {ledger, application} =
+      DispatchPlanApplication.apply_plan(registry, plan, RuntimeLedger.new(),
+        now: @now,
+        authorization_consumption_guard: %{authorization_ledger: %{projects: []}}
+      )
+
+    assert application.counts.applied_count == 0
+    assert application.counts.blocked_count == 1
+    assert application.reason_counts == %{"authorization_consumption_blocked" => 1}
+
+    assert [
+             %{
+               outcomes: [
+                 %{
+                   status: "blocked",
+                   reason: "authorization_consumption_blocked",
+                   authorization_consumption: %{decision: "no_authorization", side_effect_source: "dispatch_application"}
+                 }
+               ]
+             }
+           ] = application.projects
+
+    assert RuntimeLedger.replay(ledger).projects == []
+  end
+
   test "sanitizes application summary and pending start intent metadata" do
     registry = registry([project("alpha")])
 

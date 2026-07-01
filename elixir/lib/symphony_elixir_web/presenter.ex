@@ -9,6 +9,7 @@ defmodule SymphonyElixirWeb.Presenter do
     ActivationPreflight,
     CandidateIntake,
     CutoverAuditHistory,
+    CutoverAuthorizationConsumptionGuard,
     CutoverExecutionAuthorization,
     CutoverGate,
     CutoverOperationAudit,
@@ -53,6 +54,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_cutover_audit_history(snapshot)
         |> maybe_put_hub_cutover_readiness_permit(snapshot)
         |> maybe_put_hub_cutover_execution_authorization_ledger(snapshot)
+        |> maybe_put_hub_cutover_authorization_consumption_guard(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -175,6 +177,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverExecutionAuthorization.observability_snapshot(hub_cutover_execution_authorization_ledger) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_execution_authorization_ledger, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_authorization_consumption_guard(payload, snapshot) do
+    hub_cutover_authorization_consumption_guard =
+      Map.get(snapshot, :hub_cutover_authorization_consumption_guard) ||
+        Map.get(snapshot, "hub_cutover_authorization_consumption_guard")
+
+    case CutoverAuthorizationConsumptionGuard.observability_snapshot(hub_cutover_authorization_consumption_guard) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_authorization_consumption_guard, safe_snapshot)
     end
   end
 
