@@ -597,6 +597,20 @@ as success. The ledger is not a durable execution queue, one-click migration, mi
 legacy service takeover, and it does not replace gate/permit/authorization/consumption guard,
 provider governance, runtime ledger, worker starter, or writeback executor. No outcome facts are
 reported as `no_outcome`, not pending execution.
+`hub_cutover_execution_outcome_closeout` and
+`hub_device_observability.cutover_execution_outcome_closeout` add the manual closeout baseline for
+unresolved outcome facts. The summary is safe for Dashboard/API and binds project/provider scope,
+operation/source, outcome replay key/fingerprint/status, side-effect entered/may-have-happened
+semantics, cutover request, authorization record, readiness permit, gate/audit/history evidence,
+consumption guard fingerprint, safe resolution/reason/action codes, operator request fingerprint,
+and safe created/closed timestamps. Matching closeouts can report `resolved` or
+`allow_explicit_retry_consideration`; stale evidence, cross-project/source references, malformed
+records, unsupported resolution codes, and side-effect safety conflicts remain visible and do not
+clear the current outcome. Retry consideration never triggers provider I/O, worker start,
+writeback, systemd changes, automatic authorization, or legacy service takeover; a later run must
+again pass readiness permit, execution authorization, consumption guard, and existing provider/
+runtime/writeback guardrails. No unresolved outcome reports `no_outcome`; unresolved outcomes
+without a valid closeout report `no_closeout`, not pending retry.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -684,7 +698,12 @@ Use readiness for migration preparation only; it does not execute a migration.
     side-effect boundaries should normalize their safe return into success, failure, retryable,
     unknown, or manual-attention outcomes. Unresolved unknown/manual-attention outcomes require
     operator review and should not be replayed automatically just because the same authorization
-    record still exists.
+    record still exists. Optionally pass
+    `--hub-cutover-execution-outcome-closeout /path/to/closeout.yaml` to display operator closeout
+    records for those unresolved outcomes. A closeout can mark the manual handling as resolved or
+    allow later explicit retry consideration, but it is only audit input; it never replays the old
+    side effect, creates authorization, changes config, touches systemd, or bypasses permit /
+    authorization / consumption guard checks.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

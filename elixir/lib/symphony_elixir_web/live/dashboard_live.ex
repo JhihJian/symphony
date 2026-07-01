@@ -285,6 +285,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   entered <%= hub_cutover_outcome_count(@payload, :side_effect_entered_count) %> · not entered <%= hub_cutover_outcome_count(@payload, :side_effect_not_entered_count) %> · unresolved <%= hub_cutover_outcome_count(@payload, :unresolved_count) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Outcome Closeout</p>
+                <p class="metric-value"><%= hub_cutover_outcome_closeout_status(@payload) %></p>
+                <p class="metric-detail">
+                  unresolved <%= hub_cutover_outcome_closeout_count(@payload, :unresolved_outcome_count) %> · resolved <%= hub_cutover_outcome_closeout_count(@payload, :resolved_count) %> · stale <%= hub_cutover_outcome_closeout_count(@payload, :stale_count) %> · conflict <%= hub_cutover_outcome_closeout_count(@payload, :conflict_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  retry consideration <%= hub_cutover_outcome_closeout_count(@payload, :allow_explicit_retry_consideration_count) %> · manual <%= hub_cutover_outcome_closeout_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_outcome_closeout_count(@payload, :malformed_count) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -349,6 +360,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_outcome_badge_class(project.cutover_execution_outcome_ledger && project.cutover_execution_outcome_ledger.status)}>
                           outcome <%= hub_cutover_outcome_project_status(project.cutover_execution_outcome_ledger) %>
+                        </span>
+                        <span class={hub_cutover_outcome_closeout_badge_class(project.cutover_execution_outcome_closeout && project.cutover_execution_outcome_closeout.status)}>
+                          closeout <%= hub_cutover_outcome_closeout_project_status(project.cutover_execution_outcome_closeout) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -422,6 +436,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={outcome <- hub_cutover_project_unresolved_outcomes(project)} class="muted event-meta">
                           outcome <%= outcome.side_effect_source %> <%= outcome.status %> / <%= outcome.reason_code %>
+                        </span>
+                        <span :if={project.cutover_execution_outcome_closeout} class="muted event-meta">
+                          closeout resolved <%= hub_cutover_outcome_closeout_project_count(project, :resolved_count) %> · stale <%= hub_cutover_outcome_closeout_project_count(project, :stale_count) %> · conflict <%= hub_cutover_outcome_closeout_project_count(project, :conflict_count) %>
+                        </span>
+                        <span :for={closeout <- hub_cutover_project_outcome_closeouts(project)} class="muted event-meta">
+                          closeout <%= closeout.side_effect_source %> <%= closeout.status %> / <%= closeout.resolution_code %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -992,6 +1012,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_outcome_closeout_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_closeout, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_outcome"
+    end
+  end
+
+  defp hub_cutover_outcome_closeout_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_closeout, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1107,6 +1145,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_outcome_badge_class("unsupported"), do: "state-badge state-badge-danger"
   defp hub_cutover_outcome_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_outcome_closeout_badge_class("resolved"), do: "state-badge state-badge-active"
+  defp hub_cutover_outcome_closeout_badge_class("no_outcome"), do: "state-badge state-badge-muted"
+  defp hub_cutover_outcome_closeout_badge_class("no_closeout"), do: "state-badge state-badge-warning"
+  defp hub_cutover_outcome_closeout_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_outcome_closeout_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -1136,6 +1184,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_outcome_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_outcome_project_status(_ledger), do: "no_outcome"
+
+  defp hub_cutover_outcome_closeout_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_outcome_closeout_project_status(_closeout), do: "no_outcome"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1269,6 +1320,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_cutover_project_unresolved_outcomes(_project), do: []
+
+  defp hub_cutover_outcome_closeout_project_count(%{cutover_execution_outcome_closeout: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_outcome_closeout_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_outcome_closeouts(%{cutover_execution_outcome_closeout: %{closeouts: closeouts}})
+       when is_list(closeouts) do
+    Enum.take(closeouts, 3)
+  end
+
+  defp hub_cutover_project_outcome_closeouts(_project), do: []
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

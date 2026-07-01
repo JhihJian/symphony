@@ -306,6 +306,19 @@ silently overwritten as success. The ledger is not a durable execution queue, mi
 one-click migration, or legacy service takeover, and it does not replace the gate, permit,
 authorization ledger, consumption guard, provider governance, runtime ledger, worker starter, or
 writeback executor. Snapshots with no outcome report `no_outcome`, not pending execution.
+`hub_cutover_execution_outcome_closeout` /
+`hub_device_observability.cutover_execution_outcome_closeout` adds the operator closeout baseline
+for unresolved `unknown` or `manual_attention` outcomes. A closeout binds the current project,
+provider scope, operation/source, replay key, outcome fingerprint/status, side-effect safety,
+cutover request, authorization record, readiness permit, gate/audit/history evidence, consumption
+guard fingerprint, safe resolution code, operator request fingerprint, timestamps, and safe
+reason/action codes. Matching closeouts can report `resolved` or
+`allow_explicit_retry_consideration`, while drift, cross-project/source mismatch, malformed input,
+unsupported resolution, or side-effect safety conflict stays visible as `stale`, `conflict`,
+`malformed`, or `manual_attention`. Retry consideration is only an audit input for a later explicit run through
+permit, authorization, consumption guard, and provider/runtime/writeback guardrails; it never
+automatically replays an external side effect or takes over the legacy service. No closeout reports
+`no_closeout`, not pending retry.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
