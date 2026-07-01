@@ -1676,15 +1676,18 @@ Runtime entrypoint:
 - In explicit Hub cutover execution paths, real provider candidate scan, dispatch plan application,
   real worker start handoff, and real provider writeback MUST consume the same authorization record
   before provider I/O, runtime-ledger dispatch mutation, worker start, provider writeback, systemd
-  operations, or configuration writes. Missing or non-matching `authorized_for_explicit_execution`
-  records, operation/scope mismatch, non-ready permits, gate/preflight blocks, dry-run/history/
-  closeout staleness, unresolved manual attention, mode incompatibility, unknown/malformed/
-  unsupported inputs, or evidence fingerprint drift MUST block before external side effects.
+  operations, or configuration writes. These real side-effect entrypoints MUST receive a guard
+  context even when the authorization ledger has no requests or records; an empty or missing
+  matching `authorized_for_explicit_execution` record MUST produce `no_authorization` before any
+  external side effect. Operation/scope mismatch, non-ready permits, gate/preflight blocks,
+  dry-run/history/closeout staleness, unresolved manual attention, mode incompatibility,
+  unknown/malformed/unsupported inputs, or evidence fingerprint drift MUST also block before
+  external side effects.
 - The consumption guard MUST NOT execute migration work, queue execution, take over legacy services,
   bypass or replace the cutover gate, readiness permit, execution authorization ledger, activation
   preflight, legacy ownership guardrail, provider governance, runtime ledger, worker starter, or
-  writeback executor. Projects without explicit authorization request/consumption MUST show a
-  non-misleading `no_consumption` summary rather than pending migration or pending execution.
+  writeback executor. Projects without real consumption events MUST show a non-misleading
+  `no_consumption` summary rather than pending migration or pending execution.
 - Dashboard/API summaries SHOULD expose device-level and project-level authorization consumption
   counts by decision, operation, and side-effect source, recent safe reason/action codes, safe
   evidence fingerprints, and sources blocked because authorization was missing or mismatched.

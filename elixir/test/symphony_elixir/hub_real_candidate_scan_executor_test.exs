@@ -99,6 +99,41 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
     assert result.result_summary.authorization_consumption.side_effect_source == "candidate_scan"
   end
 
+  test "matching authorization consumption record allows candidate scan provider I/O" do
+    root = Path.join(System.tmp_dir!(), "hub-real-candidate-authorized-#{System.unique_integer([:positive])}")
+
+    try do
+      project = write_memory_project!(root, "alpha")
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [%Issue{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue", state: "Todo"}]
+      })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      request =
+        provider_request!(
+          project_id: "alpha",
+          provider_scope: %{kind: "memory", key: "memory:alpha", scope: %{namespace: "alpha"}},
+          operation_kind: :candidate_scan,
+          logical_key: "hub-poll:alpha:candidate_scan"
+        )
+
+      result =
+        RealCandidateScanExecutor.execute(request,
+          registry: registry([project]),
+          authorization_consumption_guard: %{authorization_ledger: authorization_ledger()}
+        )
+
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 1_000
+      assert result.status == :success
+      assert result.result_summary.provider_io == true
+      assert [%{id: "alpha-1", title: "Alpha issue"}] = result.result_summary.candidates
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "does not expose raw provider error payloads in result summaries" do
     root = Path.join(System.tmp_dir!(), "hub-real-candidate-safe-errors-#{System.unique_integer([:positive])}")
 
@@ -169,6 +204,7 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
 
     write_workflow_file!(workflow_path,
       tracker_kind: "memory",
+      tracker_project_slug: project_id,
       workspace_root: Path.join([root, "workspaces", project_id])
     )
 
@@ -183,6 +219,27 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
         provider_scope_key: "memory:#{project_id}",
         provider_scope: %{namespace: project_id}
       }
+    }
+  end
+
+  defp authorization_ledger do
+    %{
+      projects: [
+        %{
+          project_id: "alpha",
+          authorization_request_count: 1,
+          records: [
+            %{
+              project_id: "alpha",
+              operation: "poll",
+              status: "authorized_for_explicit_execution",
+              provider_scope: %{},
+              authorization_request: %{authorization_request_fingerprint: "auth-alpha-poll"},
+              evidence_fingerprints: %{}
+            }
+          ]
+        }
+      ]
     }
   end
 
