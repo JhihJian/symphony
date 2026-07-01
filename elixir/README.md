@@ -573,16 +573,17 @@ service takeover; it does not bypass the gate or permit and does not call provid
 workers, mutate runtime-ledger/provider state, operate systemd, or edit config.
 `hub_cutover_authorization_consumption_guard` and
 `hub_device_observability.cutover_authorization_consumption_guard` add the shared authorization
-consumption boundary for explicit Hub cutover execution paths. When an authorization request/record
-exists, real candidate scan, dispatch plan application, real worker start handoff, and real provider
-writeback evaluate the same guard before provider I/O, runtime-ledger mutation, worker start, or
-provider writeback. The summary reports `allowed`, `blocked`, `no_authorization`, `stale`,
+consumption boundary for explicit Hub cutover execution paths. Real candidate scan, dispatch plan
+application, real worker start handoff, and real provider writeback evaluate the same guard before
+provider I/O, runtime-ledger mutation, worker start, or provider writeback, even when the
+authorization ledger is empty. The summary reports `allowed`, `blocked`, `no_authorization`, `stale`,
 `manual_attention`, `unsupported`, and `malformed` counts by operation and side-effect source, recent
 safe reason/action codes, blocked sources, and sanitized evidence fingerprints. It is not an
 executor, queue, one-click migration, or legacy service takeover, and it does not replace the
 cutover gate, readiness permit, authorization ledger, activation preflight, provider governance,
-runtime ledger, worker starter, or writeback executor. Without an explicit request or consumption
-event it stays at `no_consumption` rather than implying pending execution.
+runtime ledger, worker starter, or writeback executor. Empty or non-matching authorization records
+block as `no_authorization`; snapshots with no real consumption event stay at `no_consumption`
+rather than implying pending execution.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -659,9 +660,10 @@ Use readiness for migration preparation only; it does not execute a migration.
    config changes.
 10. When a later explicit Hub cutover execution path uses a real side-effect entrypoint, treat the
     consumption guard as the common authorization-consumption boundary before that side effect. A
-    missing/mismatched/stale/manual-attention/malformed record blocks before provider calls, dispatch
-    mutation, worker start, or writeback, but the guard still does not replace the existing gate,
-    permit, provider governance, runtime ledger, starter, or writeback checks.
+    missing/mismatched/stale/manual-attention/malformed record, including a completely empty
+    authorization ledger, blocks as `no_authorization` before provider calls, dispatch mutation,
+    worker start, or writeback, but the guard still does not replace the existing gate, permit,
+    provider governance, runtime ledger, starter, or writeback checks.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

@@ -280,17 +280,17 @@ operate systemd, or edit config. Without an explicit authorization request it re
 count 0 and does not imply execution is pending.
 `hub_cutover_authorization_consumption_guard` /
 `hub_device_observability.cutover_authorization_consumption_guard` adds the shared consumption
-boundary for explicit Hub cutover execution paths. When the Hub runtime has an explicit
-authorization request/record, real candidate scan, dispatch plan application, real worker start
-handoff, and real provider writeback consume the same authorization record before provider I/O,
-runtime-ledger mutation, worker start, or provider writeback. Decisions are safe summaries such as
+boundary for explicit Hub cutover execution paths. Real candidate scan, dispatch plan application,
+real worker start handoff, and real provider writeback always receive the guard before provider
+I/O, runtime-ledger mutation, worker start, or provider writeback, even when the authorization
+ledger is empty. Decisions are safe summaries such as
 `allowed`, `blocked`, `no_authorization`, `stale`, `manual_attention`, `unsupported`, and
 `malformed`, with reason/action codes, source/operation counts, blocked sources, and sanitized
 evidence fingerprints. The guard is not an executor, queue, one-click migration, or legacy service
 takeover; it does not replace the cutover gate, readiness permit, authorization ledger, activation
-preflight, provider governance, runtime ledger, worker starter, or writeback executor. Without an
-explicit authorization request or consumption event it reports `no_consumption` and does not imply
-pending migration or execution.
+preflight, provider governance, runtime ledger, worker starter, or writeback executor. Empty or
+non-matching authorization records block as `no_authorization`; snapshots with no real consumption
+event report `no_consumption` and do not imply pending migration or execution.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request

@@ -1002,9 +1002,6 @@ defmodule SymphonyElixir.Hub.Runtime do
   defp run_poll_tick(state, requested_at) do
     started_tick = running_tick(requested_at)
 
-    authorization_consumption_guard =
-      authorization_consumption_guard_context(state.cutover_execution_authorization_ledger)
-
     plan =
       PollCoordinator.build_plan(state.registry,
         now: requested_at,
@@ -1015,6 +1012,12 @@ defmodule SymphonyElixir.Hub.Runtime do
       )
 
     executable_entries = Enum.filter(plan.projects, &(&1.allow_poll == true))
+
+    authorization_consumption_guard =
+      authorization_consumption_guard_context(
+        state.cutover_execution_authorization_ledger,
+        required?: authorization_consumption_guard_required?(state, executable_entries)
+      )
 
     {poll_facts, provider_queue, result_summaries, intake_sources} =
       Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, [], []}, fn entry, {facts, queue, summaries, intake_sources} ->
@@ -1954,16 +1957,52 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
-  defp authorization_consumption_guard_context(ledger) when is_map(ledger) do
+  defp authorization_consumption_guard_required?(state, executable_entries) do
+    (executable_entries != [] and real_candidate_scan_executor?(state.provider_executor)) or
+      real_writeback_executor?(state.provider_executor) or
+      real_worker_start_starter?(state.worker_start_starter) or
+      dispatch_application_pending?(state.dispatch_planning)
+  end
+
+  defp real_candidate_scan_executor?(RealCandidateScanExecutor), do: true
+  defp real_candidate_scan_executor?(_executor), do: false
+
+  defp real_writeback_executor?(RealWritebackExecutor), do: true
+  defp real_writeback_executor?(_executor), do: false
+
+  defp real_worker_start_starter?(starter) do
+    case starter do
+      starter when is_atom(starter) -> Atom.to_string(starter) == "Elixir.SymphonyElixir.Hub.RealWorkerStarter"
+      _starter -> false
+    end
+  end
+
+  defp dispatch_application_pending?(dispatch_planning) when is_map(dispatch_planning) do
+    dispatch_planning
+    |> list_value(:projects)
+    |> Enum.any?(fn project ->
+      project
+      |> list_value(:outcomes)
+      |> Enum.any?(&(status_string(value(&1, :status)) == "planned"))
+    end)
+  end
+
+  defp dispatch_application_pending?(_dispatch_planning), do: false
+
+  defp authorization_consumption_guard_context(ledger, opts) when is_map(ledger) and is_list(opts) do
     ledger = CutoverExecutionAuthorization.to_snapshot(ledger)
     counts = value(ledger, :counts) || %{}
 
-    if count_value(counts, :authorization_request_count) > 0 or count_value(counts, :record_count) > 0 do
+    if Keyword.get(opts, :required?, false) == true or count_value(counts, :authorization_request_count) > 0 or count_value(counts, :record_count) > 0 do
       %{authorization_ledger: ledger}
     end
   end
 
-  defp authorization_consumption_guard_context(_ledger), do: nil
+  defp authorization_consumption_guard_context(_ledger, opts) when is_list(opts) do
+    if Keyword.get(opts, :required?, false) == true do
+      %{authorization_ledger: CutoverExecutionAuthorization.to_snapshot(%{})}
+    end
+  end
 
   defp execute_provider_request(nil, _executor, _started_at, _registry, _config_path, _activation_preflight, _cutover_gate, _authorization_consumption_guard) do
     {:error, :missing_provider_request}
