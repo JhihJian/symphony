@@ -2,6 +2,44 @@
 
 本文档说明如何用用户级 systemd template 部署多个 Symphony 项目实例。
 
+## GitHub Actions OpenCodeReview 审计
+
+仓库通过 `.github/workflows/open-code-review.yml` 接入 OpenCodeReview 审计。该 workflow 运行在
+仓库级 self-hosted GitHub Actions runner 上，runner 标签必须包含：
+
+```text
+self-hosted, linux, x64, symphony-ocr
+```
+
+触发方式：
+
+- `pull_request`：同仓库 PR `opened`、`synchronize`、`reopened`、`ready_for_review` 时自动做合并前
+  PR 审查。来自 fork 的 PR 不在这个审计 job 中运行，避免把不可信 fork 代码放进本机 runner 上下文。
+- `push` 到 `main`：对已合并进入主干的提交范围做合并后审计。
+- `workflow_dispatch`：允许手动触发一次审计。
+
+运行依赖：
+
+- runner 所在机器能访问本地 OpenAI 兼容模型网关 `http://127.0.0.1:8280/v1`。
+- 仓库 Secret `OPENAI_API_KEY` 已配置，用于本地模型网关鉴权。
+- runner 用户下存在 OpenCodeReview CLI：`/home/jhihjian/.local/bin/ocr`。
+- runner 用户下存在 `summ`：`/home/jhihjian/.nvm/versions/node/v24.13.1/bin/summ`。
+
+workflow 每次都会把 OpenCodeReview 输出设置为中文，并通过 `summ notify` 通知审计结果。所有事件也会
+把完整摘要写入 GitHub Actions Step Summary，便于在 Actions 运行页面回看。
+
+如果要验证 runner 是否在线：
+
+```bash
+gh api repos/jhihjian/symphony/actions/runners --jq '.runners[] | {name,status,busy,labels:[.labels[].name]}'
+```
+
+如果要本地验证 OCR 配置：
+
+```bash
+OPENAI_API_KEY="$OPENAI_API_KEY" /home/jhihjian/.local/bin/ocr llm test
+```
+
 当前 systemd template 仍是 legacy 多实例模型：每个 `symphony@<project>.service` 是独立
 进程，读取自己的 `WORKFLOW.md`、`TRACKER.yaml`、workspace、tracker scope 和 Dashboard/API
 端口。Elixir 代码中新增的 Hub mode `HUB.yaml` 项目注册表只提供进程内 Hub 方向的模型加载、
