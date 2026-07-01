@@ -605,7 +605,11 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
     direct_events =
       list_value(sources, :authorization_consumptions) ++
         list_value(sources, :consumptions) ++
-        list_value(sources, :events)
+        list_value(sources, :events) ++
+        list_value(sources, :recent_decisions) ++
+        list_value(sources, :decisions) ++
+        summary_events(value(sources, :cutover_authorization_consumption_guard)) ++
+        summary_events(value(sources, :authorization_consumption_guard))
 
     direct_events ++
       tick_events(value(sources, :tick) || value(sources, :poll_tick)) ++
@@ -613,6 +617,14 @@ defmodule SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard do
       worker_start_events(value(sources, :worker_start_handoff) || value(sources, :hub_worker_start_handoff)) ++
       provider_queue_events(value(sources, :provider_queue))
   end
+
+  defp summary_events(summary) when is_map(summary) do
+    list_value(summary, :recent_decisions) ++
+      list_value(summary, :decisions) ++
+      Enum.flat_map(list_value(summary, :projects), &list_value(&1, :recent_decisions))
+  end
+
+  defp summary_events(_summary), do: []
 
   defp tick_events(tick) do
     tick

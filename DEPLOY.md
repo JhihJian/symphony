@@ -175,6 +175,20 @@ dispatch plan application、real worker start handoff 和 real writeback 才能�
 replay block。这个 decision 不会创建 authorization、不会消费 authorization、不会调用 provider/worker/
 writeback/systemd/config，也不会把 closeout 当作外部副作用成功；后续显式执行仍必须通过 permit、
 authorization ledger、consumption guard 以及 provider/runtime/writeback 自身 guardrail。
+replay decision 之后，Hub 还会暴露只读的 replay request audit：
+`hub_cutover_replay_request_audit` 和
+`hub_device_observability.cutover_replay_request_audit`。operator 可以通过
+`--hub-cutover-replay-request /path/to/request.yaml` 提交“我准备基于这个 closeout 重新考虑某个
+Hub-owned operation”的序列化请求。request 需要绑定 project/provider scope、operation/source、
+历史 outcome replay key/fingerprint/status、side-effect safety、matching closeout fingerprint/
+resolution、当前 replay decision fingerprint/status、cutover request、readiness permit、
+authorization record、consumption guard、request source/requested_at/request fingerprint，以及
+安全的 note digest 或 action/risk code。audit 只把这些证据和后续 outcome ledger 关联起来，显示
+`no_request`、`would_allow_retry_consideration`、`would_block`、`stale`、`conflict`、
+`manual_attention`、`malformed` 或 `unsupported`，并说明后续 outcome 是否 recorded / pending /
+blocked / stale / conflict。它不会创建或消费 authorization，不会访问 provider、dispatch、启动 worker、
+writeback、操作 systemd、改配置、自动 retry、排队迁移或接管 legacy service；没有 request 时显示
+`no_request` / request count 0，不表示有执行待处理。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -227,7 +241,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_execution_outcome_closeout: .hub_cutover_execution_outcome_closeout,
   device_cutover_execution_outcome_closeout: .hub_device_observability.cutover_execution_outcome_closeout,
   cutover_replay_decision: .hub_cutover_replay_decision,
-  device_cutover_replay_decision: .hub_device_observability.cutover_replay_decision
+  device_cutover_replay_decision: .hub_device_observability.cutover_replay_decision,
+  cutover_replay_request_audit: .hub_cutover_replay_request_audit,
+  device_cutover_replay_request_audit: .hub_device_observability.cutover_replay_request_audit
 }'
 ```
 

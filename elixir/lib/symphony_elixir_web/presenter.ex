@@ -17,6 +17,7 @@ defmodule SymphonyElixirWeb.Presenter do
     CutoverOperationAudit,
     CutoverReadinessPermit,
     CutoverReplayDecision,
+    CutoverReplayRequestAudit,
     DeviceObservability,
     DispatchPlanApplication,
     DispatchPlanning,
@@ -61,6 +62,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_cutover_execution_outcome_ledger(snapshot)
         |> maybe_put_hub_cutover_execution_outcome_closeout(snapshot)
         |> maybe_put_hub_cutover_replay_decision(snapshot)
+        |> maybe_put_hub_cutover_replay_request_audit(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -227,6 +229,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverReplayDecision.observability_snapshot(hub_cutover_replay_decision) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_replay_decision, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_replay_request_audit(payload, snapshot) do
+    hub_cutover_replay_request_audit =
+      Map.get(snapshot, :hub_cutover_replay_request_audit) ||
+        Map.get(snapshot, "hub_cutover_replay_request_audit")
+
+    case CutoverReplayRequestAudit.observability_snapshot(hub_cutover_replay_request_audit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_replay_request_audit, safe_snapshot)
     end
   end
 

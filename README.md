@@ -266,6 +266,21 @@ is already allowed and all bound evidence still matches. It does not create auth
 authorization, call providers, mutate dispatch/runtime ledgers, start workers, write back, operate
 systemd, edit configuration, or take over legacy services; existing provider/runtime/writeback
 guardrails still decide whether the explicit action may proceed.
+`hub_cutover_replay_request_audit` /
+`hub_device_observability.cutover_replay_request_audit` adds the operator-facing replay request
+audit baseline after that closeout-aware decision. A serialized request can be loaded with
+`--hub-cutover-replay-request /path/to/request.yaml` or injected by tests/internal callers. It binds
+the requested project/provider scope, operation/source, historical outcome replay key,
+fingerprint/status, side-effect safety, matching closeout fingerprint/resolution, current replay
+decision fingerprint/status, cutover request, readiness permit, authorization record, consumption
+guard, request source/time/fingerprint, and a safe operator note digest or action/risk code. The
+audit reports `no_request`, `would_allow_retry_consideration`, `would_block`, `stale`, `conflict`,
+`manual_attention`, `malformed`, or `unsupported`, and it can link a later outcome ledger fact back
+to the replay request as recorded, still pending, blocked, stale, or conflicting. It is still only a
+read-only audit boundary: it does not create or consume authorization, call providers, dispatch,
+start workers, write back, operate systemd, edit config, auto-replay side effects, or take over
+legacy services. Without a request it reports `no_request` and request count 0, not pending retry or
+pending execution.
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
@@ -362,7 +377,9 @@ and inspect `hub_activation_preflight`,
 `hub_cutover_authorization_consumption_guard`,
 `hub_device_observability.cutover_authorization_consumption_guard`,
 `hub_cutover_execution_outcome_ledger`, and
-`hub_device_observability.cutover_execution_outcome_ledger`, and the Dashboard Hub sections in
+`hub_device_observability.cutover_execution_outcome_ledger`,
+`hub_cutover_replay_request_audit`, and
+`hub_device_observability.cutover_replay_request_audit`, and the Dashboard Hub sections in
 `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not

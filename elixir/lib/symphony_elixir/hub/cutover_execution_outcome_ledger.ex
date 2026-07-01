@@ -185,6 +185,10 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeLedger do
         outcome_id: optional_string(input, :outcome_id),
         attempt_fingerprint: optional_string(input, :attempt_fingerprint),
         replay_key: optional_string(input, :replay_key),
+        replay_request_fingerprint:
+          optional_string(input, :replay_request_fingerprint) ||
+            optional_string(evidence, :replay_request) ||
+            optional_string(evidence, :replay_request_audit),
         project_id: project_id,
         provider_scope: provider_scope,
         operation: operation,
@@ -760,6 +764,12 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeLedger do
         audit_history:
           optional_string(input, :audit_history_fingerprint) ||
             optional_string(guard_evidence, :audit_history),
+        replay_request:
+          optional_string(input, :replay_request_fingerprint) ||
+            optional_string(input, :cutover_replay_request_fingerprint),
+        replay_request_audit:
+          optional_string(input, :replay_request_audit_fingerprint) ||
+            optional_string(input, :replay_request_audit_record_fingerprint),
         consumption_guard:
           optional_string(input, :consumption_guard_fingerprint) ||
             guard_fingerprint(guard),
@@ -1026,13 +1036,24 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeLedger do
   defp dedupe_facts(events) do
     events
     |> Enum.reduce(%{}, fn event, acc ->
-      key = event.replay_key
+      key = dedupe_key(event)
 
       Map.update(acc, key, event, fn existing ->
         if outcome_rank(event) >= outcome_rank(existing), do: event, else: existing
       end)
     end)
     |> Map.values()
+  end
+
+  defp dedupe_key(event) do
+    [
+      event.replay_key,
+      optional_string(event, :replay_request_fingerprint) ||
+        get_in_value(event, [:safe_evidence_fingerprints, :replay_request]) ||
+        get_in_value(event, [:safe_evidence_fingerprints, :replay_request_audit]) ||
+        "initial"
+    ]
+    |> Enum.join("|")
   end
 
   defp outcome_rank(%{status: "manual_attention"}), do: 90

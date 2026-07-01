@@ -4,7 +4,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
   alias SymphonyElixir.Hub.{
     ActivationPreflight,
     CutoverAuthorizationConsumptionGuard,
+    CutoverExecutionAuthorization,
     CutoverExecutionOutcomeLedger,
+    CutoverReadinessPermit,
+    CutoverReplayDecision,
     HostServiceProbe,
     ProjectRegistry,
     ProviderExecutor,
@@ -219,8 +222,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_cutover_replay_decision.status == "retry_consideration_allowed"
       assert snapshot.hub_cutover_replay_decision.counts.retry_consideration_allowed_count == 1
       assert snapshot.hub_cutover_replay_decision.auto_replay_allowed == false
+      assert snapshot.hub_cutover_replay_request_audit.status == "no_request"
+      assert snapshot.hub_cutover_replay_request_audit.counts.request_count == 0
       assert snapshot.hub_runtime.cutover_replay_decision.status == "retry_consideration_allowed"
+      assert snapshot.hub_runtime.cutover_replay_request_audit.status == "no_request"
       assert snapshot.hub_device_observability.overview.cutover_replay_decision.status == "retry_consideration_allowed"
+      assert snapshot.hub_device_observability.overview.cutover_replay_request_audit.status == "no_request"
 
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_execution_outcome_closeout.status == "resolved"
@@ -229,12 +236,51 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert project.cutover_replay_decision.status == "retry_consideration_allowed"
       assert project.detail.replay_decision.status == "retry_consideration_allowed"
       assert project.detail.replay_decision.requires_operator_attention == false
+      assert project.cutover_replay_request_audit.status == "no_request"
+      assert project.detail.replay_request_audit.status == "no_request"
+
+      replay_request =
+        replay_request_from_snapshot(
+          outcome,
+          snapshot.hub_cutover_execution_outcome_closeout,
+          snapshot.hub_cutover_replay_decision
+        )
+
+      snapshot_with_request =
+        Runtime.build_snapshot(hub_path, ~U[2026-07-01 09:00:00Z], registry,
+          now: ~U[2026-07-01 09:00:00Z],
+          cutover_authorization_consumption_guard: %{
+            generated_at: "2026-07-01T09:00:00Z",
+            decisions: [consumption_guard]
+          },
+          cutover_execution_outcome_ledger: outcome_ledger,
+          cutover_execution_outcome_closeouts: [
+            outcome_closeout(outcome, "allow_explicit_retry_consideration")
+          ],
+          cutover_readiness_permit: replay_readiness_permit_summary(outcome),
+          cutover_execution_authorization_ledger: replay_authorization_ledger_summary(outcome),
+          cutover_replay_requests: [replay_request]
+        )
+
+      assert snapshot_with_request.hub_cutover_replay_request_audit.status == "would_allow_retry_consideration"
+      assert snapshot_with_request.hub_cutover_replay_request_audit.counts.request_count == 1
+      assert snapshot_with_request.hub_cutover_replay_request_audit.counts.allow_count == 1
+      assert snapshot_with_request.hub_cutover_replay_request_audit.auto_replay_allowed == false
+      assert snapshot_with_request.hub_runtime.cutover_replay_request_audit.status == "would_allow_retry_consideration"
+      assert snapshot_with_request.hub_device_observability.overview.cutover_replay_request_audit.allow_count == 1
+
+      [project_with_request] = snapshot_with_request.hub_device_observability.projects
+      assert project_with_request.cutover_replay_request_audit.status == "would_allow_retry_consideration"
+      assert project_with_request.detail.replay_request_audit.status == "would_allow_retry_consideration"
+      assert [audit_record] = project_with_request.cutover_replay_request_audit.requests
+      assert audit_record.outcome_link_status == "not_linked"
+      assert audit_record.no_side_effects == true
 
       runtime_name = Module.concat(__MODULE__, :OutcomeCloseoutPresenter)
       static_snapshot_module = Module.concat(__MODULE__, :StaticSnapshot)
 
       start_supervised!(
-        {static_snapshot_module, name: runtime_name, snapshot: snapshot},
+        {static_snapshot_module, name: runtime_name, snapshot: snapshot_with_request},
         id: :hub_runtime_outcome_closeout_presenter
       )
 
@@ -242,18 +288,23 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_execution_outcome_closeout.status == "resolved"
       assert payload.hub_cutover_replay_decision.status == "retry_consideration_allowed"
       assert payload.hub_cutover_replay_decision.counts.retry_consideration_allowed_count == 1
+      assert payload.hub_cutover_replay_request_audit.status == "would_allow_retry_consideration"
+      assert payload.hub_cutover_replay_request_audit.counts.allow_count == 1
 
       payload_closeout = payload.hub_device_observability.overview.cutover_execution_outcome_closeout
       assert payload_closeout.allow_explicit_retry_consideration_count == 1
       assert payload.hub_device_observability.overview.cutover_replay_decision.retry_consideration_allowed_count == 1
+      assert payload.hub_device_observability.overview.cutover_replay_request_audit.allow_count == 1
 
       safe_text =
         inspect(
           {
             payload.hub_cutover_execution_outcome_closeout,
             payload.hub_cutover_replay_decision,
+            payload.hub_cutover_replay_request_audit,
             payload.hub_device_observability.cutover_execution_outcome_closeout,
-            payload.hub_device_observability.cutover_replay_decision
+            payload.hub_device_observability.cutover_replay_decision,
+            payload.hub_device_observability.cutover_replay_request_audit
           },
           limit: :infinity,
           printable_limit: :infinity
@@ -2746,6 +2797,142 @@ defmodule SymphonyElixir.HubRuntimeTest do
       closed_at: "2026-07-01T09:02:00Z",
       operator_note: "operator note with raw_provider_response and ghp_secret redacted by digest"
     }
+  end
+
+  defp replay_readiness_permit_summary(outcome) do
+    CutoverReadinessPermit.to_snapshot(%{
+      projects: [
+        %{
+          project_id: outcome.project_id,
+          status: "ready_for_execution_consideration",
+          provider_scope: outcome.provider_scope,
+          permits: [
+            %{
+              project_id: outcome.project_id,
+              provider_scope: outcome.provider_scope,
+              operation: outcome.operation,
+              decision: "ready_for_execution_consideration",
+              permit_fingerprint: outcome.readiness_permit_fingerprint,
+              request: %{request_fingerprint: outcome.cutover_operation_request_fingerprint},
+              evidence_fingerprints: %{
+                dry_run_audit: outcome.dry_run_audit_fingerprint,
+                audit_history: outcome.audit_history_fingerprint
+              }
+            }
+          ]
+        }
+      ]
+    })
+  end
+
+  defp replay_authorization_ledger_summary(outcome) do
+    CutoverExecutionAuthorization.to_snapshot(%{
+      projects: [
+        %{
+          project_id: outcome.project_id,
+          status: "authorized_for_explicit_execution",
+          provider_scope: outcome.provider_scope,
+          records: [
+            %{
+              project_id: outcome.project_id,
+              provider_scope: outcome.provider_scope,
+              operation: outcome.operation,
+              status: "authorized_for_explicit_execution",
+              authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+              authorization_request: %{authorization_request_fingerprint: outcome.authorization_request_fingerprint},
+              cutover_operation_request: %{request_fingerprint: outcome.cutover_operation_request_fingerprint},
+              readiness_permit: %{
+                permit_fingerprint: outcome.readiness_permit_fingerprint,
+                decision: outcome.readiness_permit_decision
+              },
+              evidence_fingerprints: %{
+                dry_run_audit: outcome.dry_run_audit_fingerprint,
+                audit_history: outcome.audit_history_fingerprint
+              },
+              source: "operator_file",
+              authorized_at: "2026-07-01T09:00:00Z"
+            }
+          ]
+        }
+      ]
+    })
+  end
+
+  defp replay_request_from_snapshot(outcome, closeout_summary, replay_decision_summary) do
+    closeout =
+      closeout_summary.projects
+      |> hd()
+      |> Map.fetch!(:closeouts)
+      |> hd()
+
+    decision =
+      replay_decision_summary.projects
+      |> hd()
+      |> Map.fetch!(:recent_decisions)
+      |> hd()
+
+    %{
+      request_id: "runtime-replay-request-#{outcome.project_id}",
+      project_id: outcome.project_id,
+      provider_scope: outcome.provider_scope,
+      operation: outcome.operation,
+      side_effect_source: outcome.side_effect_source,
+      replay_key: outcome.replay_key,
+      outcome_fingerprint: outcome.evidence_fingerprint,
+      outcome_status: outcome.status,
+      outcome_side_effect: %{
+        entered: outcome.side_effect_entered,
+        may_have_happened: outcome.side_effect_may_have_happened
+      },
+      closeout_record_fingerprint: closeout.closeout_record_fingerprint,
+      closeout_resolution_code: closeout.resolution_code,
+      closeout_operator_request_fingerprint: closeout.operator_request_fingerprint,
+      replay_decision_fingerprint: replay_decision_fingerprint(decision),
+      replay_decision_status: decision.decision,
+      cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+      readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+      readiness_permit_decision: outcome.readiness_permit_decision,
+      authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+      authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+      consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+      guard_decision: "allowed",
+      cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+      dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+      audit_history_fingerprint: outcome.audit_history_fingerprint,
+      source: "operator_file",
+      requested_at: "2026-07-01T09:03:00Z",
+      action_code: "request_explicit_retry_consideration",
+      operator_note: "full prompt and ghp_secret must not leak"
+    }
+  end
+
+  defp replay_decision_fingerprint(decision) do
+    decision = CutoverReplayDecision.to_decision(decision)
+
+    decision
+    |> Map.take([
+      :project_id,
+      :provider_scope,
+      :operation,
+      :side_effect_source,
+      :replay_key,
+      :decision,
+      :allowed,
+      :outcome_fingerprint,
+      :closeout_record_fingerprint,
+      :authorization_record_fingerprint,
+      :readiness_permit_fingerprint,
+      :consumption_guard_fingerprint,
+      :safe_evidence_fingerprints
+    ])
+    |> fingerprint()
+  end
+
+  defp fingerprint(value) do
+    value
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp write_project!(root, project_id, overrides) do

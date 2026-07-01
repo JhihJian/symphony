@@ -17,6 +17,7 @@ defmodule SymphonyElixir.CLI do
     hub_cutover_execution_authorization_request: :string,
     hub_cutover_execution_outcome_closeout: :string,
     hub_cutover_operation_request: :string,
+    hub_cutover_replay_request: :string,
     hub_manual_attention_closeout: :string,
     hub_provider_executor: :string,
     hub_scheduler: :boolean,
@@ -40,6 +41,7 @@ defmodule SymphonyElixir.CLI do
           load_hub_manual_attention_closeout: (String.t() -> :ok | {:error, term()}),
           load_hub_cutover_execution_authorization_request: (String.t() -> :ok | {:error, term()}),
           load_hub_cutover_execution_outcome_closeout: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_replay_request: (String.t() -> :ok | {:error, term()}),
           set_hub_scheduler_enabled: (boolean() -> :ok | {:error, term()}),
           validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
           set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
@@ -111,6 +113,7 @@ defmodule SymphonyElixir.CLI do
          :ok <- maybe_load_hub_manual_attention_closeout(opts, deps),
          :ok <- maybe_load_hub_cutover_execution_authorization_request(opts, deps),
          :ok <- maybe_load_hub_cutover_execution_outcome_closeout(opts, deps),
+         :ok <- maybe_load_hub_cutover_replay_request(opts, deps),
          {:ok, hub_config_path} <- hub_config_path(opts),
          :ok <- require_regular_file(deps, hub_config_path, "Hub config file not found"),
          :ok <- deps.validate_hub_config.(hub_config_path) do
@@ -144,7 +147,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
+    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -162,6 +165,7 @@ defmodule SymphonyElixir.CLI do
       load_hub_manual_attention_closeout: &HubRuntime.load_manual_attention_closeouts/1,
       load_hub_cutover_execution_authorization_request: &HubRuntime.load_cutover_execution_authorization_requests/1,
       load_hub_cutover_execution_outcome_closeout: &HubRuntime.load_cutover_execution_outcome_closeouts/1,
+      load_hub_cutover_replay_request: &HubRuntime.load_cutover_replay_requests/1,
       set_hub_scheduler_enabled: &HubRuntime.set_scheduler_enabled/1,
       validate_hub_config: &HubRuntime.validate_config/1,
       set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
@@ -377,6 +381,22 @@ defmodule SymphonyElixir.CLI do
                |> normalize_cli_path("Hub cutover execution outcome closeout path must not be blank"),
              :ok <- require_regular_file(deps, path, "Hub cutover execution outcome closeout file not found") do
           deps.load_hub_cutover_execution_outcome_closeout.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_replay_request(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_replay_request) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <-
+               values
+               |> List.last()
+               |> normalize_cli_path("Hub cutover replay request path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover replay request file not found") do
+          deps.load_hub_cutover_replay_request.(path)
         end
     end
   end
