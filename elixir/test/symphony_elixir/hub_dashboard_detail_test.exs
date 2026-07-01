@@ -125,6 +125,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["cutover_execution_authorization_ledger"]["status"] == "no_ready_permit"
     assert hub["cutover_execution_authorization_ledger"]["counts"]["authorization_request_count"] == 0
     assert hub["cutover_execution_authorization_ledger"]["counts"]["record_count"] == 0
+    assert hub["cutover_authorization_consumption_guard"]["status"] == "no_consumption"
+    assert hub["cutover_authorization_consumption_guard"]["counts"]["consumption_count"] == 0
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
@@ -134,6 +136,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["alpha"]["cutover_readiness_permit"]["permits"] == []
     assert projects["alpha"]["cutover_execution_authorization_ledger"]["status"] == "no_ready_permit"
     assert projects["alpha"]["cutover_execution_authorization_ledger"]["records"] == []
+    assert projects["alpha"]["cutover_authorization_consumption_guard"] == nil
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
     assert projects["gamma"]["migration_readiness"]["decision"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["status"] == "unknown_manual_attention"

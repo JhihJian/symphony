@@ -14,7 +14,15 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   alias SymphonyElixir.Config
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.GitLab.Adapter, as: GitLabAdapter
-  alias SymphonyElixir.Hub.{CutoverGate, ProviderGovernance, ProviderScope, SafeSummary}
+
+  alias SymphonyElixir.Hub.{
+    CutoverAuthorizationConsumptionGuard,
+    CutoverGate,
+    ProviderGovernance,
+    ProviderScope,
+    SafeSummary
+  }
+
   alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Tracker.Memory
@@ -33,7 +41,8 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
   end
 
   defp execute_candidate_scan(request, opts) do
-    with :ok <- cutover_gate(request, opts),
+    with :ok <- authorization_consumption(request, opts),
+         :ok <- cutover_gate(request, opts),
          :ok <- validate_provider_kind(request.provider_kind),
          {:ok, registry} <- registry(opts),
          {:ok, project} <- registry_project(registry, request.project_id),
@@ -57,6 +66,9 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         }
       )
     else
+      {:authorization_blocked, decision} ->
+        authorization_blocked_result(request, decision)
+
       {:cutover_blocked, reason} ->
         cutover_blocked_result(request, reason)
 
@@ -108,6 +120,55 @@ defmodule SymphonyElixir.Hub.RealCandidateScanExecutor do
         :ok
     end
   end
+
+  defp authorization_consumption(request, opts) do
+    case Keyword.get(opts, :authorization_consumption_guard) ||
+           Keyword.get(opts, :cutover_authorization_consumption_guard) do
+      guard when is_map(guard) ->
+        input =
+          Map.merge(guard, %{
+            project_id: request.project_id,
+            provider_scope: request.provider_scope,
+            operation: "poll",
+            side_effect_source: "candidate_scan",
+            execution_mode: %{
+              mode: "real_candidate_scan",
+              provider_io: true,
+              supported_operations: ["candidate_scan"]
+            }
+          })
+
+        case CutoverAuthorizationConsumptionGuard.require_allowed(input) do
+          :ok -> :ok
+          {:blocked, decision} -> {:authorization_blocked, decision}
+        end
+
+      _guard ->
+        :ok
+    end
+  end
+
+  defp authorization_blocked_result(request, decision) do
+    ProviderGovernance.result(request, :permanent_failure,
+      error_class: authorization_error_class(decision),
+      result_summary: %{
+        boundary: "hub_real_candidate_scan_executor",
+        executor: "real_candidate_scan",
+        provider_io: false,
+        error: "authorization_consumption_blocked",
+        authorization_consumption: decision,
+        decision: decision.decision,
+        reason: decision.reason_code,
+        action: value(decision, :action_code)
+      }
+    )
+  end
+
+  defp authorization_error_class(%{decision: "manual_attention"}), do: :unknown
+  defp authorization_error_class(%{decision: "stale"}), do: :conflict
+  defp authorization_error_class(%{decision: "no_authorization"}), do: :conflict
+  defp authorization_error_class(%{decision: "blocked"}), do: :conflict
+  defp authorization_error_class(_decision), do: :validation
 
   defp cutover_blocked_result(request, reason) do
     ProviderGovernance.result(request, :permanent_failure,

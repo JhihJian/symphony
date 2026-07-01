@@ -395,10 +395,13 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_runtime.cutover_readiness_permit.counts.ready_count == 1
       assert snapshot.hub_runtime.cutover_execution_authorization_ledger.counts.record_count == 1
       assert snapshot.hub_runtime.cutover_execution_authorization_ledger.counts.authorized_count == 1
+      assert snapshot.hub_runtime.cutover_authorization_consumption_guard.status == "no_consumption"
+      assert snapshot.hub_runtime.cutover_authorization_consumption_guard.counts.consumption_count == 0
       assert snapshot.hub_device_observability.cutover_operation_audit.counts.dry_run_ready_count == 1
       assert snapshot.hub_device_observability.cutover_audit_history.counts.unresolved_manual_attention_count == 0
       assert snapshot.hub_device_observability.cutover_readiness_permit.counts.ready_count == 1
       assert snapshot.hub_device_observability.cutover_execution_authorization_ledger.counts.authorized_count == 1
+      assert snapshot.hub_device_observability.cutover_authorization_consumption_guard.status == "no_consumption"
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_operation_audit.request.request_id == "cutover-dry-run-alpha"
       assert [%{decision: "would_allow", dry_run_only: true, operation: "writeback"}] = project.cutover_operation_audit.operation_results
@@ -420,10 +423,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_audit_history.counts.history_entry_count == 1
       assert payload.hub_cutover_readiness_permit.counts.ready_count == 1
       assert payload.hub_cutover_execution_authorization_ledger.counts.authorized_count == 1
+      assert payload.hub_cutover_authorization_consumption_guard.status == "no_consumption"
       assert payload.hub_device_observability.overview.cutover_operation_audit.request_count == 1
       assert payload.hub_device_observability.overview.cutover_audit_history.history_entry_count == 1
       assert payload.hub_device_observability.overview.cutover_readiness_permit.ready_count == 1
       assert payload.hub_device_observability.overview.cutover_execution_authorization_ledger.authorized_count == 1
+      assert payload.hub_device_observability.overview.cutover_authorization_consumption_guard.consumption_count == 0
       assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_audit_history, :status]) == "history_ready"
       assert payload.hub_device_observability.projects |> hd() |> get_in([:cutover_readiness_permit, :status]) == "ready_for_execution_consideration"
 
@@ -1456,6 +1461,72 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "Authorization:"
       refute safe_text =~ "cookie"
       refute safe_text =~ "raw_config"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "real candidate scan runtime consumes explicit authorization guard before provider I/O" do
+    root = tmp_root("hub-runtime-real-candidate-authorization-guard")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        tracker_project_slug: "alpha",
+        workspace_root: Path.join([root, "workspaces", "alpha"])
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
+        "alpha" => [%{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue"}]
+      })
+
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+      runtime_name = Module.concat(__MODULE__, :RealCandidateAuthorizationGuardRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: RealCandidateScanExecutor,
+         operator_acknowledgements: cutover_acknowledgements!(hub_path, provider_executor: RealCandidateScanExecutor),
+         cutover_execution_authorization_requests: [
+           %{
+             authorization_request_id: "auth-alpha-writeback",
+             authorization_request_fingerprint: "auth-fingerprint-alpha-writeback",
+             project_id: "alpha",
+             provider_scope: %{kind: "memory", provider_scope_key: "memory:alpha", scope: %{namespace: "alpha"}},
+             operation: "writeback",
+             source: "operator-file",
+             requested_at: "2026-06-30T09:02:00Z",
+             operator_intent: %{action_codes: ["authorize_explicit_execution"]}
+           }
+         ]},
+        id: :hub_runtime_real_candidate_authorization_guard
+      )
+
+      assert %{poll_tick: %{selected_count: 1, result_counts: %{"permanent_failure" => 1}}} =
+               Runtime.request_refresh(runtime_name)
+
+      refute_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 0
+      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_authorization"
+      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 1
+
+      [blocked] = snapshot.hub_cutover_authorization_consumption_guard.blocked_sources
+      assert blocked.project_id == "alpha"
+      assert blocked.side_effect_source == "candidate_scan"
+      assert blocked.reason_code == "authorization_record_operation_missing"
     after
       File.rm_rf(root)
     end

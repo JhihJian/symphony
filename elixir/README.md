@@ -571,6 +571,18 @@ when the current permit is still `ready_for_execution_consideration` and every b
 fingerprint still matches. The ledger is not an executor, queue, one-click migration, or legacy
 service takeover; it does not bypass the gate or permit and does not call providers, dispatch, start
 workers, mutate runtime-ledger/provider state, operate systemd, or edit config.
+`hub_cutover_authorization_consumption_guard` and
+`hub_device_observability.cutover_authorization_consumption_guard` add the shared authorization
+consumption boundary for explicit Hub cutover execution paths. When an authorization request/record
+exists, real candidate scan, dispatch plan application, real worker start handoff, and real provider
+writeback evaluate the same guard before provider I/O, runtime-ledger mutation, worker start, or
+provider writeback. The summary reports `allowed`, `blocked`, `no_authorization`, `stale`,
+`manual_attention`, `unsupported`, and `malformed` counts by operation and side-effect source, recent
+safe reason/action codes, blocked sources, and sanitized evidence fingerprints. It is not an
+executor, queue, one-click migration, or legacy service takeover, and it does not replace the
+cutover gate, readiness permit, authorization ledger, activation preflight, provider governance,
+runtime ledger, worker starter, or writeback executor. Without an explicit request or consumption
+event it stays at `no_consumption` rather than implying pending execution.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -605,10 +617,13 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.cutover_operation_audit`, `hub_cutover_audit_history`, and
    `hub_device_observability.cutover_audit_history`, `hub_cutover_readiness_permit`,
    `hub_device_observability.cutover_readiness_permit`, `hub_cutover_execution_authorization_ledger`,
-   and `hub_device_observability.cutover_execution_authorization_ledger`. The Dashboard shows the
+   `hub_device_observability.cutover_execution_authorization_ledger`,
+   `hub_cutover_authorization_consumption_guard`, and
+   `hub_device_observability.cutover_authorization_consumption_guard`. The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
-   permit status, authorization-ledger counts, leading reasons, allowed/blocked operations, request
-   counts, and action codes when Hub summary fields exist.
+   permit status, authorization-ledger counts, consumption-guard counts and blocked sources, leading
+   reasons, allowed/blocked operations, request counts, and action codes when Hub summary fields
+   exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -642,6 +657,11 @@ Use readiness for migration preparation only; it does not execute a migration.
    authorization evidence for a later explicit execution stage only; it is not a queue and does not
    execute migration work, provider I/O, dispatch, worker start, writeback, systemd operations, or
    config changes.
+10. When a later explicit Hub cutover execution path uses a real side-effect entrypoint, treat the
+    consumption guard as the common authorization-consumption boundary before that side effect. A
+    missing/mismatched/stale/manual-attention/malformed record blocks before provider calls, dispatch
+    mutation, worker start, or writeback, but the guard still does not replace the existing gate,
+    permit, provider governance, runtime ledger, starter, or writeback checks.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

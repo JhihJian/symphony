@@ -3,6 +3,7 @@ defmodule SymphonyElixir.HubCutoverExecutionAuthorizationTest do
 
   alias SymphonyElixir.Hub.{
     CutoverAuditHistory,
+    CutoverAuthorizationConsumptionGuard,
     CutoverExecutionAuthorization,
     CutoverOperationAudit,
     CutoverReadinessPermit,
@@ -143,6 +144,85 @@ defmodule SymphonyElixir.HubCutoverExecutionAuthorizationTest do
     malformed = CutoverExecutionAuthorization.to_snapshot(%{generated_at: @now, projects: ["not-a-project-map", hd(ledger.projects)]})
     assert Enum.any?(malformed.projects, &(&1.project_id == "" and &1.status == "no_ready_permit"))
     assert Enum.any?(malformed.projects, &(&1.project_id == "alpha" and &1.status == "authorized_for_explicit_execution"))
+  end
+
+  test "authorization consumption guard allows current records and blocks stale malformed or missing records" do
+    projection = projection(["alpha"], acknowledgements?: true)
+    [project] = projection.projects
+    audit = CutoverOperationAudit.build(audit_sources(projection), now: @now, requests: [cutover_request(project, project.cutover_gate, requested_operations: ["writeback"])])
+    history = CutoverAuditHistory.build(%{generated_at: @now, cutover_operation_audit: audit}, now: @now)
+    permit = CutoverReadinessPermit.build(permit_sources(projection, audit, history), now: @now)
+    [operation_permit] = hd(permit.projects).permits
+
+    ledger =
+      CutoverExecutionAuthorization.build(
+        authorization_sources(projection, permit),
+        now: @now,
+        requests: [authorization_request(operation_permit)]
+      )
+
+    [record] = hd(ledger.projects).records
+
+    guard_input = %{
+      authorization_ledger: ledger,
+      project_id: "alpha",
+      provider_scope: operation_permit.provider_scope,
+      operation: "writeback",
+      side_effect_source: "writeback_executor",
+      current_fingerprints: %{
+        cutover_operation_request: operation_permit.request.request_fingerprint,
+        readiness_permit: operation_permit.permit_fingerprint,
+        readiness_permit_decision: operation_permit.decision,
+        activation_plan: operation_permit.activation_plan.fingerprint,
+        operator_acknowledgement: operation_permit.operator_acknowledgement.fingerprint,
+        cutover_gate: operation_permit.cutover_gate.fingerprint,
+        dry_run_audit: operation_permit.evidence_fingerprints.dry_run_audit,
+        audit_history: operation_permit.evidence_fingerprints.audit_history,
+        executor_modes: record.evidence_fingerprints.executor_modes
+      },
+      execution_mode: %{mode: "real_writeback", provider_io: true, supported_operations: ["stage_writeback"]}
+    }
+
+    allowed = CutoverAuthorizationConsumptionGuard.evaluate(guard_input, now: @now)
+    assert allowed.decision == "allowed"
+    assert allowed.allowed == true
+    assert allowed.reason_code == "authorization_consumed"
+    assert allowed.authorization_record_fingerprint != nil
+
+    stale =
+      guard_input
+      |> put_in([:current_fingerprints, :readiness_permit], "old-permit")
+      |> CutoverAuthorizationConsumptionGuard.evaluate(now: @now)
+
+    assert stale.decision == "stale"
+    assert stale.allowed == false
+    assert stale.reason_code == "readiness_permit_fingerprint_drift"
+
+    no_authorization =
+      guard_input
+      |> Map.put(:operation, "poll")
+      |> Map.put(:side_effect_source, "candidate_scan")
+      |> CutoverAuthorizationConsumptionGuard.evaluate(now: @now)
+
+    assert no_authorization.decision == "no_authorization"
+    assert no_authorization.reason_code == "authorization_record_operation_missing"
+
+    malformed = CutoverAuthorizationConsumptionGuard.evaluate("not-a-map", now: @now)
+    assert malformed.decision == "malformed"
+
+    summary =
+      CutoverAuthorizationConsumptionGuard.build(%{events: [allowed, stale, no_authorization, malformed]}, now: @now)
+
+    assert summary.counts.allowed_count == 1
+    assert summary.counts.stale_count == 1
+    assert summary.counts.no_authorization_count == 1
+    assert summary.counts.malformed_count == 1
+
+    safe_text = inspect(summary, limit: :infinity, printable_limit: :infinity)
+    refute safe_text =~ "Bearer"
+    refute safe_text =~ "ghp_secret"
+    refute safe_text =~ "/workspaces"
+    refute safe_text =~ "full prompt"
   end
 
   defp build_authorization(project_id, mode) do

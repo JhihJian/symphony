@@ -76,6 +76,29 @@ defmodule SymphonyElixir.HubRealCandidateScanExecutorTest do
     assert "poll" in result.result_summary.blocked_operations
   end
 
+  test "authorization consumption guard blocks candidate scan before project settings or provider I/O" do
+    request =
+      provider_request!(
+        project_id: "alpha",
+        provider_scope: %{kind: "memory", key: "memory:alpha", scope: %{namespace: "alpha"}},
+        operation_kind: :candidate_scan,
+        logical_key: "hub-poll:alpha:candidate_scan"
+      )
+
+    result =
+      RealCandidateScanExecutor.execute(request,
+        registry: registry([project("alpha", "memory", "memory:alpha")]),
+        authorization_consumption_guard: %{authorization_ledger: %{projects: []}}
+      )
+
+    assert result.status == :permanent_failure
+    assert result.error_class == :conflict
+    assert result.result_summary.provider_io == false
+    assert result.result_summary.error == "authorization_consumption_blocked"
+    assert result.result_summary.authorization_consumption.decision == "no_authorization"
+    assert result.result_summary.authorization_consumption.side_effect_source == "candidate_scan"
+  end
+
   test "does not expose raw provider error payloads in result summaries" do
     root = Path.join(System.tmp_dir!(), "hub-real-candidate-safe-errors-#{System.unique_integer([:positive])}")
 

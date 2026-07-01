@@ -87,6 +87,17 @@ fingerprint。只有 permit 当前仍是 `ready_for_execution_consideration` 且
 队列、一键迁移或 legacy service 接管；它不会绕过 cutover gate / readiness permit，不会访问 provider、
 dispatch、启动 worker、写 runtime ledger / provider、操作 systemd 或修改配置。无 authorization request
 时显示 request / record count 0，不表示迁移已经排队或执行中。
+当显式 Hub cutover execution path 进入真实 side-effect 入口时，Hub 还会暴露 authorization
+consumption guard 摘要：`hub_cutover_authorization_consumption_guard` 和
+`hub_device_observability.cutover_authorization_consumption_guard`。real candidate scan、dispatch plan
+application、real worker start handoff 和 real provider writeback 会在 provider I/O、runtime ledger
+mutation、worker start 或 provider writeback 前消费同一条 authorization record。摘要会按 operation /
+入口统计 `allowed`、`blocked`、`no_authorization`、`stale`、`manual_attention`、`unsupported`、
+`malformed`，并记录最近的脱敏 reason/action code、safe evidence fingerprint 和被缺失/不匹配授权阻断的
+入口。这个 guard 只是显式执行前的共同授权消费边界，不是一键迁移、执行队列或 legacy service 接管，也不替代
+cutover gate、readiness permit、authorization ledger、activation preflight、provider governance、
+runtime ledger、worker starter 或 writeback executor。无显式 authorization request 或无消费记录时显示
+`no_consumption`，不表示迁移或执行待处理。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -131,7 +142,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_readiness_permit: .hub_cutover_readiness_permit,
   device_cutover_readiness_permit: .hub_device_observability.cutover_readiness_permit,
   cutover_execution_authorization_ledger: .hub_cutover_execution_authorization_ledger,
-  device_cutover_execution_authorization_ledger: .hub_device_observability.cutover_execution_authorization_ledger
+  device_cutover_execution_authorization_ledger: .hub_device_observability.cutover_execution_authorization_ledger,
+  cutover_authorization_consumption_guard: .hub_cutover_authorization_consumption_guard,
+  device_cutover_authorization_consumption_guard: .hub_device_observability.cutover_authorization_consumption_guard
 }'
 ```
 
