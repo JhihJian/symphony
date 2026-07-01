@@ -556,6 +556,21 @@ decisions include `ready_for_execution_consideration`, `blocked`, `stale`, `manu
 consider the operation; it does not execute migration, provider I/O, dispatch, worker start,
 runtime-ledger mutation, provider writeback, systemd changes, config edits, or legacy service
 takeover, and it does not replace the cutover gate.
+`hub_cutover_execution_authorization_ledger` and
+`hub_device_observability.cutover_execution_authorization_ledger` add the operator-controlled,
+read-only execution authorization ledger after the permit. A serialized authorization request can be
+loaded with `--hub-cutover-execution-authorization-request /path/to/request.yaml`, and
+tests/internal callers can inject it into `SymphonyElixir.Hub.Runtime.build_snapshot/4`. Each record
+binds project/provider scope, requested operation, authorization request id/source/requested time
+and fingerprint, the cutover operation request fingerprint, readiness permit fingerprint/decision,
+activation plan and acknowledgement fingerprints, cutover gate/staged ownership evidence, dry-run
+audit evidence, audit-history/closeout currentness, executor/starter mode, safe timestamps, and safe
+evidence fingerprints. Decisions include `authorized_for_explicit_execution`, `blocked`, `stale`,
+`manual_attention`, `unsupported`, `malformed`, and `no_ready_permit`. A record is authorized only
+when the current permit is still `ready_for_execution_consideration` and every bound evidence
+fingerprint still matches. The ledger is not an executor, queue, one-click migration, or legacy
+service takeover; it does not bypass the gate or permit and does not call providers, dispatch, start
+workers, mutate runtime-ledger/provider state, operate systemd, or edit config.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -588,9 +603,12 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.activation_plan`, `hub_cutover_gate`,
    `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`,
    `hub_device_observability.cutover_operation_audit`, `hub_cutover_audit_history`, and
-   `hub_device_observability.cutover_audit_history`. The Dashboard shows the same readiness, plan,
-   ack, gate status, dry-run audit status, audit-history/closeout counts, leading reasons,
-   allowed/blocked operations, request counts, and action codes when Hub summary fields exist.
+   `hub_device_observability.cutover_audit_history`, `hub_cutover_readiness_permit`,
+   `hub_device_observability.cutover_readiness_permit`, `hub_cutover_execution_authorization_ledger`,
+   and `hub_device_observability.cutover_execution_authorization_ledger`. The Dashboard shows the
+   same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
+   permit status, authorization-ledger counts, leading reasons, allowed/blocked operations, request
+   counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -616,6 +634,14 @@ Use readiness for migration preparation only; it does not execute a migration.
    evidence fingerprints, operation, reason code, and required action code. They record operator
    handling only; stale, conflicting, malformed, or unsupported closeouts do not clear unresolved
    manual attention and never bypass the cutover gate.
+9. Optionally pass `--hub-cutover-execution-authorization-request /path/to/request.yaml` to record a
+   read-only execution authorization request for one explicitly requested operation. The request
+   should bind the current cutover operation request fingerprint, readiness permit
+   fingerprint/decision, activation plan/ack fingerprint, cutover gate evidence, dry-run audit,
+   audit-history/closeout evidence, and executor/starter mode. The resulting ledger record is
+   authorization evidence for a later explicit execution stage only; it is not a queue and does not
+   execute migration work, provider I/O, dispatch, worker start, writeback, systemd operations, or
+   config changes.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

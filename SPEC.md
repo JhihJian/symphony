@@ -1633,6 +1633,37 @@ Runtime entrypoint:
   Malformed permit/request/history/closeout/evidence input for one project MUST be isolated to that
   project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
   summaries.
+- Hub-compatible implementations SHOULD expose a read-only cutover execution authorization ledger
+  after the readiness permit summary. An authorization request SHOULD be operator-controlled and
+  serializable, and SHOULD bind project identity, safe provider scope, requested operation,
+  authorization request id/source/requested time/fingerprint, the referenced cutover operation
+  request fingerprint, the current readiness permit fingerprint/decision/reason-action codes,
+  activation plan and acknowledgement fingerprints, cutover gate/staged ownership evidence
+  fingerprint, dry-run audit evidence, audit-history/closeout currentness, executor/starter mode,
+  generated/evaluated timestamps, and safe evidence fingerprints.
+- Authorization record statuses SHOULD include `authorized_for_explicit_execution`, `blocked`,
+  `stale`, `manual_attention`, `unsupported`, `malformed`, and `no_ready_permit`, with stable
+  reason/action codes. A record MUST be authorized only when the referenced readiness permit is
+  currently `ready_for_execution_consideration`, the operator request explicitly asks for that
+  operation, and the bound permit/gate/audit/history/closeout/ack/executor evidence still matches.
+  Missing, stale, conflicting, malformed, unsupported, unknown-project/operation, no-ready-permit,
+  mode-incompatible, or evidence-drift input MUST NOT be optimistically authorized.
+- The authorization ledger MUST NOT execute migration work, queue execution, take over legacy
+  services, bypass the cutover gate or readiness permit, or replace activation preflight, legacy
+  ownership guardrails, provider governance, runtime ledger, worker starter, or writeback executor.
+  Building or evaluating the ledger MUST NOT perform provider I/O, candidate scan, dispatch plan
+  application, worker start, runtime-ledger pending-start/attempt/writeback mutation, provider
+  writeback, systemd operations, legacy service stop/disable/restart/delete, or Hub/project config
+  writes.
+- Dashboard/API summaries SHOULD expose device-level authorization request/record counts and
+  authorized, blocked, stale, manual attention, unsupported, malformed, no-ready-permit, and summary
+  error counts, plus project-level operation authorization status, reason/action codes, safe
+  evidence fingerprints, source, and safe timestamps. Projects without an explicit authorization
+  request MUST show request/record count 0 and a non-misleading no-ready-permit/no-request state
+  rather than pending migration, execution, or legacy takeover. Malformed authorization request,
+  record, permit, history, closeout, or evidence input for one project MUST be isolated to that
+  project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
+  summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

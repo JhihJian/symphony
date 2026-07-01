@@ -74,6 +74,19 @@ manual attention 已安全处理、ack 与 plan 仍匹配、模式兼容且证�
 Dashboard/API 可审计的执行前只读门禁摘要，不会绕过 cutover gate，不会访问 provider、dispatch、
 启动 worker、写 runtime ledger / provider、操作 systemd、修改配置或接管 legacy service。无 request
 时显示 `no_request` / permit count 0，不表示迁移已经排队或执行中。
+在 readiness permit 之后，Hub 还会暴露只读的 cutover execution authorization ledger：
+`hub_cutover_execution_authorization_ledger` 和
+`hub_device_observability.cutover_execution_authorization_ledger`。operator 可以通过显式启动参数
+`--hub-cutover-execution-authorization-request /path/to/request.yaml` 提交“我现在明确授权考虑执行哪个
+operation”的请求；ledger 会把该请求绑定到当前 readiness permit fingerprint/decision、cutover
+operation request fingerprint、activation plan / ack fingerprint、cutover gate / staged ownership
+evidence、dry-run audit、audit history / closeout 当前性、executor/starter mode 与 evidence
+fingerprint。只有 permit 当前仍是 `ready_for_execution_consideration` 且所有绑定证据仍匹配时，记录才会显示
+`authorized_for_explicit_execution`；否则显示 `blocked`、`stale`、`manual_attention`、`unsupported`、
+`malformed` 或 `no_ready_permit`。这个 ledger 是后续显式执行阶段可消费的只读授权证据，不是执行器、
+队列、一键迁移或 legacy service 接管；它不会绕过 cutover gate / readiness permit，不会访问 provider、
+dispatch、启动 worker、写 runtime ledger / provider、操作 systemd 或修改配置。无 authorization request
+时显示 request / record count 0，不表示迁移已经排队或执行中。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -116,7 +129,9 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_audit_history: .hub_cutover_audit_history,
   device_cutover_audit_history: .hub_device_observability.cutover_audit_history,
   cutover_readiness_permit: .hub_cutover_readiness_permit,
-  device_cutover_readiness_permit: .hub_device_observability.cutover_readiness_permit
+  device_cutover_readiness_permit: .hub_device_observability.cutover_readiness_permit,
+  cutover_execution_authorization_ledger: .hub_cutover_execution_authorization_ledger,
+  device_cutover_execution_authorization_ledger: .hub_device_observability.cutover_execution_authorization_ledger
 }'
 ```
 

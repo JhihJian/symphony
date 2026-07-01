@@ -264,6 +264,20 @@ mode supports the operation. It is still an audit summary: it does not bypass th
 perform provider I/O, dispatch, start workers, write runtime-ledger or provider state, operate
 systemd, edit config, or take over legacy services. Projects without an explicit request keep
 `no_request`, so Dashboard/API output does not imply migration or execution is queued.
+`hub_cutover_execution_authorization_ledger` /
+`hub_device_observability.cutover_execution_authorization_ledger` adds the next read-only boundary:
+an operator-controlled execution authorization request can be loaded with
+`--hub-cutover-execution-authorization-request /path/to/request.yaml`, then the ledger binds that
+explicit operation intent to the current readiness permit, cutover request fingerprint, activation
+plan/ack fingerprint, cutover gate/staged evidence, dry-run audit, audit-history/closeout
+currentness, executor/starter mode, safe timestamps, and evidence fingerprints. Records report
+`authorized_for_explicit_execution`, `blocked`, `stale`, `manual_attention`, `unsupported`,
+`malformed`, or `no_ready_permit`. Authorization is shown only when the referenced permit is still
+`ready_for_execution_consideration` and all bound evidence still matches. The ledger is not an
+executor, queue, one-click migration, or legacy service takeover; it does not bypass the gate or
+permit and does not call providers, dispatch, start workers, write runtime-ledger/provider state,
+operate systemd, or edit config. Without an explicit authorization request it reports request/record
+count 0 and does not imply execution is pending.
 The Elixir runtime now also has an explicit Hub entrypoint,
 `./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
@@ -287,7 +301,8 @@ and inspect `hub_activation_preflight`,
 `hub_device_observability.cutover_gate`, `hub_cutover_operation_audit`,
 `hub_device_observability.cutover_operation_audit`, `hub_cutover_audit_history`,
 `hub_device_observability.cutover_audit_history`, `hub_cutover_readiness_permit`,
-`hub_device_observability.cutover_readiness_permit`, and the Dashboard Hub sections in
+`hub_device_observability.cutover_readiness_permit`, `hub_cutover_execution_authorization_ledger`,
+`hub_device_observability.cutover_execution_authorization_ledger`, and the Dashboard Hub sections in
 `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not

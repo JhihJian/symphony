@@ -58,6 +58,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "Activation Plan / Ack"
     assert html =~ "Cutover Audit"
     assert html =~ "Execution Permit"
+    assert html =~ "Execution Authorization"
     assert html =~ "scheduler scheduled"
     assert html =~ "runtime_reconciliation"
     assert html =~ "provider_failure"
@@ -70,11 +71,12 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "ack missing"
     assert html =~ "audit no_request"
     assert html =~ "permit no_request"
+    assert html =~ "auth no_ready_permit"
     assert html =~ "ack resolve_writeback_manual_attention"
     assert html =~ "action resolve_writeback_manual_attention"
     assert html =~ "writeback pending"
     refute html =~ "ghp_secret"
-    refute html =~ "Authorization"
+    refute html =~ "Bearer"
     refute html =~ "raw systemd output"
   end
 
@@ -120,6 +122,9 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["cutover_readiness_permit"]["status"] == "no_request"
     assert hub["cutover_readiness_permit"]["counts"]["permit_count"] == 0
     assert hub["cutover_readiness_permit"]["counts"]["no_request_count"] == 2
+    assert hub["cutover_execution_authorization_ledger"]["status"] == "no_ready_permit"
+    assert hub["cutover_execution_authorization_ledger"]["counts"]["authorization_request_count"] == 0
+    assert hub["cutover_execution_authorization_ledger"]["counts"]["record_count"] == 0
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
@@ -127,6 +132,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["alpha"]["cutover_operation_audit"]["request"] == nil
     assert projects["alpha"]["cutover_readiness_permit"]["status"] == "no_request"
     assert projects["alpha"]["cutover_readiness_permit"]["permits"] == []
+    assert projects["alpha"]["cutover_execution_authorization_ledger"]["status"] == "no_ready_permit"
+    assert projects["alpha"]["cutover_execution_authorization_ledger"]["records"] == []
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
     assert projects["gamma"]["migration_readiness"]["decision"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["status"] == "unknown_manual_attention"
