@@ -1438,7 +1438,10 @@ Runtime entrypoint:
   `hub_runtime`, `hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
   `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
   `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, `hub_cutover_gate`, and
-  `hub_cutover_operation_audit`, `hub_cutover_audit_history`, `hub_cutover_readiness_permit`, and
+  `hub_cutover_operation_audit`, `hub_cutover_audit_history`, `hub_cutover_readiness_permit`,
+  `hub_cutover_execution_authorization_ledger`, `hub_cutover_authorization_consumption_guard`,
+  `hub_cutover_execution_outcome_ledger`, `hub_cutover_execution_outcome_closeout`,
+  `hub_cutover_replay_decision`, `hub_cutover_replay_request_audit`, and
   `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
   SHOULD keep the existing API shape.
 - `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
@@ -1450,10 +1453,11 @@ Runtime entrypoint:
   writeback conflicts/unknown non-idempotent/provider lookup/manual attention, activation preflight
   blocks/unknowns, cutover gate allowed/blocked/manual-attention counts, dry-run audit request
   counts, audit history/closeout counts, execution readiness permit ready/blocked/stale/manual/
-  unsupported/malformed counts, and per-project summary errors. Each project detail SHOULD expose
+  unsupported/malformed counts, authorization, consumption, outcome, closeout, replay-decision, and
+  replay-request-audit counts, and per-project summary errors. Each project detail SHOULD expose
   safe identity, provider scope, migration/ownership status, config snapshot version or fingerprint,
   activation preflight reason, cutover gate decision, cutover request/audit/history/permit summaries,
-  poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
+  replay decision and replay request audit summaries, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
   candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
   and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
   MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
@@ -1787,6 +1791,44 @@ Runtime entrypoint:
   safe replay/closeout/authorization/permit/guard fingerprints. Malformed replay decision or
   closeout input for one project MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other
   project summaries.
+- Hub-compatible implementations SHOULD expose an operator-facing cutover replay request audit
+  summary after the closeout-aware replay decision and before any later explicit execution
+  consideration. Replay request input SHOULD be serializable, testable, and safe. It SHOULD bind
+  `project_id`, safe provider scope, operation, side-effect source, historical outcome replay key,
+  outcome fingerprint/status, side-effect-entered/may-have-happened semantics, matching closeout
+  fingerprint/resolution/operator request, current replay decision fingerprint/status, current
+  cutover operation request, readiness permit, execution authorization record, authorization
+  consumption guard, request source, requested timestamp, request fingerprint, and a safe operator
+  note digest or short action/risk code. It MUST NOT require raw provider payloads, full prompts,
+  transcripts, tokens, cookies, raw systemd output, raw config, full comment/PR body, or private
+  local paths.
+- Replay request audit decisions SHOULD distinguish `no_request`,
+  `would_allow_retry_consideration`, `would_block`, `stale`, `conflict`, `manual_attention`,
+  `malformed`, and `unsupported` or implementation-defined equivalent categories.
+  `would_allow_retry_consideration` MUST mean only that the current request/closeout/replay
+  decision/permit/authorization/guard evidence still matches and the operator may continue to a
+  later explicit execution consideration. It MUST NOT be treated as authorization creation,
+  authorization consumption, provider I/O, dispatch mutation, worker start, writeback success,
+  systemd operation, configuration change, automatic retry, durable queue entry, migration, or
+  legacy service takeover.
+- Missing or invalid `allow_explicit_retry_consideration` closeouts, blocked replay decisions,
+  authorization/permit/guard mismatch, project/provider scope mismatch, operation/source mismatch,
+  outcome fingerprint/status drift, side-effect safety conflicts, stale cutover request evidence,
+  malformed or unsupported request input, and unresolved manual attention MUST NOT display as
+  allowed. They SHOULD surface as `would_block`, `stale`, `conflict`, `manual_attention`,
+  `malformed`, or `unsupported` scoped to the affected project/request.
+- If a later execution outcome ledger fact references the replay request or replay request audit
+  fingerprint, the audit summary SHOULD expose a sanitized link status such as outcome recorded,
+  still pending, blocked, stale, conflict, or manual attention. This link MUST NOT reinterpret the
+  old closeout or replay request as external side-effect success, and mismatched later evidence MUST
+  remain stale/conflicting rather than silently associated.
+- Dashboard/API summaries SHOULD expose device-level and project-level replay request audit status,
+  request counts, allow/block/stale/conflict/manual-attention/malformed/unsupported counts, recent
+  safe reason/action codes, safe request/outcome/closeout/replay-decision/permit/authorization/guard
+  fingerprints, and linked outcome status counts. Projects without an explicit replay request MUST
+  show `no_request` or request count 0, not pending migration, pending execution, automatic retry,
+  or durable queue state. Malformed replay request input for one project MUST NOT crash Hub runtime,
+  `/api/v1/state`, Dashboard, or other project summaries.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

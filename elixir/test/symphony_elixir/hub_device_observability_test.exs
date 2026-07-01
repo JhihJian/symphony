@@ -79,6 +79,10 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.cutover_replay_decision.no_unresolved_outcome_count == 1
     assert projection.overview.cutover_replay_decision.requires_operator_attention_count == 1
     assert projection.overview.cutover_replay_decision.auto_replay_allowed == false
+    assert projection.overview.cutover_replay_request_audit.status == "no_request"
+    assert projection.overview.cutover_replay_request_audit.request_count == 0
+    assert projection.overview.cutover_replay_request_audit.no_request_count == 4
+    assert projection.overview.cutover_replay_request_audit.auto_replay_allowed == false
     assert projection.overview.manual_attention.project_count == 1
     assert projection.migration_readiness.status == "blocked"
     assert projection.activation_plan.status == "blocked"
@@ -115,6 +119,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["alpha"].cutover_replay_decision.status == "no_unresolved_outcome"
     assert projects["alpha"].detail.replay_decision.status == "no_unresolved_outcome"
     assert projects["alpha"].detail.replay_decision.requires_operator_attention == false
+    assert projects["alpha"].cutover_replay_request_audit.status == "no_request"
+    assert projects["alpha"].detail.replay_request_audit.status == "no_request"
+    assert projects["alpha"].detail.replay_request_audit.counts.request_count == 0
     assert projects["alpha"].migration_readiness.decision == "unknown_manual_attention"
     assert projects["alpha"].activation_plan.status == "unknown_manual_attention"
     assert projects["alpha"].activation_plan.operator_acknowledgement.status == "missing"
@@ -145,6 +152,9 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["gamma"].detail.replay_decision.status == "blocked_unresolved_outcome"
     assert projects["gamma"].detail.replay_decision.requires_operator_attention == true
     assert projects["gamma"].detail.replay_decision.safe_evidence_fingerprints.consumption_guard == "gamma-consumption-fp"
+    assert projects["gamma"].cutover_replay_request_audit.status == "no_request"
+    assert projects["gamma"].detail.replay_request_audit.status == "no_request"
+    assert projects["gamma"].detail.replay_request_audit.auto_replay_allowed == false
     assert projects["gamma"].writebacks.counts.unknown == 1
     assert projects["gamma"].writebacks.counts.manual_attention == 1
     assert Enum.member?(reason_names(projects["gamma"]), "writeback_unknown")

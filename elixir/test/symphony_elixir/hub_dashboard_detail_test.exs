@@ -60,6 +60,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "Execution Permit"
     assert html =~ "Execution Authorization"
     assert html =~ "Replay Decision"
+    assert html =~ "Replay Request"
     assert html =~ "scheduler scheduled"
     assert html =~ "runtime_reconciliation"
     assert html =~ "provider_failure"
@@ -74,6 +75,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "permit no_request"
     assert html =~ "auth no_ready_permit"
     assert html =~ "replay blocked_unresolved_outcome"
+    assert html =~ "replay request no_request"
     assert html =~ "replay reason matching_closeout_missing"
     assert html =~ "ack resolve_writeback_manual_attention"
     assert html =~ "action resolve_writeback_manual_attention"
@@ -135,6 +137,11 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["overview"]["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
     assert hub["overview"]["cutover_replay_decision"]["unresolved_outcome_blocked_count"] == 1
     assert hub["overview"]["cutover_replay_decision"]["no_unresolved_outcome_count"] == 1
+    assert hub["cutover_replay_request_audit"]["status"] == "no_request"
+    assert hub["cutover_replay_request_audit"]["counts"]["request_count"] == 0
+    assert hub["overview"]["cutover_replay_request_audit"]["status"] == "no_request"
+    assert hub["overview"]["cutover_replay_request_audit"]["request_count"] == 0
+    assert hub["overview"]["cutover_replay_request_audit"]["no_request_count"] == 2
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
@@ -146,9 +153,13 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["alpha"]["cutover_execution_authorization_ledger"]["records"] == []
     assert projects["alpha"]["cutover_authorization_consumption_guard"] == nil
     assert projects["alpha"]["cutover_replay_decision"]["status"] == "no_unresolved_outcome"
+    assert projects["alpha"]["cutover_replay_request_audit"]["status"] == "no_request"
+    assert projects["alpha"]["detail"]["replay_request_audit"]["counts"]["request_count"] == 0
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
     assert projects["gamma"]["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
     assert projects["gamma"]["detail"]["replay_decision"]["blocked_replay"] != []
+    assert projects["gamma"]["cutover_replay_request_audit"]["status"] == "no_request"
+    assert projects["gamma"]["detail"]["replay_request_audit"]["auto_replay_allowed"] == false
     assert projects["gamma"]["migration_readiness"]["decision"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["status"] == "unknown_manual_attention"
     assert projects["gamma"]["activation_plan"]["operator_acknowledgement"]["status"] == "missing"

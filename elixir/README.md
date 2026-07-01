@@ -413,6 +413,20 @@ explicit execution or allow retry consideration. A matching closeout with
 current authorization consumption guard is already allowed. It does not create or consume
 authorization, call providers, apply dispatch mutations, start workers, write back, operate systemd,
 edit configuration, or bypass provider/runtime/writeback guardrails.
+Hub cutover replay request audit adds the next read-only operator boundary after that decision. A
+serialized request can be loaded with `--hub-cutover-replay-request /path/to/request.yaml` or
+injected into `SymphonyElixir.Hub.Runtime.build_snapshot/4`. It binds the operator's explicit retry
+consideration request to the project/provider scope, operation/source, historical outcome replay
+key/fingerprint/status, side-effect safety, matching closeout fingerprint/resolution, current replay
+decision fingerprint/status, current cutover request, readiness permit, authorization record,
+consumption guard, request source/time/fingerprint, and a safe operator note digest or action/risk
+code. `SymphonyElixir.Hub.CutoverReplayRequestAudit` reports `no_request`,
+`would_allow_retry_consideration`, `would_block`, `stale`, `conflict`, `manual_attention`,
+`malformed`, or `unsupported`, plus a sanitized link to any later outcome ledger fact that references
+the replay request. `would_allow_retry_consideration` is not an execution result: this audit never
+creates or consumes authorization, calls providers, dispatches, starts workers, writes back, operates
+systemd, edits configuration, auto-replays side effects, queues migration work, or takes over legacy
+services.
 Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
 `hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
 snapshot plus an injected `activation_probe` map or function and returns a serializable,
@@ -459,6 +473,7 @@ When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runti
 `hub_scheduler`, `hub_activation_preflight`, `hub_cutover_gate`, `hub_project_registry`,
 `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
 `hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_cutover_replay_decision`,
+`hub_cutover_replay_request_audit`,
 `hub_dispatch_boundary`, and `hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
@@ -473,19 +488,20 @@ counts, writeback executor supported/rejected operations, pending/succeeded/fail
 attention counts, per-project writeback pressure, recent safe error categories, cutover gate
 decision counts, allowed/blocked operation sets, staged ownership record counts, cutover replay
 decision counts for unresolved blocks, retry-consideration allowed/denied, stale/conflict/malformed/
-manual-attention decisions, safe replay/closeout/authorization/permit/guard fingerprints, error
-class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
+manual-attention decisions, replay request audit allow/block/stale/conflict/manual-attention/
+malformed/unsupported counts, safe replay/closeout/authorization/permit/guard fingerprints, linked
+outcome status counts, error class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
 adds the operator-oriented device summary: scheduler enabled/disabled/queued/running/coalesced
 state and next-tick reason, project status counts, provider queue/backoff/circuit/recent-failure
 pressure, active attempts, pending start intents, workspace leases, unreleased capacity, writeback
 conflict/unknown/manual-attention/provider-lookup state, activation preflight blocks/unknowns,
 lifecycle unknown/manual-attention state, cutover gate status, closeout-aware replay decision
-status, and summary errors. Each project in
+status, replay request audit status, and summary errors. Each project in
 `hub_device_observability.projects` also includes a `detail` block for safe identity/provider scope,
 migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
-cutover gate decision, candidate intake, dispatch planning/application, worker start handoff,
-lifecycle reconciliation, and writeback completed/retryable/unknown/manual-attention/dangerous-replay
-state.
+cutover gate decision, candidate intake, dispatch planning/application, worker start handoff, replay
+decision, replay request audit, lifecycle reconciliation, and writeback
+completed/retryable/unknown/manual-attention/dangerous-replay state.
 `hub_device_observability.migration_readiness` adds a migration readiness report derived from the
 same safe summaries. At the device level it reports Hub runtime mode, scheduler status,
 provider/writeback executor mode, worker starter mode, activation probe mode, migration-state
@@ -624,6 +640,23 @@ writeback, systemd changes, automatic authorization, or legacy service takeover;
 again pass readiness permit, execution authorization, consumption guard, and existing provider/
 runtime/writeback guardrails. No unresolved outcome reports `no_outcome`; unresolved outcomes
 without a valid closeout report `no_closeout`, not pending retry.
+`hub_cutover_replay_request_audit` and
+`hub_device_observability.cutover_replay_request_audit` add the closeout-after explicit retry
+request audit baseline. The CLI can load a serialized request with
+`--hub-cutover-replay-request /path/to/request.yaml`, and tests/internal callers can inject the same
+contract into `SymphonyElixir.Hub.Runtime.build_snapshot/4`. Each request binds project/provider
+scope, operation/source, historical outcome replay key/fingerprint/status, side-effect safety,
+matching closeout fingerprint/resolution, current replay decision fingerprint/status, current
+cutover request, readiness permit, execution authorization record, consumption guard, source,
+requested time, request fingerprint, and a safe operator note digest or action/risk code. The audit
+reports `no_request`, `would_allow_retry_consideration`, `would_block`, `stale`, `conflict`,
+`manual_attention`, `malformed`, or `unsupported`, and can show whether a later outcome ledger fact
+is recorded, still pending, blocked, stale, or conflicting for that replay request. It is not an
+executor, queue, one-click migration, durable retry mechanism, or legacy service takeover; it does
+not create/consume authorization, bypass permit/authorization/guard/provider/runtime/worker/writeback
+checks, call providers, dispatch, start workers, write providers, operate systemd, or edit config.
+Projects without an explicit replay request show `no_request` / request count 0 rather than pending
+execution or automatic retry.
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -662,11 +695,14 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_cutover_authorization_consumption_guard`, and
    `hub_device_observability.cutover_authorization_consumption_guard`,
    `hub_cutover_execution_outcome_ledger`, and
-   `hub_device_observability.cutover_execution_outcome_ledger`. The Dashboard shows the
+   `hub_device_observability.cutover_execution_outcome_ledger`,
+   `hub_cutover_replay_request_audit`, and
+   `hub_device_observability.cutover_replay_request_audit`. The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
    permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
    execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,
-   allowed/blocked operations, request counts, and action codes when Hub summary fields exist.
+   replay-request audit counts and linked outcome status, allowed/blocked operations, request
+   counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop
@@ -717,6 +753,15 @@ Use readiness for migration preparation only; it does not execute a migration.
     allow later explicit retry consideration, but it is only audit input; it never replays the old
     side effect, creates authorization, changes config, touches systemd, or bypasses permit /
     authorization / consumption guard checks.
+12. Optionally pass `--hub-cutover-replay-request /path/to/request.yaml` after a valid
+    `allow_explicit_retry_consideration` closeout and closeout-aware replay decision to audit a
+    specific explicit retry consideration request. The request should bind the unresolved outcome,
+    matching closeout, current replay decision, cutover request, readiness permit, authorization
+    record, consumption guard, safe evidence fingerprints, source, requested time, and request
+    fingerprint. `would_allow_retry_consideration` only means the request can move to later explicit
+    execution consideration; it still does not call providers, dispatch, start workers, write back,
+    operate systemd, edit config, create/consume authorization, auto-retry, queue migration, or
+    bypass existing guardrails.
 
 This baseline does not stop, disable, restart, delete, or migrate legacy services; does not modify
 `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider state; and does

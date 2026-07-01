@@ -307,6 +307,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   stale <%= hub_cutover_replay_decision_count(@payload, :stale_closeout_count) %> · conflict <%= hub_cutover_replay_decision_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_decision_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_replay_decision_count(@payload, :malformed_count) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Replay Request</p>
+                <p class="metric-value"><%= hub_cutover_replay_request_audit_status(@payload) %></p>
+                <p class="metric-detail">
+                  requests <%= hub_cutover_replay_request_audit_count(@payload, :request_count) %> · allow <%= hub_cutover_replay_request_audit_count(@payload, :allow_count) %> · block <%= hub_cutover_replay_request_audit_count(@payload, :block_count) %> · no request <%= hub_cutover_replay_request_audit_count(@payload, :no_request_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_replay_request_audit_count(@payload, :stale_count) %> · conflict <%= hub_cutover_replay_request_audit_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_request_audit_count(@payload, :manual_attention_count) %> · outcome recorded <%= hub_cutover_replay_request_audit_count(@payload, :linked_outcome_recorded_count) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -377,6 +388,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_replay_decision_badge_class(project.cutover_replay_decision && project.cutover_replay_decision.status)}>
                           replay <%= hub_cutover_replay_decision_project_status(project.cutover_replay_decision) %>
+                        </span>
+                        <span class={hub_cutover_replay_request_audit_badge_class(project.cutover_replay_request_audit && project.cutover_replay_request_audit.status)}>
+                          replay request <%= hub_cutover_replay_request_audit_project_status(project.cutover_replay_request_audit) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -465,6 +479,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={reason <- hub_cutover_project_replay_reason_codes(project)} class="muted event-meta">
                           replay reason <%= reason %>
+                        </span>
+                        <span :if={project.cutover_replay_request_audit} class="muted event-meta">
+                          replay request allow <%= hub_cutover_replay_request_audit_project_count(project, :allow_count) %> · block <%= hub_cutover_replay_request_audit_project_count(project, :block_count) %> · linked <%= hub_cutover_replay_request_audit_project_count(project, :linked_outcome_recorded_count) %>
+                        </span>
+                        <span :for={request <- hub_cutover_project_replay_requests(project)} class="muted event-meta">
+                          replay request <%= request.side_effect_source %> <%= request.status %> / <%= request.outcome_link_status %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -1071,6 +1091,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_replay_request_audit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_request_audit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_replay_request_audit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_request_audit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1208,6 +1246,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_replay_decision_badge_class("unsupported"), do: "state-badge state-badge-danger"
   defp hub_cutover_replay_decision_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_replay_request_audit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_request_audit_badge_class("would_allow_retry_consideration"), do: "state-badge state-badge-active"
+  defp hub_cutover_replay_request_audit_badge_class("would_block"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_request_audit_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_request_audit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -1243,6 +1291,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_replay_decision_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_replay_decision_project_status(_decision), do: "no_replay_decision"
+
+  defp hub_cutover_replay_request_audit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_replay_request_audit_project_status(_audit), do: "no_request"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1395,6 +1446,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_cutover_replay_decision_project_count(_project, _key), do: 0
+
+  defp hub_cutover_replay_request_audit_project_count(%{cutover_replay_request_audit: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_replay_request_audit_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_replay_requests(%{cutover_replay_request_audit: %{requests: requests}})
+       when is_list(requests) do
+    Enum.take(requests, 3)
+  end
+
+  defp hub_cutover_project_replay_requests(_project), do: []
 
   defp hub_cutover_project_blocked_replay(%{cutover_replay_decision: %{blocked_replay: blocked_replay}})
        when is_list(blocked_replay) do
