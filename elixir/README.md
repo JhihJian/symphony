@@ -710,9 +710,11 @@ references，以及 `read_only: true`、`no_side_effects: true`、`auto_retry_al
 `auto_replay_allowed: false` 等边界信号。`closed_no_side_effect` 会被解释为无副作用闭环而不是
 operation 成功；`open_retryable` 只会要求显式 retry consideration，不表示自动 retry、queued replay
 或执行中；`no_chain` / `no_request` 不表示 pending execution、pending retry、migration queued 或
-legacy takeover。这个解释层不新增 Dashboard UI，不是完整 #171 operator-facing closure report，不重新
-聚合底层 request/permit/authorization/guard/outcome evidence，不创建或消费 authorization，也不调用
-provider、dispatch、worker、writeback、systemd 或配置路径。
+legacy takeover。Live Dashboard 现在会展示这个 Runtime/API 已有的只读 conclusion snapshot，包含设备级
+和项目级 conclusion badge、severity/attention、summary code、required action、blocked-by、安全
+evidence/fingerprint 与只读边界信号；它不新增执行入口，不是完整 #171 operator-facing closure report，
+不重新聚合底层 request/permit/authorization/guard/outcome evidence，不创建或消费 authorization，
+也不调用 provider、dispatch、worker、writeback、systemd 或配置路径。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

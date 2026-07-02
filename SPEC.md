@@ -1887,7 +1887,10 @@ Runtime entrypoint:
   status、reason/action codes 和 safe fingerprints。它 MUST NOT 重新聚合 raw request/permit/
   authorization/guard/outcome evidence，不得要求 provider raw payload，不得调用 provider、
   dispatch work、start workers、write providers、operate systemd、edit configuration、创建或消费
-  authorization、queue retry/replay、新增 Dashboard UI，或声明 legacy service ownership。它不是完整
+  authorization、queue retry/replay、新增 Dashboard 执行入口，或声明 legacy service ownership。
+  Live Dashboard MAY render this existing safe snapshot as device overview and per-project
+  conclusion badges/details, including severity/attention, summary code, required actions,
+  blocked-by, safe evidence/fingerprints, and read-only boundary flags. It is not a full
   operator-facing closure report。project/provider scope MUST NOT 在不同 project conclusion 之间串项；
   只要任一 project 仍 open、stale、conflicting、malformed 或 unsupported，device rollup MUST 保守处理，
   不能显示为 fully closed。`closed_no_side_effect` MUST NOT 被报告为 operation success；

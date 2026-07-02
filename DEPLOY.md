@@ -216,10 +216,12 @@ references。Hub Runtime/API 现在只从既有 closure chain safe snapshot 派�
 `hub_device_observability.overview.cutover_closure_conclusion` 和项目
 `cutover_closure_conclusion` / `detail.closure_conclusion` 中暴露对应摘要。它不重新读取
 provider、dispatch、worker、writeback、systemd 或配置路径来补 evidence。当前部署语义不变：它不新增
-Dashboard 视图、不自动 retry/replay、不创建或消费 authorization，也不会接管 legacy service。
-Runtime `/api/v1/state` 和 DeviceObservability 只增加只读结论字段；Dashboard 或 systemd template
-部署路径不会因此自动 retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd
-或修改配置。这不是完整 #171 operator-facing closure report。
+执行入口、不自动 retry/replay、不创建或消费 authorization，也不会接管 legacy service。Live Dashboard
+现在只展示 Runtime/API 已有的 closure conclusion safe snapshot，包括设备级和项目级 conclusion、
+severity/attention、summary code、required action、blocked-by、安全 evidence/fingerprint 和只读边界信号。
+Runtime `/api/v1/state`、DeviceObservability、Dashboard 和 systemd template 部署路径不会因此自动 retry、
+排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。这不是完整 #171
+operator-facing closure report。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
