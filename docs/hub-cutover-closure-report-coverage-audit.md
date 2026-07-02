@@ -6,9 +6,9 @@
 
 ## 审计范围
 
-- 历史目标：#171 `Add Hub cutover execution closure report baseline`，当前 GitHub issue 仍 open，
-  Project 状态为 `Backlog`；#172 `Add Hub cutover closure report core read model baseline`，当前
-  GitHub issue 仍 open，Project 状态为 `Blocked`。
+- 历史目标：审计时 #171 `Add Hub cutover execution closure report baseline` 的 GitHub issue 仍 open，
+  Project 状态为 `Backlog`；#172 `Add Hub cutover closure report core read model baseline` 的 GitHub
+  issue 仍 open，Project 状态为 `Blocked`。
 - 拆分切片：#173/#175/#177/#179/#181/#183/#185/#187/#189/#191/#193/#195，均已关闭并由
   PR #174/#176/#178/#180/#182/#184/#186/#188/#190/#192/#194/#196 合并。
 - 本基线只引用脱敏 safe summary、仓库路径、字段名、issue/PR 编号和本地验证命令；不引用 token、
@@ -65,7 +65,7 @@
 | 不自动 retry/replay，不创建或消费 authorization，不接管 legacy service | `covered_by_split` | 代码 + 测试 + 文档 | #173-#195；字段 `auto_retry_allowed`、`auto_replay_allowed`、`pending_execution`、`pending_retry`、`queued_replay`、`legacy_takeover` | 所有 closure report 相关层都保持只读；retry/replay 只作为人工后续判断或引用状态，不是自动队列。 |
 | 完整 #171 operator-facing execution closure report 一次性交付 | `narrowed_non_goal` | 文档 + 拆分策略 | #171/#172 历史背景；#173-#195 拆分链；`README.md`、`DEPLOY.md`、`SPEC.md` 对 “不是完整 #171 report” 的说明 | 原大范围已被缩小为 safe chain/conclusion/packet/dry-run baseline，不建议恢复为单个大票据。 |
 | 自动 retry/replay、durable execution queue、一键迁移、legacy service takeover | `narrowed_non_goal` | 测试 + 文档 | #171/#172 非目标；#195 dry-run test；字段 `auto_retry_allowed: false`、`auto_replay_allowed: false`、`queued_replay: false`、`legacy_takeover: false` | 这些能力不是 closure report coverage baseline 的缺口；如未来确需建设，应单独建模、单独拆 issue。 |
-| 自动关闭 #171/#172 或修改其 Project 状态 | `owner_decision_needed` | tracker 事实 + 本审计 | #171 当前 open / Backlog；#172 当前 open / Blocked；本 issue 明确非目标 | 需要 Owner 基于本审计到 #171/#172 留言或关闭；#197 不自动操作历史票据。 |
+| 自动关闭 #171/#172 或修改其 Project 状态 | `owner_decision_needed` | tracker 事实 + 本审计 | 审计时 #171 open / Backlog；#172 open / Blocked；本 issue 明确非目标 | 需要 Owner 基于本审计到 #171/#172 留言或关闭；#197 不自动操作历史票据。 |
 
 ## 关键 safe summary 字段
 
