@@ -427,6 +427,17 @@ the replay request. `would_allow_retry_consideration` is not an execution result
 creates or consumes authorization, calls providers, dispatches, starts workers, writes back, operates
 systemd, edits configuration, auto-replays side effects, queues migration work, or takes over legacy
 services.
+`SymphonyElixir.Hub.CutoverClosureChain` adds the first minimal closure-report chain contract as a
+library-only read model. It consumes already-sanitized summaries or test fixtures and binds one
+explicit attempt/replay key to project/provider scope, operation/source, cutover request, readiness
+permit, execution authorization, consumption guard, outcome, safe evidence fingerprint, and safe
+time metadata. It distinguishes only `no_chain`, `no_request`, `closed_succeeded`,
+`closed_no_side_effect`, `conflict`, `stale`, `malformed`, and `unsupported`. A matching
+`succeeded` outcome is the only source of `closed_succeeded`; allowed guard, authorization,
+closeout, replay decision, or replay request references remain evidence and do not imply execution
+success. This slice is not wired into Runtime `/api/v1/state`, DeviceObservability, Presenter, or
+Dashboard, and full retry/manual-attention, closeout/replay aggregation, and closure-report views
+remain later work.
 Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
 `hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
 snapshot plus an injected `activation_probe` map or function and returns a serializable,
@@ -657,6 +668,16 @@ not create/consume authorization, bypass permit/authorization/guard/provider/run
 checks, call providers, dispatch, start workers, write providers, operate systemd, or edit config.
 Projects without an explicit replay request show `no_request` / request count 0 rather than pending
 execution or automatic retry.
+`SymphonyElixir.Hub.CutoverClosureChain` 是 replay request audit 之后的最小 closure chain
+合同基线，但当前只作为库级 read model 使用。调用方可以用已有脱敏 summary 或 fixture 构造
+closure safe summary，看到 project/provider scope、operation/source、attempt fingerprint 或 replay key、
+request、permit、authorization、guard、outcome、safe evidence fingerprint 和安全时间摘要的绑定关系。
+`closed_succeeded` 只能来自 evidence 未漂移的 matching `succeeded` outcome；guard 阻断、无
+authorization 或 validation 阻断且 side effect 明确未进入时显示 `closed_no_side_effect`，不会显示
+operation 成功。scope/source/operation/key/fingerprint 不匹配、字段不足、malformed 或 unsupported
+输入不会显示成功；closeout、replay decision、replay request audit、retryable/manual-attention outcome
+只会作为安全引用保留或标记 unsupported。它不会创建/消费 authorization、调用 provider、dispatch、
+启动 worker、writeback、操作 systemd 或改配置，也还没有接入 Runtime/API/Dashboard。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

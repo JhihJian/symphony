@@ -1829,6 +1829,27 @@ Runtime entrypoint:
   show `no_request` or request count 0, not pending migration, pending execution, automatic retry,
   or durable queue state. Malformed replay request input for one project MUST NOT crash Hub runtime,
   `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations MAY expose a minimal read-only cutover closure chain contract
+  before building a complete closure report. 该合同 SHOULD consume only already-sanitized summaries
+  or test fixtures, and SHOULD bind one explicit attempt or replay key to `project_id`, safe
+  provider scope, operation, side-effect source, cutover request fingerprint, readiness permit,
+  execution authorization, authorization consumption guard, outcome, safe evidence fingerprint, and
+  safe time metadata. It MUST NOT require provider raw payloads, full prompts/transcripts, tokens,
+  raw config, raw systemd output, local private paths, full comment/PR bodies, or exception stack
+  traces.
+- 最小 closure chain 状态 SHOULD distinguish `no_chain`, `no_request`, `closed_succeeded`,
+  `closed_no_side_effect`, `conflict`, `stale`, `malformed`, and `unsupported` or equivalent
+  categories. `closed_succeeded` MUST come only from a matching `succeeded` outcome with unchanged
+  project/scope/source/operation/key/fingerprint evidence. Guard allowed, authorization records,
+  resolved closeouts, replay decisions, or replay request audits MUST NOT independently imply
+  success. Guard/no-authorization/validation blocks MAY close only as `closed_no_side_effect` when
+  side-effect entry is explicitly false and may-have-happened is not true.
+- 最小 closure chain 合同 MUST remain read-only. It MUST NOT create authorization, consume
+  authorization, call providers, dispatch work, start workers, write providers, operate systemd,
+  edit configuration, queue retries, auto-replay side effects, or claim legacy service ownership.
+  Retryable/manual-attention outcomes and closeout/replay aggregations MAY be retained as safe
+  references or reported as unsupported/open until later closure-report slices define their full
+  semantics.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

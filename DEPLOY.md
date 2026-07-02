@@ -189,6 +189,16 @@ authorization record、consumption guard、request source/requested_at/request f
 blocked / stale / conflict。它不会创建或消费 authorization，不会访问 provider、dispatch、启动 worker、
 writeback、操作 systemd、改配置、自动 retry、排队迁移或接管 legacy service；没有 request 时显示
 `no_request` / request count 0，不表示有执行待处理。
+当前 Elixir 实现还提供库级 `SymphonyElixir.Hub.CutoverClosureChain`，作为 Hub cutover closure
+report 的最小只读 chain contract baseline。它只能从已脱敏 summary 或测试 fixture 构造 safe
+summary，绑定同一 project/provider scope、operation/source、attempt fingerprint 或 replay key、
+request、readiness permit、execution authorization、authorization consumption guard、outcome、
+safe evidence fingerprint 和安全时间摘要。它只区分 `no_chain`、`no_request`、`closed_succeeded`、
+`closed_no_side_effect`、`conflict`、`stale`、`malformed`、`unsupported`；只有 matching
+`succeeded` outcome 能显示成功，guard allowed、authorization record、closeout resolved、replay
+decision allowed 或 replay request allowed 都不能单独推导成功。这个切片没有接入 Hub Runtime
+`/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动 retry、
+排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
