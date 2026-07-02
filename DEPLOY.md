@@ -253,6 +253,11 @@ systemd、workspace hook 或配置修改路径，也不是自动 retry/replay、
 #74 Hub mode 原始目标的 remaining capability coverage 审计入口见
 [`docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](docs/hub-mode-issue-74-remaining-capability-coverage-audit.md)；
 它只作为 issue/PR/模块/测试证据索引，不新增部署步骤、systemd 操作或 legacy service 接管。
+#74 provider exit residual coverage 的决策基线见
+[`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](docs/hub-provider-exit-residual-coverage-decision-baseline.md)；
+它把 Hub-governed provider path、legacy direct scoped non-goal、unsupported/manual-attention path、
+future migration candidate 和 auto-update/审查/运维类 non-runtime provider access 分开列清。该基线只作为
+#199 remaining gap 1 的审计入口，不新增 systemd、provider、worker、writeback 或配置变更步骤。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

@@ -351,6 +351,11 @@ durable execution queue、自动 retry/replay、一键迁移或 legacy service t
 该审计入口只说明覆盖状态，不自动关闭历史 issue，也不扩大 runtime 语义。
 #74 Hub mode 原始目标到已交付切片、remaining gaps 和后续最小 issue 建议的总覆盖审计见
 [`docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](docs/hub-mode-issue-74-remaining-capability-coverage-audit.md)。
+#74 provider exit residual coverage 的决策基线见
+[`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](docs/hub-provider-exit-residual-coverage-decision-baseline.md)；
+它把 Hub-governed、legacy direct scoped non-goal、unsupported/manual-attention、future migration
+candidate 和 non-runtime provider access 路径分开列清，只作为 #199 remaining gap 1 的审计和 Owner
+决策入口，不新增 runtime provider I/O 或 legacy takeover。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
