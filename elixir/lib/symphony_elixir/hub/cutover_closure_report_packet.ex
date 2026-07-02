@@ -213,13 +213,13 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
   defp maybe_put_safe(map, _key, []), do: map
   defp maybe_put_safe(map, key, value), do: Map.put(map, key, value)
 
-  defp conclusion_snapshot(%{chain_present?: true}, chain, generated_at) do
-    CutoverClosureConclusion.build(chain, now: generated_at)
-  end
-
   defp conclusion_snapshot(%{conclusion: conclusion}, chain, generated_at) when is_map(conclusion) do
     conclusion
     |> normalize_conclusion_snapshot(CutoverClosureConclusion.build(chain, now: generated_at), generated_at)
+  end
+
+  defp conclusion_snapshot(%{chain_present?: true}, chain, generated_at) do
+    CutoverClosureConclusion.build(chain, now: generated_at)
   end
 
   defp conclusion_snapshot(_source, chain, generated_at), do: CutoverClosureConclusion.build(chain, now: generated_at)
@@ -258,7 +258,10 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
           iso8601(value(fallback, :evaluated_at)) ||
           generated_at,
       closure_chain_status: closure_chain_status,
-      conclusion: safe_code(value(conclusion, :conclusion)) || value(fallback, :conclusion),
+      conclusion:
+        safe_code(value(conclusion, :conclusion)) ||
+          safe_code(value(conclusion, :operator_conclusion)) ||
+          value(fallback, :conclusion),
       severity: safe_code(value(conclusion, :severity)) || value(fallback, :severity),
       attention_level: safe_code(value(conclusion, :attention_level)) || value(fallback, :attention_level),
       summary_code: safe_code(value(conclusion, :summary_code)) || value(fallback, :summary_code),
@@ -310,7 +313,7 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
       project_id: optional_string(project, :project_id),
       provider_scope: sanitize_map(value(project, :provider_scope) || %{}),
       closure_chain_status: status,
-      conclusion: safe_code(value(project, :conclusion)),
+      conclusion: safe_code(value(project, :conclusion)) || safe_code(value(project, :operator_conclusion)),
       severity: safe_code(value(project, :severity)),
       attention_level: safe_code(value(project, :attention_level)),
       summary_code: safe_code(value(project, :summary_code)),

@@ -65,6 +65,64 @@ defmodule SymphonyElixir.HubCutoverClosureReportPacketTest do
     refute beta_text =~ "safe-alpha-only"
   end
 
+  test "preserves supplied conclusion snapshot when chain snapshot is also present" do
+    chain = %{
+      generated_at: @now_iso,
+      status: "open_retryable",
+      counts: count_map("open_retryable"),
+      projects: [
+        project_summary("alpha", "open_retryable",
+          provider_scope: provider_scope("alpha"),
+          safe_evidence_fingerprints: %{outcome: "safe-alpha-chain"}
+        )
+      ]
+    }
+
+    conclusion = %{
+      generated_at: @now_iso,
+      closure_chain_status: "open_retryable",
+      conclusion: "manual_attention_required",
+      severity: "warning",
+      attention_level: "manual_attention",
+      summary_code: "custom_manual_attention_summary",
+      required_action_codes: ["custom_action"],
+      blocked_by: [%{code: "custom_blocker"}],
+      projects: [
+        %{
+          project_id: "alpha",
+          closure_chain_status: "open_retryable",
+          conclusion: "custom_project_conclusion",
+          required_action_codes: ["custom_project_action"],
+          blocked_by: [%{code: "custom_project_blocker"}]
+        }
+      ]
+    }
+
+    packet =
+      CutoverClosureReportPacket.build(
+        %{
+          hub_cutover_closure_chain: chain,
+          hub_cutover_closure_conclusion: conclusion
+        },
+        now: @now
+      )
+
+    [project] = packet.projects
+
+    assert packet.report_status == "retry_consideration_required"
+    assert packet.operator_conclusion == "manual_attention_required"
+    assert packet.required_action_codes == ["custom_action"]
+    assert packet.blocked_by == [%{code: "custom_blocker"}]
+    assert packet.summary_code == "custom_manual_attention_summary"
+
+    assert project.project_id == "alpha"
+    assert project.provider_scope.provider_scope_key == "github:o/alpha"
+    assert project.safe_evidence_fingerprints.outcome == "safe-alpha-chain"
+    assert project.operator_conclusion == "custom_project_conclusion"
+    assert project.required_action_codes == ["custom_project_action"]
+    assert project.blocked_by == [%{code: "custom_project_blocker"}]
+  end
+
   test "conservatively rolls up open retryable and no-side-effect statuses" do
     retryable =
       CutoverClosureReportPacket.build(
