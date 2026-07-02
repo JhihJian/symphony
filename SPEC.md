@@ -1940,6 +1940,12 @@ Runtime entrypoint:
   remain safe-summary-only and MUST NOT call provider, dispatch, worker starter, writeback, systemd,
   workspace hook, config mutation, or legacy service operations. The Symphony repository baseline
   is documented in [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md).
+- Repository maintainers SHOULD keep an auditable coverage matrix for the historical #171/#172
+  closure report scope when that scope is replaced by smaller read-only slices. The Symphony
+  repository baseline is documented in
+  [`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md);
+  this matrix is evidence and owner-decision support only, not a runtime execution entrypoint or
+  automatic closure of historical issues.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

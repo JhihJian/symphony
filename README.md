@@ -346,6 +346,9 @@ Presenter、`/api/v1/state` 和 Live Dashboard。运行方式和预期字段见
 [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md)；
 该 baseline 延续 #171/#172 拆分后 #173-#193 已完成的只读切片，不新增完整自动 cutover、
 durable execution queue、自动 retry/replay、一键迁移或 legacy service takeover。
+#171/#172 历史大票据到 #173-#195 拆分切片的覆盖矩阵和收束建议见
+[`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md)；
+该审计入口只说明覆盖状态，不自动关闭历史 issue，也不扩大 runtime 语义。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

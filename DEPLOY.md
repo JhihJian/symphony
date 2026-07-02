@@ -247,6 +247,9 @@ runbook 见 [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutov
 该验证入口不读取 raw cutover evidence，不调用 provider、dispatch、worker starter、writeback、
 systemd、workspace hook 或配置修改路径，也不是自动 retry/replay、durable execution queue、一键迁移
 或 legacy service takeover。
+#171/#172 历史 closure report 大票据与 #173-#195 拆分切片的覆盖审计入口见
+[`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md)；
+部署侧只把它作为只读证据索引，不新增 systemd、provider、worker 或配置变更步骤。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

@@ -748,6 +748,9 @@ mise exec -- mix test test/symphony_elixir/hub_cutover_closure_report_packet_dry
 `no_request`、`no_chain` 和 stale 降级，并断言 provider scope、required action、blocked-by 和 safe
 evidence fingerprint/reference 不跨 project 串项。完整 runbook 见
 [`../docs/hub-cutover-closure-report-packet-dry-run.md`](../docs/hub-cutover-closure-report-packet-dry-run.md)。
+#171/#172 原始 closure report 范围到 #173-#195 拆分切片的覆盖矩阵和收束建议见
+[`../docs/hub-cutover-closure-report-coverage-audit.md`](../docs/hub-cutover-closure-report-coverage-audit.md)；
+该文档只是审计入口，不新增 Hub runtime/API/Dashboard 行为。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

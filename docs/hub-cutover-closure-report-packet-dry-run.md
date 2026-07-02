@@ -93,3 +93,6 @@ packet 展示。
 
 本 dry-run baseline 建在这些已完成切片之上，只补充稳定、可复现的 evidence 路径和一致性验证。它不恢复
 #171/#172 的大范围实现方式，也不表示 #171 或 #172 已自动关闭。
+
+#171/#172 到 #173-#195 的逐项覆盖矩阵和 Owner 收束建议见
+[`docs/hub-cutover-closure-report-coverage-audit.md`](hub-cutover-closure-report-coverage-audit.md)。
