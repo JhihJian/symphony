@@ -117,6 +117,14 @@ lifecycle counts, reason counts, workspace release/retention counts, and per-pro
 without raw prompts, transcripts, provider bodies, hook/app-server output, tokens, cookies, or raw
 config. This remains a reconciliation baseline, not a Hub-owned scheduler, worker supervisor,
 provider writeback executor, durable store, or legacy service migration.
+The #203 restart/replay safe fixture baseline adds a repository-internal acceptance input for #74
+remaining gap 2. It serializes the same sanitized multi-project runtime ledger facts through
+snapshot reload, `RuntimeLedger.replay`, DeviceObservability, and Presenter `/api/v1/state` so
+reviewers can verify active attempts, completed attempts, retry/backoff, retained/released
+workspaces, and writeback lookup/manual-attention paths are explained consistently after a simulated
+restart. It is still a fixture/test baseline only: it does not add a database, WAL, durable
+execution queue, automatic retry/replay, provider calls, dispatch, worker start, systemd/workspace
+hooks, config mutation, or legacy service takeover.
 Hub provider execution now has explicit opt-in modes. The default remains the skeleton executor,
 which records governed candidate-scan results without calling real provider APIs. Passing
 `--hub-provider-executor real-candidate-scan` to Hub mode opts into the first real read executor:
@@ -356,6 +364,10 @@ durable execution queue、自动 retry/replay、一键迁移或 legacy service t
 它把 Hub-governed、legacy direct scoped non-goal、unsupported/manual-attention、future migration
 candidate 和 non-runtime provider access 路径分开列清，只作为 #199 remaining gap 1 的审计和 Owner
 决策入口，不新增 runtime provider I/O 或 legacy takeover。
+#74 restart/replay safe fixture baseline 由 #203 提供，入口是
+`elixir/test/support/hub_runtime_ledger_restart_replay_fixture.exs` 以及
+`hub_runtime_ledger_test.exs`、`hub_device_observability_test.exs` 的 targeted tests；它只证明现有
+safe fields 在模拟重启后可被一致解释，不新增 durable execution queue、自动 retry/replay 或迁移能力。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

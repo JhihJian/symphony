@@ -87,6 +87,8 @@ defmodule SymphonyElixir.MixProject do
         ]
       ],
       test_ignore_filters: [
+        "test/support/hub_cutover_closure_report_packet_dry_run_fixture.exs",
+        "test/support/hub_runtime_ledger_restart_replay_fixture.exs",
         "test/support/e2e_support.exs",
         "test/support/snapshot_support.exs",
         "test/support/test_support.exs"

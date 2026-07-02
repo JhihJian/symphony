@@ -484,6 +484,16 @@ polling, legacy service ownership, or systemd unit lifecycle.
 The lifecycle reconciliation source is likewise injectable and
 safe-summary based. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.
+#203 adds the Hub runtime ledger restart/replay safe fixture baseline for #74 remaining gap 2. The
+fixture lives in `test/support/hub_runtime_ledger_restart_replay_fixture.exs` and is exercised by
+`hub_runtime_ledger_test.exs` and `hub_device_observability_test.exs`: the same sanitized
+multi-project ledger is encoded/decoded like a post-restart snapshot, replayed through
+`RuntimeLedger`, projected through DeviceObservability, and exposed through Presenter
+`/api/v1/state`. It covers active attempts, completed attempts, retry/backoff, retained/released
+workspaces, replay-safe writeback, provider-lookup/manual-attention writeback, and active-attempt
+conflict diagnostics. This is a read-only acceptance fixture, not a database/WAL, durable execution
+queue, automatic retry/replay path, provider executor, dispatch path, worker starter, systemd or
+workspace hook, config mutation, or legacy service takeover.
 
 When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runtime`,
 `hub_scheduler`, `hub_activation_preflight`, `hub_cutover_gate`, `hub_project_registry`,

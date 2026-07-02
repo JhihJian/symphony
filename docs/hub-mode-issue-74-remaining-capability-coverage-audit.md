@@ -77,7 +77,7 @@ Authorization/cookie、secret env、raw provider payload、完整 prompt/transcr
 | Hub poll coordination 不被单个慢 provider 请求拖住全局调度 | `partially_covered` | 代码 + 测试 + 文档 | #79/#87/#105/#125，PR #84/#88/#106/#126；`provider_governance.ex`、`poll_coordinator.ex`、`runtime.ex`、`hub_provider_governance_test.exs`、`hub_runtime_test.exs` | 已有 request governance、backoff/circuit、scheduler coalescing 和 failure isolation；还缺一份 #74 级别的统一 dry-run/fixture 证明慢 provider 或 pending request 不会让设备级状态不可解释。 |
 | 同一 provider 额度池请求经统一出口排队、限流观察、退避和统计 | `partially_covered` | 代码 + 测试 | #79/#105/#127/#129，PR #84/#106/#128/#130；`provider_governance.ex`、`provider_executor.ex`、`real_candidate_scan_executor.ex`、`real_writeback_executor.ex`、`hub_provider_governance_test.exs`、`hub_real_candidate_scan_executor_test.exs`、`hub_real_writeback_executor_test.exs` | Hub-owned candidate scan 和 safe writeback 子集已有 governed request/result；legacy direct provider paths、raw GraphQL escape hatch、auto-update/维护类 provider 访问仍需要 Owner 明确为 scoped legacy 或后续迁移对象。 |
 | 统一 provider 出口覆盖 dynamic tools、PR/issue/tracker writeback，并给出 replay policy | `partially_covered` | 代码 + 测试 | #94/#97/#129，PR #95/#96/#98/#130；`provider_tool_routing.ex`、`writeback_processor.ex`、`real_writeback_executor.ex`、`hub_provider_tool_routing_test.exs`、`hub_writeback_processor_test.exs`、`hub_real_writeback_executor_test.exs` | structured GitHub issue/PR/tracker 工具已有 opt-in routing 和 safe summaries；完整 PR create、普通 append comment、raw `linear_graphql` 等归入 provider exit residual decision。 |
-| 可恢复运行账本记录 claim、attempt、workspace、retry/backoff、session summary、writeback intent/result | `partially_covered` | 代码 + 测试 | #77/#91/#114/#117/#119/#121/#123，PR #78/#92/#93/#115/#118/#120/#122/#124；`runtime_ledger.ex`、`dispatch_boundary.ex`、`dispatch_plan_application.ex`、`worker_start_handoff.ex`、`worker_lifecycle_reconciliation.ex` | ledger fact model、replay、冲突校验和生命周期事实已覆盖；#74 原始“重启后能恢复或解释”的最终判断还缺一个可复现的 restart/replay acceptance fixture 或持久化输入基线。 |
+| 可恢复运行账本记录 claim、attempt、workspace、retry/backoff、session summary、writeback intent/result | `covered` | 代码 + 测试 + fixture | #77/#91/#114/#117/#119/#121/#123/#203，PR #78/#92/#93/#115/#118/#120/#122/#124；`runtime_ledger.ex`、`dispatch_boundary.ex`、`dispatch_plan_application.ex`、`worker_start_handoff.ex`、`worker_lifecycle_reconciliation.ex`、`elixir/test/support/hub_runtime_ledger_restart_replay_fixture.exs`、`hub_runtime_ledger_test.exs`、`hub_device_observability_test.exs` | ledger fact model、replay、冲突校验、生命周期事实和 #203 restart/replay safe fixture baseline 已覆盖；该 baseline 证明现有 safe fields 能在模拟重启后被 RuntimeLedger、DeviceObservability 和 `/api/v1/state` 一致解释，但不新增 durable queue 或自动执行能力。 |
 | 同一 project + issue 同时最多一个 active attempt，重复 tick/webhook/ack loss 不造成双跑 | `covered` | 代码 + 测试 | #91/#112/#114/#117/#119/#121/#123，PR #92/#93/#113/#115/#118/#120/#122/#124；`dispatch_boundary.ex`、`dispatch_planning.ex`、`dispatch_plan_application.ex`、`worker_start_handoff.ex`、`worker_lifecycle_reconciliation.ex` | candidate 到 active run intent 的模型边界已有 idempotent plan/application/start/lifecycle 保护，late running after terminal 的回归由 #123 修复。 |
 | claim、attempt、workspace lease、agent start command 之间形成明确派发边界 | `covered` | 代码 + 测试 | #91/#112/#114/#117/#119，PR #92/#113/#115/#118/#120；`DispatchBoundary.dispatch/3`、`WorkerStartHandoff`、`RealWorkerStarter`、`hub_dispatch_boundary_test.exs`、`hub_dispatch_plan_application_test.exs`、`hub_start_handoff_test.exs` | dispatch plan application 把 planned intent 应用为 claim、attempt、workspace lease、start intent 和 safe run context；真实 worker starter 需要显式 opt-in。 |
 | agent lifecycle 完成、失败、取消、timeout、heartbeat lost、unknown/manual attention 可观察并释放或保留 workspace/capacity | `covered` | 代码 + 测试 | #121/#123，PR #122/#124；`worker_lifecycle_reconciliation.ex`、`hub_worker_lifecycle_reconciliation_test.exs` | terminal、late、duplicate、old session 和 workspace mismatch 已有测试；unknown/manual attention 会保留为可解释事实。 |
@@ -109,22 +109,28 @@ auto-update 或维护类 provider 访问仍保持兼容直连或未归入同一�
 
 ### 2. restart/replay acceptance fixture for #74 runtime facts
 
-状态：`remaining_gap`
+状态：`covered`
 
 `RuntimeLedger`、dispatch/start/lifecycle/writeback facts 已有模型和 targeted tests；#74 原始验收还要求
 Hub 重启后能恢复或解释 claim、workspace 使用状态、run attempt、retry、provider cursor、writeback 和 manual
-attention。当前证据分散在多个模块测试中，缺少一个固定 safe fixture / runbook 证明这些事实能作为
-#74 级别的 restart/replay 证据链一起复核。
+attention。#203 已补上固定 safe fixture baseline：
+`elixir/test/support/hub_runtime_ledger_restart_replay_fixture.exs` 构造脱敏多 project runtime facts，
+`hub_runtime_ledger_test.exs` 验证 snapshot reload / `RuntimeLedger.replay` 后 active attempt、completed
+attempt、retry/backoff、workspace retained/released、writeback replay-safe、provider lookup、unknown/manual
+attention 和 conflict 降级都可解释；`hub_device_observability_test.exs` 验证同一份 restored ledger 进入
+`Runtime.build_snapshot/4`、DeviceObservability 和 Presenter `/api/v1/state` 后关键状态一致。
 
-首个切片可以只加载脱敏 fixture，验证 replay summary、DeviceObservability 和 Dashboard/API safe fields
-的一致性；数据库、WAL、durable execution queue 和自动 retry 属于后续独立能力。
+该基线只加载脱敏 fixture，验证 replay summary、DeviceObservability 和 Dashboard/API safe fields 的一致性；
+数据库、WAL、durable execution queue、自动 retry/replay、真实 provider 调用、dispatch、worker starter、
+writeback executor、systemd、workspace hook、配置修改和 legacy service takeover 仍是非目标。
 
 ### 3. #74 owner closure packet after remaining gaps are triaged
 
 状态：`owner_decision_needed`
 
-本审计说明 #74 的大部分能力已有拆分证据，但 provider exit 残余覆盖和 restart/replay 统一证据仍需处理或
-明确降级。Owner 应在这些 gap 有结论后，决定 #74 是关闭、保持 epic 打开，还是拆成新的最小 follow-up。
+本审计说明 #74 的大部分能力已有拆分证据；#203 已补齐 restart/replay 统一证据，provider exit 残余覆盖
+仍需要 Owner 对 #201 baseline 做关闭、降级或继续拆分判断。Owner 应在 residual gap 有结论后，决定 #74
+是关闭、保持 epic 打开，还是拆成新的最小 follow-up。
 
 ## 后续最小 issue 建议
 
@@ -149,7 +155,7 @@ attention。当前证据分散在多个模块测试中，缺少一个固定 safe
 更安全的原因：#201 已完成出口事实和范围裁定，后续只需要按 Owner 选择拆最小迁移，而不是在一个 issue 中
 一次性迁移所有 provider 调用。
 
-### 建议 2：Add Hub runtime ledger restart/replay safe fixture baseline
+### 建议 2：Add Hub runtime ledger restart/replay safe fixture baseline（已由 #203 承接）
 
 目标：用固定脱敏 fixture 复现 Hub runtime ledger facts 在 restart/replay 场景下如何解释 claim、attempt、
 workspace lease、retry/backoff、writeback unknown/manual attention 和 lifecycle unknown，并验证
@@ -167,6 +173,10 @@ workspace hook 或 legacy service migration。
 - README/SPEC/DEPLOY/`elixir/README.md` 只补验证入口或边界链接。
 
 更安全的原因：它只补 #74 restart/recovery 证据链，运行时执行入口和持久队列继续保持现有边界。
+
+当前结果：#203 已新增 `hub_runtime_ledger_restart_replay_fixture.exs`，并用 targeted tests 覆盖
+RuntimeLedger reload/replay、DeviceObservability、Presenter `/api/v1/state`、active-attempt conflict
+降级、workspace retained/released 区分和 writeback lookup/manual-attention 安全边界。
 
 ### 建议 3：Add Hub mode #74 closure decision packet
 
@@ -209,11 +219,20 @@ mise exec -- mix test \
   test/symphony_elixir/hub_cutover_closure_report_packet_dry_run_test.exs
 ```
 
+#203 restart/replay safe fixture baseline 的最小复核入口：
+
+```bash
+cd elixir
+mix test test/symphony_elixir/hub_runtime_ledger_test.exs
+mix test test/symphony_elixir/hub_device_observability_test.exs
+```
+
 ## 交叉引用
 
 - #74 epic：https://github.com/JhihJian/symphony/issues/74
 - #199 audit issue：https://github.com/JhihJian/symphony/issues/199
 - #201 provider exit decision baseline issue：https://github.com/JhihJian/symphony/issues/201
+- #203 restart/replay safe fixture baseline issue：https://github.com/JhihJian/symphony/issues/203
 - provider exit decision baseline：[`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](hub-provider-exit-residual-coverage-decision-baseline.md)
 - #171/#172 closure report 覆盖审计：[`docs/hub-cutover-closure-report-coverage-audit.md`](hub-cutover-closure-report-coverage-audit.md)
 - closure report packet dry-run runbook：[`docs/hub-cutover-closure-report-packet-dry-run.md`](hub-cutover-closure-report-packet-dry-run.md)

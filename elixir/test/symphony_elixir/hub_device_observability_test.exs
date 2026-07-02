@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.HubDeviceObservabilityTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.{CutoverClosureChain, DeviceObservability}
+  alias SymphonyElixir.Hub.{CutoverClosureChain, DeviceObservability, RuntimeLedger}
+  alias SymphonyElixir.HubRuntimeLedgerRestartReplayFixture, as: RestartReplayFixture
   alias SymphonyElixirWeb.Presenter
 
   defmodule StaticHubOrchestrator do
@@ -174,6 +175,78 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert "workspace_occupied" in aggregate_reasons
     assert "writeback_unknown" in aggregate_reasons
     assert "manual_attention" in aggregate_reasons
+  end
+
+  test "restart replay fixture stays consistent across ledger device projection and state payload" do
+    runtime_snapshot = RestartReplayFixture.runtime_snapshot()
+    replay = RuntimeLedger.replay(RestartReplayFixture.restored_ledger())
+    replay_projects = Map.new(replay.projects, &{&1.project_id, &1})
+    projection = runtime_snapshot.hub_device_observability
+    device_projects = Map.new(projection.projects, &{&1.project_id, &1})
+
+    assert runtime_snapshot.hub_dispatch_boundary == RestartReplayFixture.restored_ledger()
+    assert runtime_snapshot.hub_runtime.read_only == true
+    assert runtime_snapshot.hub_runtime.provider_executor.provider_io == false
+    assert runtime_snapshot.hub_runtime.writeback_executor.provider_io == false
+    assert runtime_snapshot.hub_runtime.worker_starter.worker_start == false
+
+    assert projection.device.project_count == 4
+    assert projection.overview.capacity_workspace.active_attempt_count == total_active_attempts(replay)
+    assert projection.overview.capacity_workspace.pending_start_intent_count == 1
+    assert projection.overview.writeback.counts == %{pending: 0, succeeded: 1, failed: 1, unknown: 2, manual_attention: 2}
+    assert projection.overview.writeback.manual_attention_count == 2
+
+    assert device_projects["alpha-live"].status == "running"
+    [device_alpha_attempt] = device_projects["alpha-live"].runtime.active_attempts
+    [replay_alpha_attempt] = sanitize_entries(replay_projects["alpha-live"].active_attempts)
+
+    assert Map.take(device_alpha_attempt, ["issue_key", "attempt_id", "status", "workspace_path"]) ==
+             Map.take(replay_alpha_attempt, ["issue_key", "attempt_id", "status", "workspace_path"])
+
+    assert "active_attempt_exists" in reason_names(device_projects["alpha-live"])
+    assert "workspace_occupied" in reason_names(device_projects["alpha-live"])
+
+    assert device_projects["gamma-retry"].status == "backoff"
+    [device_gamma_retry] = device_projects["gamma-retry"].runtime.retry_backoff
+    [replay_gamma_retry] = sanitize_entries(replay_projects["gamma-retry"].retry_backoff)
+
+    assert Map.take(device_gamma_retry, ["issue_key", "attempt_id", "due_at", "error_summary"]) ==
+             Map.take(replay_gamma_retry, ["issue_key", "attempt_id", "due_at", "error_summary"])
+
+    assert "project_backoff" in reason_names(device_projects["gamma-retry"])
+    assert "workspace_retained" in reason_names(device_projects["gamma-retry"])
+
+    assert device_projects["delta-manual"].status == "manual_attention"
+    assert device_projects["delta-manual"].writebacks.counts.unknown == 2
+    assert device_projects["delta-manual"].writebacks.counts.manual_attention == 2
+    assert "writeback_unknown" in reason_names(device_projects["delta-manual"])
+    assert "manual_attention" in reason_names(device_projects["delta-manual"])
+
+    with_fixture = Module.concat(__MODULE__, :RestartReplayFixtureSnapshot)
+
+    start_supervised!(
+      {StaticHubOrchestrator, name: with_fixture, snapshot: runtime_snapshot},
+      id: :hub_restart_replay_fixture_snapshot
+    )
+
+    payload = Presenter.state_payload(with_fixture, 50)
+    payload_dispatch_projects = Map.new(payload.hub_dispatch_boundary.projects, &{&1.project_id, &1})
+    payload_device_projects = Map.new(payload.hub_device_observability.projects, &{&1.project_id, &1})
+
+    assert payload.hub_dispatch_boundary.conflicts == []
+    assert payload_dispatch_projects["delta-manual"].writebacks.counts.unknown == 2
+    assert payload_dispatch_projects["delta-manual"].writebacks.counts.manual_attention == 2
+    refute Enum.any?(payload_dispatch_projects["delta-manual"].writebacks.manual_attention, &(&1.result_status == :succeeded))
+
+    assert payload.hub_device_observability.overview.capacity_workspace.active_attempt_count ==
+             projection.overview.capacity_workspace.active_attempt_count
+
+    assert payload.hub_device_observability.overview.writeback.counts == projection.overview.writeback.counts
+    assert payload_device_projects["gamma-retry"].runtime.workspace_leases == device_projects["gamma-retry"].runtime.workspace_leases
+    assert payload_device_projects["delta-manual"].writebacks.manual_attention == device_projects["delta-manual"].writebacks.manual_attention
+
+    safe_text = inspect(payload)
+    refute_sensitive_fixture_markers(safe_text)
   end
 
   test "exposes closure chain overview and project detail without crossing project scope" do
@@ -706,6 +779,22 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     project.activation_plan.required_acknowledgements
     |> Enum.map(& &1.code)
     |> Enum.sort()
+  end
+
+  defp total_active_attempts(replay) do
+    Enum.reduce(replay.projects, 0, fn project, total -> total + length(project.active_attempts) end)
+  end
+
+  defp sanitize_entries(entries) do
+    entries
+    |> Jason.encode!()
+    |> Jason.decode!()
+  end
+
+  defp refute_sensitive_fixture_markers(text) do
+    Enum.each(RestartReplayFixture.forbidden_output_markers(), fn marker ->
+      refute text =~ marker
+    end)
   end
 
   defp registry do

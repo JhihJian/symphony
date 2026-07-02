@@ -3,6 +3,111 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
 
   alias SymphonyElixir.Hub.IssueRef
   alias SymphonyElixir.Hub.RuntimeLedger
+  alias SymphonyElixir.HubRuntimeLedgerRestartReplayFixture, as: RestartReplayFixture
+
+  test "restart replay fixture restores #74 runtime facts from safe snapshot only" do
+    snapshot = RestartReplayFixture.safe_snapshot()
+
+    assert :ok = RuntimeLedger.validate(snapshot)
+
+    encoded = Jason.encode!(snapshot)
+    decoded = Jason.decode!(encoded)
+
+    assert {:ok, restored} = RuntimeLedger.from_snapshot(decoded)
+    assert restored == snapshot
+
+    summary = RuntimeLedger.replay(restored)
+    projects = Map.new(summary.projects, &{&1.project_id, &1})
+
+    assert summary.conflicts == []
+
+    assert projects["alpha-live"].counts.running == 1
+    assert [%{attempt_id: "alpha-live-attempt-1", start_intent_status: :acknowledged}] = projects["alpha-live"].active_attempts
+    assert [%{attempt_id: "alpha-live-attempt-1", lease_id: "lease-alpha-live-1"}] = projects["alpha-live"].workspace_leases
+
+    assert projects["beta-complete"].counts.released == 1
+    assert projects["beta-complete"].workspace_leases == []
+    assert projects["beta-complete"].lifecycle.workspace_action_counts == %{"released" => 1}
+    assert [%{status: :succeeded, workspace_action: "released"}] = projects["beta-complete"].lifecycle.terminal
+    assert projects["beta-complete"].writebacks.counts.succeeded == 1
+
+    assert projects["gamma-retry"].counts.retry == 1
+    assert [%{attempt_id: "gamma-retry-attempt-1", due_at: "2026-07-02T09:45:00Z"}] = projects["gamma-retry"].retry_backoff
+    assert [%{attempt_id: "gamma-retry-attempt-1", lease_id: "lease-gamma-retry-1"}] = projects["gamma-retry"].workspace_leases
+    assert projects["gamma-retry"].lifecycle.workspace_action_counts == %{"retained" => 1}
+    assert [%{workspace_retained_reason: "retry_backoff_pending"}] = projects["gamma-retry"].lifecycle.retained_workspace
+
+    assert projects["delta-manual"].counts.manual_attention == 1
+
+    assert [%{intent_id: "start-delta-manual-1", status: :unknown, manual_attention: true}] =
+             projects["delta-manual"].pending_start_intents
+
+    assert projects["delta-manual"].lifecycle.counts.manual_attention == 2
+    assert [%{status: :manual_attention, workspace_action: "retained"}] = projects["delta-manual"].lifecycle.unresolved
+
+    assert projects["delta-manual"].writebacks.counts == %{
+             pending: 0,
+             succeeded: 0,
+             failed: 1,
+             unknown: 2,
+             manual_attention: 2
+           }
+
+    assert [
+             %{
+               logical_action: "stage_writeback",
+               replay_policy: :idempotent,
+               result_status: :failed,
+               provider_replayable: true
+             }
+           ] = projects["delta-manual"].writebacks.failed
+
+    manual_reasons =
+      projects["delta-manual"].writebacks.manual_attention
+      |> Enum.map(& &1.manual_attention_reason)
+      |> Enum.sort()
+
+    assert manual_reasons == [
+             "unknown_append_comment_requires_manual_attention",
+             "unknown_pr_create_requires_provider_lookup"
+           ]
+
+    refute Enum.any?(projects["delta-manual"].writebacks.manual_attention, &(&1.result_status == :succeeded))
+
+    active_attempt_keys =
+      summary.projects
+      |> Enum.flat_map(fn project -> Enum.map(project.active_attempts, &{project.project_id, &1.issue_key}) end)
+      |> Enum.frequencies()
+
+    assert Enum.all?(active_attempt_keys, fn {_key, count} -> count == 1 end)
+
+    manual_codes = summary.manual_attention |> Enum.map(& &1.code) |> Enum.sort()
+    assert :start_intent_unknown_manual_attention in manual_codes
+    assert :worker_lifecycle_unresolved_manual_attention in manual_codes
+    assert Enum.count(manual_codes, &(&1 == :writeback_unknown_manual_attention)) == 2
+
+    safe_text = inspect({snapshot, summary})
+    refute_sensitive_fixture_markers(safe_text)
+  end
+
+  test "restart replay conflict variant degrades duplicate active attempts into diagnostics" do
+    conflict_snapshot = RestartReplayFixture.active_attempt_conflict_snapshot()
+
+    assert {:error, diagnostics} = RuntimeLedger.validate(conflict_snapshot)
+    assert Enum.any?(diagnostics, &(&1.code == :active_attempt_conflict))
+
+    summary = RuntimeLedger.replay(conflict_snapshot)
+    projects = Map.new(summary.projects, &{&1.project_id, &1})
+
+    assert [%{code: :active_attempt_conflict, project_id: "alpha-live"}] =
+             Enum.filter(summary.conflicts, &(&1.code == :active_attempt_conflict))
+
+    assert length(projects["alpha-live"].active_attempts) == 2
+    assert projects["alpha-live"].writebacks.counts.manual_attention == 0
+
+    safe_text = inspect(summary)
+    refute_sensitive_fixture_markers(safe_text)
+  end
 
   test "serializes and replays recoverable ledger facts for multiple projects" do
     alpha_ref = issue_ref("alpha", "github", "github:jhihjian/symphony", "123", "jhihjian/symphony#77")
@@ -533,4 +638,10 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
   end
 
   defp provider_scope("gitlab", "gitlab:" <> project_slug), do: %{project_slug: project_slug}
+
+  defp refute_sensitive_fixture_markers(text) do
+    Enum.each(RestartReplayFixture.forbidden_output_markers(), fn marker ->
+      refute text =~ marker
+    end)
+  end
 end
