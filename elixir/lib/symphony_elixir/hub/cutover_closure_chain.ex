@@ -42,6 +42,48 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   @open_retryable_outcome_statuses ["retryable"]
   @open_manual_attention_outcome_statuses ["unknown", "manual_attention"]
   @future_open_outcome_statuses ["failed"]
+  @reference_statuses ["missing", "current", "stale", "conflict", "malformed", "unsupported"]
+  @reference_types ["closeout", "replay_decision", "replay_request_audit"]
+  @closeout_record_statuses ["resolved", "stale", "conflict", "manual_attention", "malformed", "unsupported"]
+  @closeout_resolution_codes [
+    "confirmed_resolved",
+    "confirmed_failed",
+    "abandoned_no_retry",
+    "allow_explicit_retry_consideration",
+    "requires_follow_up"
+  ]
+  @retry_closeout_resolution_codes ["allow_explicit_retry_consideration"]
+  @operator_sources ["operator_file", "operator_cli", "test", "api", "hub_startup_option", "operator"]
+  @replay_decisions [
+    "no_unresolved_outcome",
+    "blocked_unresolved_outcome",
+    "retry_consideration_allowed",
+    "retry_consideration_denied",
+    "stale_closeout",
+    "conflict",
+    "manual_attention",
+    "malformed",
+    "unsupported"
+  ]
+  @replay_request_statuses [
+    "no_request",
+    "would_allow_retry_consideration",
+    "would_block",
+    "stale",
+    "conflict",
+    "manual_attention",
+    "malformed",
+    "unsupported"
+  ]
+  @replay_outcome_link_statuses [
+    "not_linked",
+    "outcome_recorded",
+    "outcome_still_pending",
+    "outcome_blocked",
+    "outcome_stale",
+    "outcome_conflict",
+    "outcome_manual_attention"
+  ]
   @default_recent_limit 20
 
   @type chain :: map()
@@ -90,6 +132,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       auto_replay_allowed: false,
       counts: count_snapshot(%{}, chains, project_ids),
       recent_chains: Enum.take(chains, @default_recent_limit),
+      recent_reference_reason_codes: recent_reference_codes(chains, :reason_code),
+      recent_reference_action_codes: recent_reference_codes(chains, :action_code),
       projects: projects
     }
     |> to_snapshot()
@@ -150,6 +194,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       auto_replay_allowed: false,
       counts: count_snapshot(value(summary, :counts), chains, project_ids),
       recent_chains: chains,
+      recent_reference_reason_codes: recent_reference_codes(chains, :reason_code),
+      recent_reference_action_codes: recent_reference_codes(chains, :action_code),
       projects: projects
     }
   end
@@ -272,6 +318,11 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       snapshot
       |> Map.merge(status)
       |> Map.put(:safe_evidence_fingerprint, optional_string(input, :safe_evidence_fingerprint) || safe_evidence_fingerprint(snapshot))
+      |> compact_map()
+
+    snapshot =
+      snapshot
+      |> Map.put(:retained_reference_statuses, retained_reference_statuses(snapshot))
       |> compact_map()
 
     snapshot
@@ -872,11 +923,81 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   end
 
   defp closeout_reference(value) when is_map(value) do
+    evidence =
+      SafeSummary.sanitize_map(
+        value(value, :safe_evidence_fingerprints) || value(value, :evidence_fingerprints) || %{},
+        output_keys: :preserve
+      )
+
+    side_effect = value(value, :outcome_side_effect) || value(value, :side_effect) || %{}
+
     %{
       closeout_record_fingerprint: optional_string(value, :closeout_record_fingerprint),
+      closeout_id: optional_string(value, :closeout_id) || optional_string(value, :id),
+      project_id: optional_string(value, :project_id),
+      provider_scope: provider_scope_snapshot(value(value, :provider_scope) || value(value, :provider) || %{}),
+      operation: operation_name(value(value, :operation)),
+      side_effect_source: source_name(value(value, :side_effect_source) || value(value, :source_boundary)),
+      replay_key: optional_string(value, :replay_key),
+      attempt_fingerprint: optional_string(value, :attempt_fingerprint),
+      outcome_id: optional_string(value, :outcome_id),
       status: safe_status(value(value, :status)) |> blank_to_nil(),
-      resolution_code: safe_status(value(value, :resolution_code)) |> blank_to_nil(),
-      outcome_fingerprint: optional_string(value, :outcome_fingerprint)
+      resolution_code:
+        safe_status(value(value, :resolution_code) || value(value, :resolution) || value(value, :decision))
+        |> blank_to_nil(),
+      outcome_fingerprint:
+        optional_string(value, :outcome_fingerprint) ||
+          optional_string(value, :evidence_fingerprint),
+      outcome_status: safe_status(value(value, :outcome_status) || value(value, :status_bound)) |> blank_to_nil(),
+      side_effect_entered:
+        first_boolean([
+          value(value, :side_effect_entered),
+          value(side_effect, :entered),
+          value(side_effect, :side_effect_entered)
+        ]),
+      side_effect_may_have_happened:
+        first_boolean([
+          value(value, :side_effect_may_have_happened),
+          value(side_effect, :may_have_happened),
+          value(side_effect, :side_effect_may_have_happened)
+        ]),
+      cutover_operation_request_fingerprint:
+        optional_string(value, :cutover_operation_request_fingerprint) ||
+          optional_string(evidence, :cutover_operation_request),
+      authorization_record_fingerprint:
+        optional_string(value, :authorization_record_fingerprint) ||
+          optional_string(evidence, :authorization_record),
+      authorization_request_fingerprint:
+        optional_string(value, :authorization_request_fingerprint) ||
+          optional_string(evidence, :authorization_request),
+      readiness_permit_fingerprint:
+        optional_string(value, :readiness_permit_fingerprint) ||
+          optional_string(evidence, :readiness_permit),
+      readiness_permit_decision:
+        safe_status(value(value, :readiness_permit_decision) || value(evidence, :readiness_permit_decision))
+        |> blank_to_nil(),
+      cutover_gate_fingerprint:
+        optional_string(value, :cutover_gate_fingerprint) ||
+          optional_string(evidence, :cutover_gate),
+      dry_run_audit_fingerprint:
+        optional_string(value, :dry_run_audit_fingerprint) ||
+          optional_string(evidence, :dry_run_audit),
+      audit_history_fingerprint:
+        optional_string(value, :audit_history_fingerprint) ||
+          optional_string(evidence, :audit_history),
+      consumption_guard_fingerprint:
+        optional_string(value, :consumption_guard_fingerprint) ||
+          optional_string(evidence, :consumption_guard),
+      safe_evidence_fingerprints: evidence,
+      reason_code: safe_status(value(value, :reason_code) || value(value, :reason)) |> blank_to_nil(),
+      action_code: safe_status(value(value, :action_code) || value(value, :action)) |> blank_to_nil(),
+      status_reasons: string_list(value(value, :status_reasons)),
+      operator_request_fingerprint:
+        optional_string(value, :operator_request_fingerprint) ||
+          optional_string(value, :request_fingerprint),
+      source: safe_status(value(value, :source)) |> blank_to_nil(),
+      no_side_effects: value(value, :no_side_effects) != false,
+      auto_replay_allowed: truthy?(value(value, :auto_replay_allowed))
     }
     |> compact_map()
   end
@@ -884,13 +1005,67 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp closeout_reference(_value), do: %{}
 
   defp replay_decision_reference(value) when is_map(value) do
+    evidence =
+      SafeSummary.sanitize_map(
+        value(value, :safe_evidence_fingerprints) || value(value, :evidence_fingerprints) || %{},
+        output_keys: :preserve
+      )
+
+    side_effect = value(value, :outcome_side_effect) || value(value, :side_effect) || %{}
+
     %{
       replay_decision_fingerprint:
         optional_string(value, :replay_decision_fingerprint) ||
           optional_string(value, :decision_fingerprint),
+      project_id: optional_string(value, :project_id),
+      provider_scope: provider_scope_snapshot(value(value, :provider_scope) || value(value, :provider) || %{}),
+      operation: operation_name(value(value, :operation)),
+      side_effect_source: source_name(value(value, :side_effect_source) || value(value, :source_boundary)),
+      replay_key: optional_string(value, :replay_key) || optional_string(value, :outcome_replay_key),
       decision: safe_status(value(value, :decision)) |> blank_to_nil(),
       allowed: value(value, :allowed) == true,
-      outcome_fingerprint: optional_string(value, :outcome_fingerprint)
+      reason_code: safe_status(value(value, :reason_code) || value(value, :reason)) |> blank_to_nil(),
+      action_code: safe_status(value(value, :action_code) || value(value, :action)) |> blank_to_nil(),
+      reason_codes: string_list(value(value, :reason_codes)),
+      outcome_fingerprint: optional_string(value, :outcome_fingerprint),
+      outcome_status: safe_status(value(value, :outcome_status)) |> blank_to_nil(),
+      side_effect_entered:
+        first_boolean([
+          value(value, :side_effect_entered),
+          value(side_effect, :entered),
+          value(side_effect, :side_effect_entered)
+        ]),
+      side_effect_may_have_happened:
+        first_boolean([
+          value(value, :side_effect_may_have_happened),
+          value(side_effect, :may_have_happened),
+          value(side_effect, :side_effect_may_have_happened)
+        ]),
+      closeout_record_fingerprint: optional_string(value, :closeout_record_fingerprint),
+      closeout_resolution_code: safe_status(value(value, :closeout_resolution_code)) |> blank_to_nil(),
+      closeout_operator_request_fingerprint: optional_string(value, :closeout_operator_request_fingerprint),
+      cutover_operation_request_fingerprint:
+        optional_string(value, :cutover_operation_request_fingerprint) ||
+          optional_string(evidence, :cutover_operation_request),
+      authorization_record_fingerprint:
+        optional_string(value, :authorization_record_fingerprint) ||
+          optional_string(evidence, :authorization_record),
+      authorization_request_fingerprint:
+        optional_string(value, :authorization_request_fingerprint) ||
+          optional_string(evidence, :authorization_request),
+      readiness_permit_fingerprint:
+        optional_string(value, :readiness_permit_fingerprint) ||
+          optional_string(evidence, :readiness_permit),
+      readiness_permit_decision:
+        safe_status(value(value, :readiness_permit_decision) || value(evidence, :readiness_permit_decision))
+        |> blank_to_nil(),
+      consumption_guard_fingerprint:
+        optional_string(value, :consumption_guard_fingerprint) ||
+          optional_string(evidence, :consumption_guard),
+      guard_decision: safe_status(value(value, :guard_decision) || value(evidence, :guard_decision)) |> blank_to_nil(),
+      safe_evidence_fingerprints: evidence,
+      no_side_effects: value(value, :no_side_effects) != false,
+      auto_replay_allowed: truthy?(value(value, :auto_replay_allowed))
     }
     |> compact_map()
   end
@@ -898,11 +1073,74 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp replay_decision_reference(_value), do: %{}
 
   defp replay_request_reference(value) when is_map(value) do
+    evidence =
+      SafeSummary.sanitize_map(
+        value(value, :safe_evidence_fingerprints) || value(value, :evidence_fingerprints) || %{},
+        output_keys: :preserve
+      )
+
+    side_effect = value(value, :outcome_side_effect) || value(value, :side_effect) || %{}
+
     %{
       request_fingerprint: optional_string(value, :request_fingerprint),
       audit_record_fingerprint: optional_string(value, :audit_record_fingerprint),
+      request_id: optional_string(value, :request_id) || optional_string(value, :id),
+      project_id: optional_string(value, :project_id),
+      provider_scope: provider_scope_snapshot(value(value, :provider_scope) || value(value, :provider) || %{}),
+      operation: operation_name(value(value, :operation)),
+      side_effect_source: source_name(value(value, :side_effect_source) || value(value, :source_boundary)),
+      replay_key: optional_string(value, :replay_key) || optional_string(value, :outcome_replay_key),
       status: safe_status(value(value, :status)) |> blank_to_nil(),
-      outcome_link_status: safe_status(value(value, :outcome_link_status)) |> blank_to_nil()
+      outcome_link_status: safe_status(value(value, :outcome_link_status)) |> blank_to_nil(),
+      outcome_fingerprint:
+        optional_string(value, :outcome_fingerprint) ||
+          optional_string(value, :evidence_fingerprint),
+      outcome_status: safe_status(value(value, :outcome_status)) |> blank_to_nil(),
+      side_effect_entered:
+        first_boolean([
+          value(value, :side_effect_entered),
+          value(side_effect, :entered),
+          value(side_effect, :side_effect_entered)
+        ]),
+      side_effect_may_have_happened:
+        first_boolean([
+          value(value, :side_effect_may_have_happened),
+          value(side_effect, :may_have_happened),
+          value(side_effect, :side_effect_may_have_happened)
+        ]),
+      closeout_record_fingerprint: optional_string(value, :closeout_record_fingerprint),
+      closeout_resolution_code: safe_status(value(value, :closeout_resolution_code)) |> blank_to_nil(),
+      closeout_operator_request_fingerprint: optional_string(value, :closeout_operator_request_fingerprint),
+      replay_decision_fingerprint: optional_string(value, :replay_decision_fingerprint),
+      replay_decision_status:
+        safe_status(value(value, :replay_decision_status) || value(value, :decision_status))
+        |> blank_to_nil(),
+      cutover_operation_request_fingerprint:
+        optional_string(value, :cutover_operation_request_fingerprint) ||
+          optional_string(evidence, :cutover_operation_request),
+      authorization_record_fingerprint:
+        optional_string(value, :authorization_record_fingerprint) ||
+          optional_string(evidence, :authorization_record),
+      authorization_request_fingerprint:
+        optional_string(value, :authorization_request_fingerprint) ||
+          optional_string(evidence, :authorization_request),
+      readiness_permit_fingerprint:
+        optional_string(value, :readiness_permit_fingerprint) ||
+          optional_string(evidence, :readiness_permit),
+      readiness_permit_decision:
+        safe_status(value(value, :readiness_permit_decision) || value(evidence, :readiness_permit_decision))
+        |> blank_to_nil(),
+      consumption_guard_fingerprint:
+        optional_string(value, :consumption_guard_fingerprint) ||
+          optional_string(evidence, :consumption_guard),
+      guard_decision: safe_status(value(value, :guard_decision) || value(evidence, :guard_decision)) |> blank_to_nil(),
+      safe_evidence_fingerprints: evidence,
+      reason_code: safe_status(value(value, :reason_code) || value(value, :reason)) |> blank_to_nil(),
+      action_code: safe_status(value(value, :action_code) || value(value, :action)) |> blank_to_nil(),
+      status_reasons: string_list(value(value, :status_reasons)),
+      source: safe_status(value(value, :source)) |> blank_to_nil(),
+      no_side_effects: value(value, :no_side_effects) != false,
+      auto_replay_allowed: truthy?(value(value, :auto_replay_allowed))
     }
     |> compact_map()
   end
@@ -1038,6 +1276,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       status: project_status(project_chains),
       counts: count_snapshot(%{}, project_chains, [project_id]),
       closure_chains: project_chains,
+      recent_reference_reason_codes: recent_reference_codes(project_chains, :reason_code),
+      recent_reference_action_codes: recent_reference_codes(project_chains, :action_code),
       safe_evidence_fingerprints: project_fingerprints(project_chains),
       read_only: true,
       no_side_effects: true,
@@ -1062,6 +1302,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       status: normalize_project_status(value(project, :status), chains),
       counts: count_snapshot(value(project, :counts), chains, [project_id]),
       closure_chains: chains,
+      recent_reference_reason_codes: recent_reference_codes(chains, :reason_code),
+      recent_reference_action_codes: recent_reference_codes(chains, :action_code),
       safe_evidence_fingerprints: project_fingerprints(chains),
       read_only: value(project, :read_only) != false,
       no_side_effects: value(project, :no_side_effects) != false,
@@ -1072,6 +1314,23 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp project_snapshot(project), do: project_snapshot(%{project_id: project})
 
   defp count_snapshot(counts, chains, project_ids) when is_map(counts) do
+    closeout_reference_status_counts =
+      reference_type_status_counts(value(counts, :closeout_reference_status_counts), chains, :closeout)
+
+    replay_decision_reference_status_counts =
+      reference_type_status_counts(
+        value(counts, :replay_decision_reference_status_counts),
+        chains,
+        :replay_decision
+      )
+
+    replay_request_audit_reference_status_counts =
+      reference_type_status_counts(
+        value(counts, :replay_request_audit_reference_status_counts),
+        chains,
+        :replay_request_audit
+      )
+
     %{
       chain_count: non_negative_integer(value(counts, :chain_count)) || length(chains),
       no_chain_count:
@@ -1088,6 +1347,10 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       stale_count: count_or_existing(counts, :stale_count, chains, "stale"),
       malformed_count: count_or_existing(counts, :malformed_count, chains, "malformed"),
       unsupported_count: count_or_existing(counts, :unsupported_count, chains, "unsupported"),
+      reference_status_counts: reference_status_counts(value(counts, :reference_status_counts), chains),
+      closeout_reference_status_counts: closeout_reference_status_counts,
+      replay_decision_reference_status_counts: replay_decision_reference_status_counts,
+      replay_request_audit_reference_status_counts: replay_request_audit_reference_status_counts,
       operation_status_counts: operation_status_counts(value(counts, :operation_status_counts), chains),
       source_status_counts: source_status_counts(value(counts, :source_status_counts), chains)
     }
@@ -1131,6 +1394,939 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
         Map.update(counts, status, 1, &(&1 + 1))
       end)
     end)
+  end
+
+  defp retained_reference_statuses(chain) do
+    @reference_types
+    |> Enum.map(fn type -> {String.to_atom(type), reference_status_for(chain, String.to_atom(type))} end)
+    |> Enum.reject(fn {_type, status} -> status == %{} end)
+    |> Map.new()
+  end
+
+  defp reference_status_for(chain, :closeout), do: closeout_reference_status(chain)
+  defp reference_status_for(chain, :replay_decision), do: replay_decision_reference_status(chain)
+  defp reference_status_for(chain, :replay_request_audit), do: replay_request_audit_reference_status(chain)
+
+  defp closeout_reference_status(chain) do
+    reference = get_in_value(chain, [:retained_references, :closeout]) || %{}
+
+    cond do
+      reference == %{} and closeout_reference_required?(chain) ->
+        reference_status_snapshot(
+          :closeout,
+          "missing",
+          "closeout_reference_missing",
+          "record_execution_outcome_closeout",
+          chain,
+          reference
+        )
+
+      reference == %{} ->
+        %{}
+
+      true ->
+        classify_closeout_reference(chain, reference)
+    end
+  end
+
+  defp replay_decision_reference_status(chain) do
+    reference = get_in_value(chain, [:retained_references, :replay_decision]) || %{}
+
+    cond do
+      reference == %{} and replay_reference_required?(chain) ->
+        reference_status_snapshot(
+          :replay_decision,
+          "missing",
+          "replay_decision_reference_missing",
+          "evaluate_cutover_replay_decision",
+          chain,
+          reference
+        )
+
+      reference == %{} ->
+        %{}
+
+      true ->
+        classify_replay_decision_reference(chain, reference)
+    end
+  end
+
+  defp replay_request_audit_reference_status(chain) do
+    reference = get_in_value(chain, [:retained_references, :replay_request_audit]) || %{}
+
+    cond do
+      reference == %{} and replay_reference_required?(chain) ->
+        reference_status_snapshot(
+          :replay_request_audit,
+          "missing",
+          "replay_request_audit_reference_missing",
+          "record_cutover_replay_request_audit",
+          chain,
+          reference
+        )
+
+      reference == %{} ->
+        %{}
+
+      true ->
+        classify_replay_request_audit_reference(chain, reference)
+    end
+  end
+
+  defp closeout_reference_required?(chain) do
+    value(chain, :closure_status) == "open_manual_attention" or
+      get_in_value(chain, [:outcome, :status]) in @open_manual_attention_outcome_statuses
+  end
+
+  defp replay_reference_required?(chain) do
+    value(chain, :closure_status) == "open_retryable" or
+      get_in_value(chain, [:outcome, :status]) in @open_retryable_outcome_statuses or
+      retry_closeout_reference?(get_in_value(chain, [:retained_reference_statuses, :closeout])) or
+      retry_closeout_reference?(get_in_value(chain, [:retained_references, :closeout]))
+  end
+
+  defp retry_closeout_reference?(reference) when is_map(reference) do
+    safe_status(value(reference, :resolution_code)) in @retry_closeout_resolution_codes or
+      safe_status(value(reference, :closeout_resolution_code)) in @retry_closeout_resolution_codes
+  end
+
+  defp retry_closeout_reference?(_reference), do: false
+
+  defp classify_closeout_reference(chain, reference) do
+    status = safe_status(value(reference, :status))
+    resolution_code = safe_status(value(reference, :resolution_code))
+
+    cond do
+      blank?(status) ->
+        malformed_reference(:closeout, "closeout_reference_status_missing", chain, reference)
+
+      status == "malformed" ->
+        malformed_reference(:closeout, reference_reason(reference, "closeout_reference_malformed"), chain, reference)
+
+      status == "unsupported" ->
+        unsupported_reference(:closeout, reference_reason(reference, "closeout_reference_unsupported"), chain, reference)
+
+      status == "stale" ->
+        stale_reference(:closeout, reference_reason(reference, "closeout_reference_stale"), chain, reference)
+
+      status == "conflict" ->
+        conflict_reference(:closeout, reference_reason(reference, "closeout_reference_conflict"), chain, reference)
+
+      status not in @closeout_record_statuses ->
+        unsupported_reference(:closeout, "closeout_reference_status_unsupported", chain, reference)
+
+      bound?(resolution_code) and resolution_code not in @closeout_resolution_codes ->
+        unsupported_reference(:closeout, "closeout_reference_resolution_unsupported", chain, reference)
+
+      validation = common_reference_validation(:closeout, reference) ->
+        reference_validation_status(validation, :closeout, chain, reference)
+
+      blank?(optional_string(reference, :closeout_record_fingerprint)) ->
+        malformed_reference(:closeout, "closeout_record_fingerprint_missing", chain, reference)
+
+      status in ["resolved", "manual_attention"] and blank?(resolution_code) ->
+        malformed_reference(:closeout, "closeout_resolution_code_missing", chain, reference)
+
+      blank?(optional_string(reference, :replay_key)) and blank?(optional_string(reference, :attempt_fingerprint)) ->
+        malformed_reference(:closeout, "closeout_execution_key_missing", chain, reference)
+
+      reason = side_effect_safety_missing_reason(:closeout, chain, reference) ->
+        malformed_reference(:closeout, reason, chain, reference)
+
+      reason = required_reference_evidence_missing_reason(:closeout, chain, reference, closeout_evidence_keys()) ->
+        malformed_reference(:closeout, reason, chain, reference)
+
+      reason = common_reference_conflict_reason(:closeout, chain, reference) ->
+        conflict_reference(:closeout, reason, chain, reference)
+
+      reason = side_effect_safety_mismatch_reason(:closeout, chain, reference) ->
+        conflict_reference(:closeout, reason, chain, reference)
+
+      reason = execution_key_mismatch_reason(:closeout, chain, reference) ->
+        stale_reference(:closeout, reason, chain, reference)
+
+      reason = outcome_binding_mismatch_reason(:closeout, chain, reference) ->
+        stale_reference(:closeout, reason, chain, reference)
+
+      reason = reference_evidence_mismatch_reason(:closeout, chain, reference, closeout_evidence_keys()) ->
+        stale_reference(:closeout, reason, chain, reference)
+
+      true ->
+        current_reference(
+          :closeout,
+          reference_reason(reference, "closeout_reference_current"),
+          reference_action(reference),
+          chain,
+          reference,
+          %{closeout_status: status, resolution_code: resolution_code}
+        )
+    end
+  end
+
+  defp classify_replay_decision_reference(chain, reference) do
+    decision = safe_status(value(reference, :decision))
+
+    cond do
+      blank?(decision) ->
+        malformed_reference(:replay_decision, "replay_decision_reference_decision_missing", chain, reference)
+
+      decision == "malformed" ->
+        malformed_reference(:replay_decision, reference_reason(reference, "replay_decision_reference_malformed"), chain, reference)
+
+      decision == "unsupported" ->
+        unsupported_reference(:replay_decision, reference_reason(reference, "replay_decision_reference_unsupported"), chain, reference)
+
+      decision == "stale_closeout" ->
+        stale_reference(:replay_decision, reference_reason(reference, "replay_decision_reference_stale"), chain, reference)
+
+      decision == "conflict" ->
+        conflict_reference(:replay_decision, reference_reason(reference, "replay_decision_reference_conflict"), chain, reference)
+
+      decision not in @replay_decisions ->
+        unsupported_reference(:replay_decision, "replay_decision_reference_decision_unsupported", chain, reference)
+
+      validation = common_reference_validation(:replay_decision, reference) ->
+        reference_validation_status(validation, :replay_decision, chain, reference)
+
+      blank?(optional_string(reference, :replay_decision_fingerprint)) ->
+        malformed_reference(:replay_decision, "replay_decision_fingerprint_missing", chain, reference)
+
+      blank?(optional_string(reference, :replay_key)) ->
+        malformed_reference(:replay_decision, "replay_decision_replay_key_missing", chain, reference)
+
+      reason = side_effect_safety_missing_reason(:replay_decision, chain, reference) ->
+        malformed_reference(:replay_decision, reason, chain, reference)
+
+      reason =
+          required_reference_evidence_missing_reason(
+            :replay_decision,
+            chain,
+            reference,
+            replay_decision_evidence_keys()
+          ) ->
+        malformed_reference(:replay_decision, reason, chain, reference)
+
+      reason = common_reference_conflict_reason(:replay_decision, chain, reference) ->
+        conflict_reference(:replay_decision, reason, chain, reference)
+
+      reason = side_effect_safety_mismatch_reason(:replay_decision, chain, reference) ->
+        conflict_reference(:replay_decision, reason, chain, reference)
+
+      reason = execution_key_mismatch_reason(:replay_decision, chain, reference) ->
+        stale_reference(:replay_decision, reason, chain, reference)
+
+      reason = outcome_binding_mismatch_reason(:replay_decision, chain, reference) ->
+        stale_reference(:replay_decision, reason, chain, reference)
+
+      reason = closeout_binding_missing_reason(:replay_decision, chain, reference) ->
+        malformed_reference(:replay_decision, reason, chain, reference)
+
+      reason = closeout_binding_mismatch_reason(:replay_decision, chain, reference) ->
+        stale_reference(:replay_decision, reason, chain, reference)
+
+      reason =
+          reference_evidence_mismatch_reason(
+            :replay_decision,
+            chain,
+            reference,
+            replay_decision_evidence_keys()
+          ) ->
+        stale_reference(:replay_decision, reason, chain, reference)
+
+      true ->
+        current_reference(
+          :replay_decision,
+          reference_reason(reference, "replay_decision_reference_current"),
+          reference_action(reference),
+          chain,
+          reference,
+          %{decision: decision}
+        )
+    end
+  end
+
+  defp classify_replay_request_audit_reference(chain, reference) do
+    status = safe_status(value(reference, :status))
+    outcome_link_status = safe_status(value(reference, :outcome_link_status))
+
+    cond do
+      blank?(status) ->
+        malformed_reference(:replay_request_audit, "replay_request_audit_reference_status_missing", chain, reference)
+
+      status == "no_request" ->
+        reference_status_snapshot(
+          :replay_request_audit,
+          "missing",
+          reference_reason(reference, "replay_request_audit_reference_missing"),
+          reference_action(reference) || "record_cutover_replay_request_audit",
+          chain,
+          reference,
+          %{request_status: status}
+        )
+
+      status == "malformed" ->
+        malformed_reference(:replay_request_audit, reference_reason(reference, "replay_request_audit_reference_malformed"), chain, reference)
+
+      status == "unsupported" ->
+        unsupported_reference(:replay_request_audit, reference_reason(reference, "replay_request_audit_reference_unsupported"), chain, reference)
+
+      status == "stale" ->
+        stale_reference(:replay_request_audit, reference_reason(reference, "replay_request_audit_reference_stale"), chain, reference)
+
+      status == "conflict" ->
+        conflict_reference(:replay_request_audit, reference_reason(reference, "replay_request_audit_reference_conflict"), chain, reference)
+
+      status not in @replay_request_statuses ->
+        unsupported_reference(:replay_request_audit, "replay_request_audit_reference_status_unsupported", chain, reference)
+
+      bound?(outcome_link_status) and outcome_link_status not in @replay_outcome_link_statuses ->
+        unsupported_reference(:replay_request_audit, "replay_request_audit_outcome_link_status_unsupported", chain, reference)
+
+      validation = common_reference_validation(:replay_request_audit, reference) ->
+        reference_validation_status(validation, :replay_request_audit, chain, reference)
+
+      blank?(optional_string(reference, :request_fingerprint)) ->
+        malformed_reference(:replay_request_audit, "replay_request_fingerprint_missing", chain, reference)
+
+      blank?(optional_string(reference, :audit_record_fingerprint)) ->
+        malformed_reference(:replay_request_audit, "replay_request_audit_record_fingerprint_missing", chain, reference)
+
+      blank?(optional_string(reference, :replay_key)) ->
+        malformed_reference(:replay_request_audit, "replay_request_replay_key_missing", chain, reference)
+
+      reason = side_effect_safety_missing_reason(:replay_request_audit, chain, reference) ->
+        malformed_reference(:replay_request_audit, reason, chain, reference)
+
+      reason =
+          required_reference_evidence_missing_reason(
+            :replay_request_audit,
+            chain,
+            reference,
+            replay_request_evidence_keys()
+          ) ->
+        malformed_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = common_reference_conflict_reason(:replay_request_audit, chain, reference) ->
+        conflict_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = side_effect_safety_mismatch_reason(:replay_request_audit, chain, reference) ->
+        conflict_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = execution_key_mismatch_reason(:replay_request_audit, chain, reference) ->
+        stale_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = outcome_binding_mismatch_reason(:replay_request_audit, chain, reference) ->
+        stale_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = closeout_binding_missing_reason(:replay_request_audit, chain, reference) ->
+        malformed_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = closeout_binding_mismatch_reason(:replay_request_audit, chain, reference) ->
+        stale_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = replay_decision_binding_missing_reason(:replay_request_audit, chain, reference) ->
+        malformed_reference(:replay_request_audit, reason, chain, reference)
+
+      reason = replay_decision_binding_mismatch_reason(:replay_request_audit, chain, reference) ->
+        stale_reference(:replay_request_audit, reason, chain, reference)
+
+      reason =
+          reference_evidence_mismatch_reason(
+            :replay_request_audit,
+            chain,
+            reference,
+            replay_request_evidence_keys()
+          ) ->
+        stale_reference(:replay_request_audit, reason, chain, reference)
+
+      true ->
+        current_reference(
+          :replay_request_audit,
+          reference_reason(reference, "replay_request_audit_reference_current"),
+          reference_action(reference),
+          chain,
+          reference,
+          %{request_status: status, outcome_link_status: blank_to_nil(outcome_link_status)}
+        )
+    end
+  end
+
+  defp current_reference(type, reason, action, chain, reference, extra) do
+    reference_status_snapshot(type, "current", reason, action, chain, reference, extra)
+  end
+
+  defp stale_reference(type, reason, chain, reference) do
+    reference_status_snapshot(type, "stale", reason, stale_reference_action(type), chain, reference)
+  end
+
+  defp conflict_reference(type, reason, chain, reference) do
+    reference_status_snapshot(type, "conflict", reason, conflict_reference_action(type), chain, reference)
+  end
+
+  defp malformed_reference(type, reason, chain, reference) do
+    reference_status_snapshot(type, "malformed", reason, malformed_reference_action(type), chain, reference)
+  end
+
+  defp unsupported_reference(type, reason, chain, reference) do
+    reference_status_snapshot(type, "unsupported", reason, unsupported_reference_action(type), chain, reference)
+  end
+
+  defp reference_status_snapshot(type, status, reason, action, chain, reference, extra \\ %{}) do
+    type_name = reference_type_name(type)
+    status = normalize_reference_status(status)
+    reference = if is_map(reference), do: reference, else: %{}
+
+    %{
+      reference_type: type_name,
+      status: status,
+      reason_code: safe_status(reason) |> blank_to_default("#{type_name}_reference_#{status}"),
+      action_code: safe_status(action) |> blank_to_nil(),
+      closure_status: safe_status(value(chain, :closure_status)) |> blank_to_nil(),
+      replay_key: optional_string(reference, :replay_key) || optional_string(chain, :replay_key),
+      attempt_fingerprint: optional_string(reference, :attempt_fingerprint),
+      closeout_record_fingerprint: optional_string(reference, :closeout_record_fingerprint),
+      replay_decision_fingerprint: optional_string(reference, :replay_decision_fingerprint),
+      request_fingerprint: optional_string(reference, :request_fingerprint),
+      audit_record_fingerprint: optional_string(reference, :audit_record_fingerprint),
+      outcome_fingerprint: optional_string(reference, :outcome_fingerprint),
+      outcome_status: safe_status(value(reference, :outcome_status)) |> blank_to_nil(),
+      safe_evidence_fingerprint: reference_status_fingerprint(type_name, status, chain, reference, reason)
+    }
+    |> Map.merge(extra)
+    |> compact_map()
+  end
+
+  defp reference_status_fingerprint(type_name, status, chain, reference, reason) do
+    %{
+      reference_type: type_name,
+      status: status,
+      reason_code: safe_status(reason),
+      project_id: optional_string(chain, :project_id),
+      operation: operation_name(value(chain, :operation)),
+      side_effect_source: source_name(value(chain, :side_effect_source)),
+      replay_key: optional_string(reference, :replay_key) || optional_string(chain, :replay_key),
+      closeout_record_fingerprint: optional_string(reference, :closeout_record_fingerprint),
+      replay_decision_fingerprint: optional_string(reference, :replay_decision_fingerprint),
+      request_fingerprint: optional_string(reference, :request_fingerprint),
+      audit_record_fingerprint: optional_string(reference, :audit_record_fingerprint),
+      outcome_fingerprint: optional_string(reference, :outcome_fingerprint),
+      safe_evidence_fingerprints:
+        reference
+        |> value(:safe_evidence_fingerprints)
+        |> SafeSummary.sanitize_map(output_keys: :preserve)
+    }
+    |> fingerprint()
+  end
+
+  defp reference_reason(reference, default) do
+    safe_status(value(reference, :reason_code) || value(reference, :reason))
+    |> blank_to_default(default)
+  end
+
+  defp reference_action(reference) do
+    safe_status(value(reference, :action_code) || value(reference, :action))
+    |> blank_to_nil()
+  end
+
+  defp stale_reference_action(:closeout), do: "refresh_execution_outcome_closeout"
+  defp stale_reference_action(:replay_decision), do: "refresh_cutover_replay_decision"
+  defp stale_reference_action(:replay_request_audit), do: "refresh_cutover_replay_request_audit"
+
+  defp conflict_reference_action(:closeout), do: "resolve_closeout_reference_conflict"
+  defp conflict_reference_action(:replay_decision), do: "resolve_replay_decision_reference_conflict"
+  defp conflict_reference_action(:replay_request_audit), do: "resolve_replay_request_audit_reference_conflict"
+
+  defp malformed_reference_action(:closeout), do: "fix_execution_outcome_closeout_reference"
+  defp malformed_reference_action(:replay_decision), do: "fix_cutover_replay_decision_reference"
+  defp malformed_reference_action(:replay_request_audit), do: "fix_cutover_replay_request_audit_reference"
+
+  defp unsupported_reference_action(:closeout), do: "use_supported_execution_outcome_closeout_reference"
+  defp unsupported_reference_action(:replay_decision), do: "use_supported_cutover_replay_decision_reference"
+  defp unsupported_reference_action(:replay_request_audit), do: "use_supported_cutover_replay_request_audit_reference"
+
+  defp common_reference_validation(type, reference) do
+    operation = operation_name(value(reference, :operation))
+    source = source_name(value(reference, :side_effect_source))
+    source_operation_mismatch? = operation in @operations and source in @sources and Map.fetch!(@source_operations, source) != operation
+
+    cond do
+      blank?(optional_string(reference, :project_id)) ->
+        {:malformed, "#{reference_type_name(type)}_project_id_missing"}
+
+      provider_scope_snapshot(value(reference, :provider_scope) || %{}) == %{} ->
+        {:malformed, "#{reference_type_name(type)}_provider_scope_missing"}
+
+      operation == "unknown_operation" ->
+        {:malformed, "#{reference_type_name(type)}_operation_missing"}
+
+      operation not in @operations ->
+        {:unsupported, "#{reference_type_name(type)}_operation_unsupported"}
+
+      source == "unknown_source" ->
+        {:malformed, "#{reference_type_name(type)}_source_missing"}
+
+      source not in @sources ->
+        {:unsupported, "#{reference_type_name(type)}_source_unsupported"}
+
+      source_operation_mismatch? ->
+        {:unsupported, "#{reference_type_name(type)}_source_operation_mismatch"}
+
+      source = value(reference, :source) ->
+        if safe_status(source) in @operator_sources do
+          nil
+        else
+          {:unsupported, "#{reference_type_name(type)}_operator_source_unsupported"}
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp reference_validation_status({:malformed, reason}, type, chain, reference), do: malformed_reference(type, reason, chain, reference)
+
+  defp reference_validation_status({:unsupported, reason}, type, chain, reference) do
+    unsupported_reference(type, reason, chain, reference)
+  end
+
+  defp common_reference_conflict_reason(type, chain, reference) do
+    type_name = reference_type_name(type)
+
+    cond do
+      bound?(optional_string(reference, :project_id)) and
+          optional_string(reference, :project_id) != optional_string(chain, :project_id) ->
+        "#{type_name}_project_mismatch"
+
+      value(reference, :provider_scope) != %{} and
+          not provider_scope_matches?(value(reference, :provider_scope), value(chain, :provider_scope)) ->
+        "#{type_name}_provider_scope_mismatch"
+
+      operation_name(value(reference, :operation)) != operation_name(value(chain, :operation)) ->
+        "#{type_name}_operation_mismatch"
+
+      source_name(value(reference, :side_effect_source)) != source_name(value(chain, :side_effect_source)) ->
+        "#{type_name}_source_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp execution_key_mismatch_reason(type, chain, reference) do
+    type_name = reference_type_name(type)
+    reference_replay_key = optional_string(reference, :replay_key)
+    chain_replay_key = optional_string(chain, :replay_key)
+    reference_attempt = optional_string(reference, :attempt_fingerprint)
+    chain_attempt = optional_string(chain, :attempt_fingerprint)
+
+    cond do
+      bound?(reference_replay_key) and bound?(chain_replay_key) and reference_replay_key != chain_replay_key ->
+        "#{type_name}_replay_key_mismatch"
+
+      bound?(reference_attempt) and bound?(chain_attempt) and reference_attempt != chain_attempt ->
+        "#{type_name}_attempt_fingerprint_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp outcome_binding_mismatch_reason(type, chain, reference) do
+    type_name = reference_type_name(type)
+    reference_outcome = optional_string(reference, :outcome_fingerprint)
+    chain_outcome = get_in_value(chain, [:outcome, :evidence_fingerprint])
+    reference_status = safe_status(value(reference, :outcome_status))
+    chain_status = safe_status(get_in_value(chain, [:outcome, :status]))
+
+    cond do
+      bound?(reference_outcome) and bound?(chain_outcome) and reference_outcome != chain_outcome ->
+        "#{type_name}_outcome_fingerprint_mismatch"
+
+      bound?(reference_status) and bound?(chain_status) and reference_status != chain_status ->
+        "#{type_name}_outcome_status_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp closeout_binding_mismatch_reason(type, chain, reference) do
+    closeout = get_in_value(chain, [:retained_references, :closeout]) || %{}
+    type_name = reference_type_name(type)
+    expected_fingerprint = optional_string(closeout, :closeout_record_fingerprint)
+    expected_resolution = safe_status(value(closeout, :resolution_code))
+    actual_fingerprint = optional_string(reference, :closeout_record_fingerprint)
+    actual_resolution = safe_status(value(reference, :closeout_resolution_code))
+
+    cond do
+      closeout == %{} ->
+        nil
+
+      bound?(actual_fingerprint) and bound?(expected_fingerprint) and actual_fingerprint != expected_fingerprint ->
+        "#{type_name}_closeout_record_fingerprint_mismatch"
+
+      bound?(actual_resolution) and bound?(expected_resolution) and actual_resolution != expected_resolution ->
+        "#{type_name}_closeout_resolution_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp closeout_binding_missing_reason(type, chain, reference) do
+    closeout = get_in_value(chain, [:retained_references, :closeout]) || %{}
+    type_name = reference_type_name(type)
+    expected_fingerprint = optional_string(closeout, :closeout_record_fingerprint)
+    expected_resolution = safe_status(value(closeout, :resolution_code))
+    actual_fingerprint = optional_string(reference, :closeout_record_fingerprint)
+    actual_resolution = safe_status(value(reference, :closeout_resolution_code))
+
+    cond do
+      closeout == %{} ->
+        nil
+
+      bound?(expected_fingerprint) and blank?(actual_fingerprint) ->
+        "#{type_name}_closeout_record_fingerprint_missing"
+
+      bound?(expected_resolution) and blank?(actual_resolution) ->
+        "#{type_name}_closeout_resolution_missing"
+
+      true ->
+        nil
+    end
+  end
+
+  defp replay_decision_binding_mismatch_reason(type, chain, reference) do
+    decision = get_in_value(chain, [:retained_references, :replay_decision]) || %{}
+    type_name = reference_type_name(type)
+    expected_fingerprint = optional_string(decision, :replay_decision_fingerprint)
+    expected_decision = safe_status(value(decision, :decision))
+    actual_fingerprint = optional_string(reference, :replay_decision_fingerprint)
+    actual_decision = safe_status(value(reference, :replay_decision_status))
+
+    cond do
+      decision == %{} ->
+        nil
+
+      bound?(actual_fingerprint) and bound?(expected_fingerprint) and actual_fingerprint != expected_fingerprint ->
+        "#{type_name}_replay_decision_fingerprint_mismatch"
+
+      bound?(actual_decision) and bound?(expected_decision) and actual_decision != expected_decision ->
+        "#{type_name}_replay_decision_status_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp replay_decision_binding_missing_reason(type, chain, reference) do
+    decision = get_in_value(chain, [:retained_references, :replay_decision]) || %{}
+    type_name = reference_type_name(type)
+    expected_fingerprint = optional_string(decision, :replay_decision_fingerprint)
+    expected_decision = safe_status(value(decision, :decision))
+    actual_fingerprint = optional_string(reference, :replay_decision_fingerprint)
+    actual_decision = safe_status(value(reference, :replay_decision_status))
+
+    cond do
+      decision == %{} ->
+        nil
+
+      bound?(expected_fingerprint) and blank?(actual_fingerprint) ->
+        "#{type_name}_replay_decision_fingerprint_missing"
+
+      bound?(expected_decision) and blank?(actual_decision) ->
+        "#{type_name}_replay_decision_status_missing"
+
+      true ->
+        nil
+    end
+  end
+
+  defp side_effect_safety_missing_reason(type, chain, reference) do
+    type_name = reference_type_name(type)
+    expected_entered = get_in_value(chain, [:outcome, :side_effect_entered])
+    expected_may = get_in_value(chain, [:outcome, :side_effect_may_have_happened])
+
+    cond do
+      is_boolean(expected_entered) and not is_boolean(value(reference, :side_effect_entered)) ->
+        "#{type_name}_side_effect_entered_missing"
+
+      is_boolean(expected_may) and not is_boolean(value(reference, :side_effect_may_have_happened)) ->
+        "#{type_name}_side_effect_may_have_happened_missing"
+
+      true ->
+        nil
+    end
+  end
+
+  defp side_effect_safety_mismatch_reason(type, chain, reference) do
+    type_name = reference_type_name(type)
+    expected_entered = get_in_value(chain, [:outcome, :side_effect_entered])
+    expected_may = get_in_value(chain, [:outcome, :side_effect_may_have_happened])
+    actual_entered = value(reference, :side_effect_entered)
+    actual_may = value(reference, :side_effect_may_have_happened)
+
+    cond do
+      is_boolean(expected_entered) and is_boolean(actual_entered) and expected_entered != actual_entered ->
+        "#{type_name}_side_effect_entered_mismatch"
+
+      is_boolean(expected_may) and is_boolean(actual_may) and expected_may != actual_may ->
+        "#{type_name}_side_effect_may_have_happened_mismatch"
+
+      true ->
+        nil
+    end
+  end
+
+  defp required_reference_evidence_missing_reason(type, chain, reference, keys) do
+    type_name = reference_type_name(type)
+
+    Enum.find_value(keys, fn key ->
+      expected = expected_reference_evidence(chain, key)
+      actual = actual_reference_evidence(reference, key)
+
+      if bound?(expected) and blank?(actual) do
+        "#{type_name}_#{key}_missing"
+      end
+    end)
+  end
+
+  defp reference_evidence_mismatch_reason(type, chain, reference, keys) do
+    type_name = reference_type_name(type)
+
+    Enum.find_value(keys, fn key ->
+      expected = expected_reference_evidence(chain, key)
+      actual = actual_reference_evidence(reference, key)
+
+      if bound?(expected) and bound?(actual) and safe_comparable(expected) != safe_comparable(actual) do
+        "#{type_name}_#{key}_mismatch"
+      end
+    end)
+  end
+
+  defp closeout_evidence_keys do
+    [
+      :cutover_operation_request,
+      :readiness_permit,
+      :readiness_permit_decision,
+      :authorization_record,
+      :authorization_request,
+      :consumption_guard,
+      :cutover_gate,
+      :dry_run_audit,
+      :audit_history
+    ]
+  end
+
+  defp replay_decision_evidence_keys do
+    [
+      :cutover_operation_request,
+      :readiness_permit,
+      :readiness_permit_decision,
+      :authorization_record,
+      :authorization_request,
+      :consumption_guard
+    ]
+  end
+
+  defp replay_request_evidence_keys do
+    replay_decision_evidence_keys()
+  end
+
+  defp expected_reference_evidence(chain, :cutover_operation_request),
+    do:
+      get_in_value(chain, [:request, :request_fingerprint]) ||
+        safe_chain_fingerprint(chain, :cutover_operation_request)
+
+  defp expected_reference_evidence(chain, :readiness_permit),
+    do:
+      get_in_value(chain, [:readiness_permit, :permit_fingerprint]) ||
+        safe_chain_fingerprint(chain, :readiness_permit)
+
+  defp expected_reference_evidence(chain, :readiness_permit_decision),
+    do:
+      get_in_value(chain, [:readiness_permit, :decision]) ||
+        safe_chain_fingerprint(chain, :readiness_permit_decision)
+
+  defp expected_reference_evidence(chain, :authorization_record),
+    do:
+      get_in_value(chain, [:authorization, :authorization_record_fingerprint]) ||
+        safe_chain_fingerprint(chain, :authorization_record)
+
+  defp expected_reference_evidence(chain, :authorization_request),
+    do:
+      get_in_value(chain, [:authorization, :authorization_request_fingerprint]) ||
+        safe_chain_fingerprint(chain, :authorization_request)
+
+  defp expected_reference_evidence(chain, :consumption_guard),
+    do:
+      get_in_value(chain, [:consumption_guard, :decision_fingerprint]) ||
+        safe_chain_fingerprint(chain, :consumption_guard)
+
+  defp expected_reference_evidence(chain, :cutover_gate),
+    do: get_in_value(chain, [:outcome, :cutover_gate_fingerprint]) || safe_chain_fingerprint(chain, :cutover_gate)
+
+  defp expected_reference_evidence(chain, :dry_run_audit),
+    do: get_in_value(chain, [:outcome, :dry_run_audit_fingerprint]) || safe_chain_fingerprint(chain, :dry_run_audit)
+
+  defp expected_reference_evidence(chain, :audit_history),
+    do: get_in_value(chain, [:outcome, :audit_history_fingerprint]) || safe_chain_fingerprint(chain, :audit_history)
+
+  defp expected_reference_evidence(_chain, _key), do: nil
+
+  defp actual_reference_evidence(reference, :cutover_operation_request),
+    do:
+      optional_string(reference, :cutover_operation_request_fingerprint) ||
+        safe_reference_fingerprint(reference, :cutover_operation_request)
+
+  defp actual_reference_evidence(reference, :readiness_permit),
+    do:
+      optional_string(reference, :readiness_permit_fingerprint) ||
+        safe_reference_fingerprint(reference, :readiness_permit)
+
+  defp actual_reference_evidence(reference, :readiness_permit_decision),
+    do:
+      safe_status(
+        value(reference, :readiness_permit_decision) ||
+          safe_reference_fingerprint(reference, :readiness_permit_decision)
+      )
+      |> blank_to_nil()
+
+  defp actual_reference_evidence(reference, :authorization_record),
+    do:
+      optional_string(reference, :authorization_record_fingerprint) ||
+        safe_reference_fingerprint(reference, :authorization_record)
+
+  defp actual_reference_evidence(reference, :authorization_request),
+    do:
+      optional_string(reference, :authorization_request_fingerprint) ||
+        safe_reference_fingerprint(reference, :authorization_request)
+
+  defp actual_reference_evidence(reference, :consumption_guard),
+    do:
+      optional_string(reference, :consumption_guard_fingerprint) ||
+        safe_reference_fingerprint(reference, :consumption_guard)
+
+  defp actual_reference_evidence(reference, :cutover_gate),
+    do: optional_string(reference, :cutover_gate_fingerprint) || safe_reference_fingerprint(reference, :cutover_gate)
+
+  defp actual_reference_evidence(reference, :dry_run_audit),
+    do: optional_string(reference, :dry_run_audit_fingerprint) || safe_reference_fingerprint(reference, :dry_run_audit)
+
+  defp actual_reference_evidence(reference, :audit_history),
+    do: optional_string(reference, :audit_history_fingerprint) || safe_reference_fingerprint(reference, :audit_history)
+
+  defp actual_reference_evidence(_reference, _key), do: nil
+
+  defp safe_chain_fingerprint(chain, key), do: optional_string(value(chain, :safe_evidence_fingerprints) || %{}, key)
+
+  defp safe_reference_fingerprint(reference, key) do
+    evidence = value(reference, :safe_evidence_fingerprints) || reference || %{}
+    optional_string(evidence, key)
+  end
+
+  defp safe_comparable(value) when is_boolean(value), do: value
+  defp safe_comparable(value), do: safe_status(value)
+
+  defp reference_status_counts(existing, []) when is_map(existing) and map_size(existing) > 0 do
+    @reference_types
+    |> Map.new(fn type ->
+      type_atom = String.to_atom(type)
+      existing_counts = value(existing, type_atom) || value(existing, type) || %{}
+      {type_atom, reference_count_snapshot(existing_counts, [])}
+    end)
+  end
+
+  defp reference_status_counts(_existing, chains) do
+    base = Map.new(@reference_types, &{String.to_atom(&1), reference_zero_counts()})
+
+    Enum.reduce(chains, base, fn chain, acc ->
+      chain
+      |> reference_status_entries()
+      |> Enum.reduce(acc, fn {type, status}, type_acc ->
+        status_name = status |> value(:status) |> normalize_reference_status() |> String.to_atom()
+
+        Map.update(type_acc, type, Map.update(reference_zero_counts(), status_name, 1, &(&1 + 1)), fn counts ->
+          Map.update(counts, status_name, 1, &(&1 + 1))
+        end)
+      end)
+    end)
+  end
+
+  defp reference_type_status_counts(existing, [], _type) when is_map(existing) and map_size(existing) > 0 do
+    reference_count_snapshot(existing, [])
+  end
+
+  defp reference_type_status_counts(_existing, chains, type) do
+    type = reference_type_atom(type)
+
+    chains
+    |> Enum.flat_map(&reference_status_entries/1)
+    |> Enum.filter(fn {entry_type, _status} -> entry_type == type end)
+    |> Enum.reduce(reference_zero_counts(), fn {_type, status}, acc ->
+      status_name = status |> value(:status) |> normalize_reference_status() |> String.to_atom()
+      Map.update(acc, status_name, 1, &(&1 + 1))
+    end)
+  end
+
+  defp reference_count_snapshot(existing, []) when is_map(existing) do
+    @reference_statuses
+    |> Map.new(fn status ->
+      status_atom = String.to_atom(status)
+      {status_atom, non_negative_integer(value(existing, status_atom)) || 0}
+    end)
+  end
+
+  defp reference_zero_counts, do: Map.new(@reference_statuses, &{String.to_atom(&1), 0})
+
+  defp reference_status_entries(chain) do
+    case value(chain, :retained_reference_statuses) do
+      statuses when is_map(statuses) ->
+        statuses
+        |> Enum.map(fn {type, status} -> {reference_type_atom(type), status} end)
+        |> Enum.filter(fn {type, status} -> Atom.to_string(type) in @reference_types and is_map(status) end)
+
+      _statuses ->
+        []
+    end
+  end
+
+  defp recent_reference_codes(chains, key) do
+    chains
+    |> Enum.flat_map(fn chain ->
+      chain
+      |> reference_status_entries()
+      |> Enum.map(fn {_type, status} -> value(status, key) end)
+    end)
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.map(&safe_status/1)
+    |> Enum.reject(&blank?/1)
+    |> Enum.uniq()
+    |> Enum.take(5)
+  end
+
+  defp reference_type_atom(type) do
+    type_name = reference_type_name(type)
+
+    if type_name in @reference_types do
+      String.to_atom(type_name)
+    else
+      :unsupported
+    end
+  end
+
+  defp reference_type_name(type) do
+    type
+    |> safe_status()
+    |> case do
+      "replay_request" -> "replay_request_audit"
+      type_name -> type_name
+    end
+  end
+
+  defp normalize_reference_status(status) do
+    status = safe_status(status)
+    if status in @reference_statuses, do: status, else: "unsupported"
   end
 
   defp status_zero_counts, do: Map.new(@statuses, &{String.to_atom(&1), 0})
@@ -1518,6 +2714,13 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp blank?(_value), do: false
   defp blank_to_nil(value), do: if(blank?(value), do: nil, else: value)
   defp blank_to_default(value, default), do: if(blank?(value), do: default, else: value)
+
+  defp first_boolean(values) do
+    Enum.find(List.wrap(values), &is_boolean/1)
+  end
+
+  defp truthy?(value) when value in [true, "true", "1", 1, true], do: true
+  defp truthy?(_value), do: false
 
   defp compact_map(map) when is_map(map) do
     map

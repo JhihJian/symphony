@@ -293,6 +293,12 @@ consideration、permit、authorization、consumption guard 和 replay request au
 `unknown` 或 `manual_attention` outcome 只显示 `open_manual_attention`，表示需要 operator
 closeout 或人工复核。guard allowed、authorization record、closeout resolved、replay decision
 allowed 或 replay request allowed 只能作为安全引用保留，不能单独解释为成功、resolved 或允许重放。
+对于 open chain，baseline 还会把 retained closeout、replay decision 和 replay request audit 解释为
+只读 reference status：`missing`、`current`、`stale`、`conflict`、`malformed` 或
+`unsupported`，并在 summary、project summary 和 recent chain 中暴露三类 status counts 与最近
+reason/action code。reference status 只保留状态、reason/action code 和 safe fingerprint，不保存
+provider token、raw provider response、完整 prompt/transcript、完整 PR/comment body、本地私有路径或
+原始 systemd/异常堆栈。
 它还没有接入 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，也没有实现完整
 closeout/replay 聚合或 closure report 视图，不会自动 retry 或排队 replay。
 `hub_cutover_readiness_permit` /
