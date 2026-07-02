@@ -349,6 +349,8 @@ durable execution queue、自动 retry/replay、一键迁移或 legacy service t
 #171/#172 历史大票据到 #173-#195 拆分切片的覆盖矩阵和收束建议见
 [`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md)；
 该审计入口只说明覆盖状态，不自动关闭历史 issue，也不扩大 runtime 语义。
+#74 Hub mode 原始目标到已交付切片、remaining gaps 和后续最小 issue 建议的总覆盖审计见
+[`docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](docs/hub-mode-issue-74-remaining-capability-coverage-audit.md)。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

@@ -1946,6 +1946,13 @@ Runtime entrypoint:
   [`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md);
   this matrix is evidence and owner-decision support only, not a runtime execution entrypoint or
   automatic closure of historical issues.
+- Repository maintainers SHOULD also keep an auditable remaining capability coverage matrix for the
+  original #74 Hub mode goals when the epic is implemented through many smaller issues. The Symphony
+  repository baseline is documented in
+  [`docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](docs/hub-mode-issue-74-remaining-capability-coverage-audit.md);
+  this matrix maps goals, acceptance criteria, evidence, remaining gaps, and owner decisions. It is
+  an audit artifact and MUST NOT imply new provider, dispatch, worker, writeback, systemd, config,
+  retry/replay, durable queue, or legacy takeover behavior.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

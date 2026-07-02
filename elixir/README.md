@@ -751,6 +751,9 @@ evidence fingerprint/reference 不跨 project 串项。完整 runbook 见
 #171/#172 原始 closure report 范围到 #173-#195 拆分切片的覆盖矩阵和收束建议见
 [`../docs/hub-cutover-closure-report-coverage-audit.md`](../docs/hub-cutover-closure-report-coverage-audit.md)；
 该文档只是审计入口，不新增 Hub runtime/API/Dashboard 行为。
+#74 Hub mode 原始目标、已交付切片、remaining gaps 和后续最小 issue 建议的总覆盖审计见
+[`../docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](../docs/hub-mode-issue-74-remaining-capability-coverage-audit.md)；
+该文档只作为证据索引和 Owner 决策输入，不新增 Elixir runtime/API/Dashboard 语义。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
