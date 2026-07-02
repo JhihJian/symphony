@@ -30,9 +30,24 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
     "closed_succeeded",
     "no_chain"
   ]
+  @status_keys [
+    :malformed,
+    :conflict,
+    :stale,
+    :unsupported,
+    :open_manual_attention,
+    :open_retryable,
+    :no_request,
+    :closed_no_side_effect,
+    :closed_succeeded,
+    :no_chain
+  ]
+  @status_key_by_status Map.new(Enum.zip(@statuses, @status_keys))
   @closed_statuses ["closed_succeeded", "closed_no_side_effect"]
   @reference_types ["closeout", "replay_decision", "replay_request_audit"]
+  @reference_type_keys [:closeout, :replay_decision, :replay_request_audit]
   @reference_statuses ["missing", "current", "stale", "conflict", "malformed", "unsupported"]
+  @reference_status_keys [:missing, :current, :stale, :conflict, :malformed, :unsupported]
 
   @boundary_flags %{
     read_only: true,
@@ -676,9 +691,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
 
     counts =
       @statuses
-      |> Map.new(fn status ->
-        key = String.to_atom(status)
-
+      |> Enum.zip(@status_keys)
+      |> Map.new(fn {status, key} ->
         count =
           non_negative_integer(value(source, "#{status}_count")) ||
             non_negative_integer(value(source, key)) ||
@@ -688,7 +702,7 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
       end)
 
     if Enum.all?(counts, fn {_status, count} -> count == 0 end) do
-      Map.put(counts, String.to_atom(normalize_status(fallback_status)), 1)
+      Map.put(counts, status_key(fallback_status), 1)
     else
       counts
     end
@@ -699,9 +713,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
     nested = value(source, :reference_status_counts) || source
 
     @reference_types
-    |> Map.new(fn type ->
-      key = String.to_atom(type)
-
+    |> Enum.zip(@reference_type_keys)
+    |> Map.new(fn {type, key} ->
       counts =
         value(source, "#{type}_reference_status_counts") ||
           value(source, key) ||
@@ -715,8 +728,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
 
   defp reference_count_snapshot(counts) do
     @reference_statuses
-    |> Map.new(fn status ->
-      key = String.to_atom(status)
+    |> Enum.zip(@reference_status_keys)
+    |> Map.new(fn {_status, key} ->
       {key, non_negative_integer(value(counts, key), 0) || 0}
     end)
   end
@@ -881,6 +894,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureReportPacket do
     status = safe_code(status)
     if status in @statuses, do: status, else: "no_chain"
   end
+
+  defp status_key(status), do: Map.get(@status_key_by_status, normalize_status(status), :no_chain)
 
   defp safe_code(nil), do: nil
 

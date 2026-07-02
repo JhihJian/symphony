@@ -329,9 +329,15 @@ safe evidence fingerprint。这个 packet 会保守 roll up 多 project 状态�
 conflict、malformed 或 unsupported 时，device report 不显示 fully closed；`closed_no_side_effect`
 只表示无副作用闭环，不表示 operation success；`open_retryable` 只要求显式后续判断，不表示自动 retry、
 queued replay 或执行中；`no_chain` / `no_request` 不表示 pending execution、migration queued 或
-legacy takeover。这个切片仍不接 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，
-也不重新聚合 raw cutover evidence，不调用 provider/dispatch/worker/writeback/systemd/config，不新增
-durable queue、一键迁移、自动 replay 或 legacy takeover。
+legacy takeover。Hub Runtime 现在会从已有 chain/conclusion safe snapshot 派生
+`hub_cutover_closure_report_packet`，Presenter 会在 `/api/v1/state` 输出该只读 packet；
+`hub_device_observability.cutover_closure_report_packet`、
+`hub_device_observability.overview.cutover_closure_report_packet` 和每个项目的
+`cutover_closure_report_packet` / `detail.closure_report_packet` 也会暴露 report status、operator
+conclusion、section status、required action/blocked-by counts、provider scope 和 safe evidence
+fingerprint/reference。这个接入不新增 Live Dashboard UI，不重新聚合 raw cutover evidence，不调用
+provider/dispatch/worker/writeback/systemd/config，不新增 durable queue、一键迁移、自动 retry/replay
+或 legacy takeover，也不是完整 #171 operator-facing closure report。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
@@ -436,9 +442,10 @@ and inspect `hub_activation_preflight`,
 `hub_cutover_replay_request_audit`,
 `hub_device_observability.cutover_replay_request_audit`,
 `hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
-`hub_device_observability.cutover_closure_chain`, and
-`hub_device_observability.cutover_closure_conclusion`。这只是给 API 消费者和 Live Dashboard
-新增安全结论数据，不是新增执行入口。
+`hub_cutover_closure_report_packet`, `hub_device_observability.cutover_closure_chain`,
+`hub_device_observability.cutover_closure_conclusion`, and
+`hub_device_observability.cutover_closure_report_packet`。这只是给 API 消费者和后续 Dashboard
+切片新增安全结论数据，不是新增执行入口。
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.
