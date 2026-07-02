@@ -1838,17 +1838,22 @@ Runtime entrypoint:
   raw config, raw systemd output, local private paths, full comment/PR bodies, or exception stack
   traces.
 - 最小 closure chain 状态 SHOULD distinguish `no_chain`, `no_request`, `closed_succeeded`,
-  `closed_no_side_effect`, `conflict`, `stale`, `malformed`, and `unsupported` or equivalent
-  categories. `closed_succeeded` MUST come only from a matching `succeeded` outcome with unchanged
-  project/scope/source/operation/key/fingerprint evidence. Guard allowed, authorization records,
-  resolved closeouts, replay decisions, or replay request audits MUST NOT independently imply
-  success. Guard/no-authorization/validation blocks MAY close only as `closed_no_side_effect` when
-  side-effect entry is explicitly false and may-have-happened is not true.
+  `closed_no_side_effect`, `open_retryable`, `open_manual_attention`, `conflict`, `stale`,
+  `malformed`, and `unsupported` or equivalent categories. `closed_succeeded` MUST come only from a
+  matching `succeeded` outcome with unchanged project/scope/source/operation/key/fingerprint
+  evidence. A matching `retryable` outcome SHOULD remain open as `open_retryable` until a later
+  explicit retry consideration rechecks permit, authorization, consumption guard, and replay request
+  audit evidence. Matching `unknown` or `manual_attention` outcomes SHOULD remain open as
+  `open_manual_attention` until operator closeout or manual review. Guard allowed, authorization
+  records, resolved closeouts, replay decisions, or replay request audits MUST NOT independently
+  imply success, resolved closeout, or retry allowed. Guard/no-authorization/validation blocks MAY
+  close only as `closed_no_side_effect` when side-effect entry is explicitly false and
+  may-have-happened is not true.
 - 最小 closure chain 合同 MUST remain read-only. It MUST NOT create authorization, consume
   authorization, call providers, dispatch work, start workers, write providers, operate systemd,
   edit configuration, queue retries, auto-replay side effects, or claim legacy service ownership.
   Retryable/manual-attention outcomes and closeout/replay aggregations MAY be retained as safe
-  references or reported as unsupported/open until later closure-report slices define their full
+  references or reported as open/unsupported until later closure-report slices define their full
   semantics.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A

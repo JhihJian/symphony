@@ -674,10 +674,14 @@ closure safe summary，看到 project/provider scope、operation/source、attemp
 request、permit、authorization、guard、outcome、safe evidence fingerprint 和安全时间摘要的绑定关系。
 `closed_succeeded` 只能来自 evidence 未漂移的 matching `succeeded` outcome；guard 阻断、无
 authorization 或 validation 阻断且 side effect 明确未进入时显示 `closed_no_side_effect`，不会显示
-operation 成功。scope/source/operation/key/fingerprint 不匹配、字段不足、malformed 或 unsupported
-输入不会显示成功；closeout、replay decision、replay request audit、retryable/manual-attention outcome
-只会作为安全引用保留或标记 unsupported。它不会创建/消费 authorization、调用 provider、dispatch、
-启动 worker、writeback、操作 systemd 或改配置，也还没有接入 Runtime/API/Dashboard。
+operation 成功。matching `retryable` outcome 显示 `open_retryable`，表示等待后续显式 retry
+consideration 重新判断 permit、authorization、consumption guard 和 replay request audit；matching
+`unknown` 或 `manual_attention` outcome 显示 `open_manual_attention`，表示需要 operator closeout 或
+人工复核。scope/source/operation/key/fingerprint 不匹配、字段不足、malformed 或 unsupported 输入仍
+优先显示 `stale`、`conflict`、`malformed` 或 `unsupported`。closeout、replay decision、replay
+request audit 只作为安全引用保留，不能把 open outcome 推导为 success、resolved 或 retry allowed。它不会
+创建/消费 authorization、调用 provider、dispatch、启动 worker、writeback、操作 systemd、改配置、
+自动 retry 或 replay，也还没有接入 Runtime/API/Dashboard。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

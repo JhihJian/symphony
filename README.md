@@ -285,12 +285,16 @@ pending execution.
 contract baseline。它只从已经脱敏的 summary 或测试 fixture 构造 safe summary，绑定同一
 project/provider scope、operation/source、attempt fingerprint 或 replay key、cutover request、
 readiness permit、execution authorization、authorization consumption guard、outcome 与 evidence
-fingerprint。这个 baseline 只稳定区分 `no_chain`、`no_request`、`closed_succeeded`、
-`closed_no_side_effect`、`conflict`、`stale`、`malformed` 和 `unsupported`：只有匹配的
-`succeeded` outcome 可以显示 `closed_succeeded`；guard allowed、authorization record、closeout
-resolved、replay decision allowed 或 replay request allowed 只能作为安全引用保留，不能单独解释为成功。
+fingerprint。这个 baseline 稳定区分 `no_chain`、`no_request`、`closed_succeeded`、
+`closed_no_side_effect`、`open_retryable`、`open_manual_attention`、`conflict`、`stale`、
+`malformed` 和 `unsupported`：只有匹配的 `succeeded` outcome 可以显示 `closed_succeeded`；
+matching `retryable` outcome 只显示 `open_retryable`，表示后续仍要重新经过显式 retry
+consideration、permit、authorization、consumption guard 和 replay request audit；matching
+`unknown` 或 `manual_attention` outcome 只显示 `open_manual_attention`，表示需要 operator
+closeout 或人工复核。guard allowed、authorization record、closeout resolved、replay decision
+allowed 或 replay request allowed 只能作为安全引用保留，不能单独解释为成功、resolved 或允许重放。
 它还没有接入 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，也没有实现完整
-retry/manual attention、closeout/replay 聚合或 closure report 视图。
+closeout/replay 聚合或 closure report 视图，不会自动 retry 或排队 replay。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
