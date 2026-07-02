@@ -725,7 +725,14 @@ unsupported 时不显示 fully closed；`closed_no_side_effect` 不显示 operat
 不显示自动 retry、queued replay、pending retry 或执行中；`no_chain` / `no_request` 不显示 pending
 execution、migration queued 或 legacy takeover。这个模块只消费脱敏 safe fields，不重新聚合 raw
 cutover evidence，不调用 provider、dispatch、worker starter、writeback、systemd 或 config mutation
-路径；Runtime/API/DeviceObservability/Presenter/Dashboard 接入留给后续小切片。
+路径。Hub Runtime 现在会从 chain/conclusion safe snapshot 派生
+`hub_cutover_closure_report_packet`，Presenter 会在 `/api/v1/state` 输出该只读 packet；
+`hub_device_observability.cutover_closure_report_packet`、
+`hub_device_observability.overview.cutover_closure_report_packet` 和每个项目的
+`cutover_closure_report_packet` / `detail.closure_report_packet` 会暴露 report status、operator
+conclusion、section status、required action/blocked-by counts、provider scope 和 safe evidence
+fingerprint/reference。这个 Runtime/API 接入仍不是完整 #171 execution closure report，不新增 Live
+Dashboard UI、自动 retry/replay 队列、durable execution queue、一键迁移或 legacy service takeover。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -772,9 +779,10 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_cutover_replay_request_audit`,
    `hub_device_observability.cutover_replay_request_audit`,
    `hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
-   `hub_device_observability.cutover_closure_chain`, and
-   `hub_device_observability.cutover_closure_conclusion`。API 会给消费者暴露 conclusion 数据，
-   但不新增 Dashboard UI。The Dashboard shows the
+   `hub_cutover_closure_report_packet`, `hub_device_observability.cutover_closure_chain`,
+   `hub_device_observability.cutover_closure_conclusion`, and
+   `hub_device_observability.cutover_closure_report_packet`。API 会给消费者暴露 conclusion 和 report
+   packet 安全数据，但不新增 Dashboard UI。The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
    permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
    execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,

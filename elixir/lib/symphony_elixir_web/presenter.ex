@@ -12,6 +12,7 @@ defmodule SymphonyElixirWeb.Presenter do
     CutoverAuthorizationConsumptionGuard,
     CutoverClosureChain,
     CutoverClosureConclusion,
+    CutoverClosureReportPacket,
     CutoverExecutionAuthorization,
     CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
@@ -67,6 +68,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_cutover_replay_request_audit(snapshot)
         |> maybe_put_hub_cutover_closure_chain(snapshot)
         |> maybe_put_hub_cutover_closure_conclusion(snapshot)
+        |> maybe_put_hub_cutover_closure_report_packet(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -268,6 +270,40 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverClosureConclusion.observability_snapshot(hub_cutover_closure_conclusion) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_closure_conclusion, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_closure_report_packet(payload, snapshot) do
+    hub_cutover_closure_report_packet =
+      Map.get(snapshot, :hub_cutover_closure_report_packet) ||
+        Map.get(snapshot, "hub_cutover_closure_report_packet")
+
+    hub_cutover_closure_chain =
+      Map.get(snapshot, :hub_cutover_closure_chain) ||
+        Map.get(snapshot, "hub_cutover_closure_chain")
+
+    hub_cutover_closure_conclusion =
+      Map.get(snapshot, :hub_cutover_closure_conclusion) ||
+        Map.get(snapshot, "hub_cutover_closure_conclusion")
+
+    source =
+      cond do
+        is_map(hub_cutover_closure_report_packet) ->
+          hub_cutover_closure_report_packet
+
+        is_map(hub_cutover_closure_chain) or is_map(hub_cutover_closure_conclusion) ->
+          %{
+            hub_cutover_closure_chain: hub_cutover_closure_chain,
+            hub_cutover_closure_conclusion: hub_cutover_closure_conclusion
+          }
+
+        true ->
+          nil
+      end
+
+    case CutoverClosureReportPacket.observability_snapshot(source) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_closure_report_packet, safe_snapshot)
     end
   end
 

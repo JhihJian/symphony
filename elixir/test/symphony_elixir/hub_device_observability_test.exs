@@ -224,6 +224,18 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projection.overview.cutover_closure_conclusion.pending_execution == false
     assert projection.overview.cutover_closure_conclusion.pending_retry == false
     assert projection.overview.cutover_closure_conclusion.queued_replay == false
+    assert projection.cutover_closure_report_packet.report_status == "retry_consideration_required"
+    assert projection.cutover_closure_report_packet.operator_conclusion == "waiting_explicit_retry_consideration"
+    assert projection.cutover_closure_report_packet.fully_closed == false
+    assert projection.cutover_closure_report_packet.operation_success == false
+    assert projection.cutover_closure_report_packet.boundary_flags.auto_retry_allowed == false
+    assert projection.cutover_closure_report_packet.boundary_flags.auto_replay_allowed == false
+    assert projection.overview.cutover_closure_report_packet.report_status == "retry_consideration_required"
+    assert projection.overview.cutover_closure_report_packet.operator_conclusion == "waiting_explicit_retry_consideration"
+    assert projection.overview.cutover_closure_report_packet.required_action_count == 2
+    assert projection.overview.cutover_closure_report_packet.blocked_by_count == 1
+    assert projection.overview.cutover_closure_report_packet.closure_chain.status == "open_retryable"
+    assert is_binary(projection.overview.cutover_closure_report_packet.safe_evidence_fingerprint)
 
     projects = Map.new(projection.projects, &{&1.project_id, &1})
     assert projects["alpha"].cutover_closure_chain.status == "open_retryable"
@@ -235,6 +247,15 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["alpha"].detail.closure_conclusion.safe_evidence_fingerprints["outcome"] == "alpha-outcome-fp"
     assert projects["alpha"].detail.closure_conclusion.auto_retry_allowed == false
     assert projects["alpha"].detail.closure_conclusion.auto_replay_allowed == false
+    assert projects["alpha"].cutover_closure_report_packet.report_status == "retry_consideration_required"
+    assert projects["alpha"].cutover_closure_report_packet.closure_chain_status == "open_retryable"
+    assert projects["alpha"].cutover_closure_report_packet.provider_scope["key"] == "github:o/r"
+    assert projects["alpha"].cutover_closure_report_packet.required_action_codes == ["request_explicit_retry_consideration"]
+    assert projects["alpha"].cutover_closure_report_packet.safe_evidence_fingerprints["outcome"] == "alpha-outcome-fp"
+    assert projects["alpha"].detail.closure_report_packet.summary_code == "closure_open_retryable_waiting_explicit_consideration"
+    assert projects["alpha"].detail.closure_report_packet.safe_evidence_fingerprints["outcome"] == "alpha-outcome-fp"
+    assert projects["alpha"].detail.closure_report_packet.auto_retry_allowed == false
+    assert projects["alpha"].detail.closure_report_packet.auto_replay_allowed == false
     assert projects["alpha"].detail.identity.provider_scope_key == "github:o/r"
     assert projects["beta"].cutover_closure_chain.status == "closed_succeeded"
     assert projects["beta"].detail.closure_chain.status == "closed_succeeded"
@@ -243,9 +264,16 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert projects["beta"].cutover_closure_conclusion.operation_success == true
     assert projects["beta"].cutover_closure_conclusion.provider_scope["key"] == "gitlab:g/p"
     assert projects["beta"].detail.closure_conclusion.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
+    assert projects["beta"].cutover_closure_report_packet.report_status in ["closed_succeeded_review", "fully_closed"]
+    assert projects["beta"].cutover_closure_report_packet.closure_chain_status == "closed_succeeded"
+    assert projects["beta"].cutover_closure_report_packet.provider_scope["key"] == "gitlab:g/p"
+    assert projects["beta"].cutover_closure_report_packet.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
+    assert projects["beta"].detail.closure_report_packet.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
     assert projects["beta"].detail.identity.provider_scope_key == "gitlab:g/p"
     refute projects["alpha"].detail.closure_chain.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
     refute projects["alpha"].detail.closure_conclusion.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
+    refute projects["alpha"].detail.closure_report_packet.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
+    refute projects["beta"].detail.closure_report_packet.safe_evidence_fingerprints["outcome"] == "alpha-outcome-fp"
   end
 
   test "builds ready dry-run and hub-management decisions from safe summaries" do

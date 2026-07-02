@@ -1914,8 +1914,20 @@ Runtime entrypoint:
   prompt/transcript、full comment/PR body、local private paths、raw config、raw systemd output 或
   exception stack traces, and MUST NOT create/consume authorization, call provider/dispatch/worker
   starter/writeback/systemd/config-mutation paths, auto retry/replay, or take over legacy services.
-  Runtime/API/Dashboard exposure of this packet is a later integration slice, not required by this
-  baseline.
+- Hub Runtime/API-safe snapshots MAY expose this packet as `hub_cutover_closure_report_packet`,
+  derived only from existing chain/conclusion safe snapshots or equivalent safe fixtures. Presenter
+  `/api/v1/state` MAY include the same device-level safe summary and MUST degrade safely for
+  legacy/non-Hub snapshots, nil/missing chain or conclusion inputs, summary-error-like maps, and
+  incompatible inputs without crashing or implying pending execution, automatic retry, queued
+  replay, migration queued, or legacy takeover. `hub_device_observability` MAY expose the same
+  packet at top level, overview, per-project summary, and project detail. Overview SHOULD express
+  report status, operator conclusion/severity/attention, required-action counts, blocked-by counts,
+  section status, and recent safe evidence reference/fingerprint. Project detail SHOULD express each
+  project's report status, closure-chain status, operator conclusion, required actions, blocked-by,
+  provider scope, and safe evidence fingerprint/reference. This Runtime/API integration MUST remain
+  a read-only organization layer over chain/conclusion safe snapshots; it is not full #171 execution
+  closure report, not a Dashboard UI requirement, not an automatic retry/replay queue, not a durable
+  execution queue, not one-click migration, and not legacy service takeover.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

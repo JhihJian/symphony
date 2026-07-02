@@ -226,10 +226,13 @@ operator-facing closure report。
 只把已有 chain/conclusion safe snapshot 或等价 fixture 组织成设备级和项目级只读 report 输入。它会保留
 report version、generated_at、只读边界、report status、operator conclusion、required action、
 blocked-by、closure-chain counts/reference counts 和 safe evidence fingerprint，并保证 project/provider
-scope、evidence reference 与 action code 不串项。部署语义不变：这个 packet 不接 Runtime
-`/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，不重新读取 raw cutover evidence，不创建或
-消费 authorization，不调用 provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，不新增
-durable queue、一键迁移或 legacy service takeover。
+scope、evidence reference 与 action code 不串项。Hub Runtime/API 现在会把它暴露为
+`hub_cutover_closure_report_packet`，并在 `hub_device_observability.cutover_closure_report_packet`、
+`hub_device_observability.overview.cutover_closure_report_packet` 和项目 detail 中给出对应安全摘要。
+部署语义不变：这个 packet 仍只消费 chain/conclusion safe snapshot，不重新读取 raw cutover evidence，
+不创建或消费 authorization，不调用 provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，
+不新增 durable queue、一键迁移、Live Dashboard UI 或 legacy service takeover，也不是完整 #171
+operator-facing closure report。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -290,7 +293,10 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   overview_cutover_closure_chain: .hub_device_observability.overview.cutover_closure_chain,
   cutover_closure_conclusion: .hub_cutover_closure_conclusion,
   device_cutover_closure_conclusion: .hub_device_observability.cutover_closure_conclusion,
-  overview_cutover_closure_conclusion: .hub_device_observability.overview.cutover_closure_conclusion
+  overview_cutover_closure_conclusion: .hub_device_observability.overview.cutover_closure_conclusion,
+  cutover_closure_report_packet: .hub_cutover_closure_report_packet,
+  device_cutover_closure_report_packet: .hub_device_observability.cutover_closure_report_packet,
+  overview_cutover_closure_report_packet: .hub_device_observability.overview.cutover_closure_report_packet
 }'
 ```
 
