@@ -448,6 +448,12 @@ Replay summary behavior:
 - Replay summaries SHOULD expose conflicts/orphans and manual-attention items, for example active
   workspace leases that do not reference active attempts or non-idempotent writebacks whose result
   is `unknown`.
+- A repository MAY keep a deterministic restart/replay acceptance fixture that serializes the same
+  safe runtime ledger facts through snapshot reload, replay summary, device observability, and
+  API/Dashboard-safe payloads. Such a fixture is evidence for explaining recoverable facts after a
+  restart; it MUST NOT be interpreted as a database/WAL, durable execution queue, automatic
+  retry/replay mechanism, provider executor, worker starter, systemd hook, workspace hook, or
+  legacy service takeover.
 
 Safety invariants:
 
@@ -1997,6 +2003,10 @@ Compatibility boundary:
   dispatch boundary. They do not by themselves implement a provider poll loop,
   database/transaction backend, cross-process distributed lock, full Hub scheduler, or real provider
   execution.
+- A restart/replay safe fixture baseline MAY prove that current ledger facts can be reloaded and
+  consistently interpreted by RuntimeLedger replay, DeviceObservability, and `/api/v1/state`.
+  This remains a read-only validation artifact and MUST NOT imply automatic redispatch, workspace
+  cleanup, provider writeback replay, or a new persistent runtime backend.
 - Hub provider request governance defines the model and in-memory scheduling contract for a shared
   provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
   snapshots from that contract. A Hub poll tick skeleton may execute selected candidate-scan
