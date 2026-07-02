@@ -10,6 +10,7 @@ defmodule SymphonyElixirWeb.Presenter do
     CandidateIntake,
     CutoverAuditHistory,
     CutoverAuthorizationConsumptionGuard,
+    CutoverClosureChain,
     CutoverExecutionAuthorization,
     CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
@@ -63,6 +64,7 @@ defmodule SymphonyElixirWeb.Presenter do
         |> maybe_put_hub_cutover_execution_outcome_closeout(snapshot)
         |> maybe_put_hub_cutover_replay_decision(snapshot)
         |> maybe_put_hub_cutover_replay_request_audit(snapshot)
+        |> maybe_put_hub_cutover_closure_chain(snapshot)
         |> maybe_put_hub_project_registry(snapshot)
         |> maybe_put_hub_device_observability(snapshot)
         |> maybe_put_hub_poll_coordination(snapshot)
@@ -240,6 +242,17 @@ defmodule SymphonyElixirWeb.Presenter do
     case CutoverReplayRequestAudit.observability_snapshot(hub_cutover_replay_request_audit) do
       nil -> payload
       safe_snapshot -> Map.put(payload, :hub_cutover_replay_request_audit, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_closure_chain(payload, snapshot) do
+    hub_cutover_closure_chain =
+      Map.get(snapshot, :hub_cutover_closure_chain) ||
+        Map.get(snapshot, "hub_cutover_closure_chain")
+
+    case CutoverClosureChain.observability_snapshot(hub_cutover_closure_chain) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_closure_chain, safe_snapshot)
     end
   end
 

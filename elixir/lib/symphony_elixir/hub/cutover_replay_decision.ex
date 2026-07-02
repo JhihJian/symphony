@@ -455,62 +455,72 @@ defmodule SymphonyElixir.Hub.CutoverReplayDecision do
     allowed = value(decision, :allowed) == true and decision_name in @terminal_decisions
     reason_code = safe_status(value(decision, :reason_code)) |> blank_to_default(default_reason(decision_name))
     action_code = safe_status(value(decision, :action_code)) |> blank_to_nil()
+    authorization_guard = value(decision, :authorization_consumption_guard)
 
     requires_attention? =
       truthy?(value(decision, :requires_operator_attention)) or requires_operator_attention?(decision_name)
 
-    %{
-      version: positive_integer(value(decision, :version)) || @version,
-      project_id: optional_string(decision, :project_id),
-      provider_scope: provider_scope_snapshot(value(decision, :provider_scope) || %{}),
-      operation: operation_name(value(decision, :operation)),
-      side_effect_source: source_name(value(decision, :side_effect_source) || value(decision, :source)),
-      replay_key: optional_string(decision, :replay_key) || optional_string(decision, :outcome_replay_key),
-      decision: decision_name,
-      allowed: allowed,
-      reason_code: reason_code,
-      action_code: action_code,
-      reason_codes:
-        decision
-        |> list_value(:reason_codes)
-        |> Kernel.++([reason_code])
-        |> string_list()
-        |> Enum.uniq()
-        |> Enum.sort(),
-      required_operator_actions: action_snapshots(value(decision, :required_operator_actions) || List.wrap(action_code)),
-      unresolved_outcome: maybe_outcome_snapshot(value(decision, :unresolved_outcome)),
-      outcome_replay_key: optional_string(decision, :outcome_replay_key) || optional_string(decision, :replay_key),
-      outcome_fingerprint: optional_string(decision, :outcome_fingerprint),
-      outcome_status: outcome_status(value(decision, :outcome_status)),
-      outcome_side_effect:
-        side_effect_snapshot(
-          value(decision, :outcome_side_effect),
-          value(decision, :unresolved_outcome) || decision
-        ),
-      matching_closeout: maybe_closeout_snapshot(value(decision, :matching_closeout)),
-      closeout_record_fingerprint: optional_string(decision, :closeout_record_fingerprint),
-      closeout_resolution_code: optional_string(decision, :closeout_resolution_code),
-      closeout_operator_request_fingerprint: optional_string(decision, :closeout_operator_request_fingerprint),
-      closeout_created_at: iso8601(value(decision, :closeout_created_at)),
-      closeout_closed_at: iso8601(value(decision, :closeout_closed_at)),
-      authorization_consumption_guard: maybe_authorization_snapshot(value(decision, :authorization_consumption_guard)),
-      guard_decision: safe_status(value(decision, :guard_decision)) |> blank_to_nil(),
-      authorization_record_fingerprint: optional_string(decision, :authorization_record_fingerprint),
-      authorization_request_fingerprint: optional_string(decision, :authorization_request_fingerprint),
-      cutover_operation_request_fingerprint: optional_string(decision, :cutover_operation_request_fingerprint),
-      readiness_permit_fingerprint: optional_string(decision, :readiness_permit_fingerprint),
-      readiness_permit_decision: safe_status(value(decision, :readiness_permit_decision)) |> blank_to_nil(),
-      consumption_guard_fingerprint: optional_string(decision, :consumption_guard_fingerprint),
-      safe_evidence_fingerprints:
-        SafeSummary.sanitize_map(value(decision, :safe_evidence_fingerprints) || %{},
-          output_keys: :preserve
-        ),
-      evaluated_at: iso8601(value(decision, :evaluated_at)),
-      no_side_effects: value(decision, :no_side_effects) != false,
-      auto_replay_allowed: false,
-      requires_operator_attention: requires_attention?
-    }
-    |> compact_map()
+    snapshot =
+      %{
+        version: positive_integer(value(decision, :version)) || @version,
+        project_id: optional_string(decision, :project_id),
+        provider_scope: provider_scope_snapshot(value(decision, :provider_scope) || %{}),
+        operation: operation_name(value(decision, :operation)),
+        side_effect_source: source_name(value(decision, :side_effect_source) || value(decision, :source)),
+        replay_key: optional_string(decision, :replay_key) || optional_string(decision, :outcome_replay_key),
+        decision: decision_name,
+        allowed: allowed,
+        reason_code: reason_code,
+        action_code: action_code,
+        reason_codes:
+          decision
+          |> list_value(:reason_codes)
+          |> Kernel.++([reason_code])
+          |> string_list()
+          |> Enum.uniq()
+          |> Enum.sort(),
+        required_operator_actions: action_snapshots(value(decision, :required_operator_actions) || List.wrap(action_code)),
+        unresolved_outcome: maybe_outcome_snapshot(value(decision, :unresolved_outcome)),
+        outcome_replay_key: optional_string(decision, :outcome_replay_key) || optional_string(decision, :replay_key),
+        outcome_fingerprint: optional_string(decision, :outcome_fingerprint),
+        outcome_status: outcome_status(value(decision, :outcome_status)),
+        outcome_side_effect:
+          side_effect_snapshot(
+            value(decision, :outcome_side_effect),
+            value(decision, :unresolved_outcome) || decision
+          ),
+        matching_closeout: maybe_closeout_snapshot(value(decision, :matching_closeout)),
+        closeout_record_fingerprint: optional_string(decision, :closeout_record_fingerprint),
+        closeout_resolution_code: optional_string(decision, :closeout_resolution_code),
+        closeout_operator_request_fingerprint: optional_string(decision, :closeout_operator_request_fingerprint),
+        closeout_created_at: iso8601(value(decision, :closeout_created_at)),
+        closeout_closed_at: iso8601(value(decision, :closeout_closed_at)),
+        authorization_consumption_guard: maybe_authorization_snapshot(authorization_guard),
+        guard_decision: safe_status(value(decision, :guard_decision)) |> blank_to_nil(),
+        authorization_record_fingerprint: optional_string(decision, :authorization_record_fingerprint),
+        authorization_request_fingerprint: optional_string(decision, :authorization_request_fingerprint),
+        cutover_operation_request_fingerprint: optional_string(decision, :cutover_operation_request_fingerprint),
+        readiness_permit_fingerprint: optional_string(decision, :readiness_permit_fingerprint),
+        readiness_permit_decision: safe_status(value(decision, :readiness_permit_decision)) |> blank_to_nil(),
+        consumption_guard_fingerprint: optional_string(decision, :consumption_guard_fingerprint),
+        safe_evidence_fingerprints:
+          SafeSummary.sanitize_map(value(decision, :safe_evidence_fingerprints) || %{},
+            output_keys: :preserve
+          ),
+        evaluated_at: iso8601(value(decision, :evaluated_at)),
+        no_side_effects: value(decision, :no_side_effects) != false,
+        auto_replay_allowed: false,
+        requires_operator_attention: requires_attention?
+      }
+      |> compact_map()
+
+    Map.put(
+      snapshot,
+      :replay_decision_fingerprint,
+      optional_string(decision, :replay_decision_fingerprint) ||
+        optional_string(decision, :decision_fingerprint) ||
+        replay_decision_fingerprint(snapshot)
+    )
   end
 
   defp decision_snapshot(decision), do: decision_snapshot(%{decision: decision})
@@ -919,17 +929,17 @@ defmodule SymphonyElixir.Hub.CutoverReplayDecision do
   defp side_effect_snapshot(side_effect, fallback) when is_map(side_effect) do
     %{
       entered:
-        boolean_value(
-          value(side_effect, :entered) ||
-            value(side_effect, :side_effect_entered) ||
-            value(fallback, :side_effect_entered)
-        ),
+        first_boolean([
+          boolean_field(side_effect, :entered),
+          boolean_field(side_effect, :side_effect_entered),
+          boolean_field(fallback, :side_effect_entered)
+        ]),
       may_have_happened:
-        boolean_value(
-          value(side_effect, :may_have_happened) ||
-            value(side_effect, :side_effect_may_have_happened) ||
-            value(fallback, :side_effect_may_have_happened)
-        )
+        first_boolean([
+          boolean_field(side_effect, :may_have_happened),
+          boolean_field(side_effect, :side_effect_may_have_happened),
+          boolean_field(fallback, :side_effect_may_have_happened)
+        ])
     }
     |> compact_map()
   end
@@ -1269,6 +1279,33 @@ defmodule SymphonyElixir.Hub.CutoverReplayDecision do
     }
   end
 
+  defp replay_decision_fingerprint(decision) do
+    decision
+    |> Map.take([
+      :project_id,
+      :provider_scope,
+      :operation,
+      :side_effect_source,
+      :replay_key,
+      :decision,
+      :allowed,
+      :outcome_fingerprint,
+      :closeout_record_fingerprint,
+      :authorization_record_fingerprint,
+      :readiness_permit_fingerprint,
+      :consumption_guard_fingerprint,
+      :safe_evidence_fingerprints
+    ])
+    |> fingerprint()
+  end
+
+  defp fingerprint(value) do
+    value
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp closeout_sort_key(closeout) do
     {
       optional_string(closeout, :closed_at) || optional_string(closeout, :created_at) || "",
@@ -1445,8 +1482,17 @@ defmodule SymphonyElixir.Hub.CutoverReplayDecision do
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank?(_value), do: false
 
-  defp boolean_value(value) when value in [true, false], do: value
-  defp boolean_value(_value), do: nil
+  defp first_boolean(values), do: Enum.find(List.wrap(values), &is_boolean/1)
+
+  defp boolean_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_boolean(value) -> value
+      _other -> boolean_field(map, Atom.to_string(key))
+    end
+  end
+
+  defp boolean_field(map, key) when is_map(map), do: Map.get(map, key)
+  defp boolean_field(_map, _key), do: nil
 
   defp blank_to_nil(value), do: if(blank?(value), do: nil, else: value)
   defp blank_to_default(value, default), do: if(blank?(value), do: default, else: value)

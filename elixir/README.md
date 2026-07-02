@@ -488,7 +488,7 @@ When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runti
 `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
 `hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_cutover_replay_decision`,
 `hub_cutover_replay_request_audit`,
-`hub_dispatch_boundary`, and `hub_device_observability`.
+`hub_cutover_closure_chain`, `hub_dispatch_boundary`, and `hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
 planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
@@ -504,17 +504,17 @@ decision counts, allowed/blocked operation sets, staged ownership record counts,
 decision counts for unresolved blocks, retry-consideration allowed/denied, stale/conflict/malformed/
 manual-attention decisions, replay request audit allow/block/stale/conflict/manual-attention/
 malformed/unsupported counts, safe replay/closeout/authorization/permit/guard fingerprints, linked
-outcome status counts, error class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
+outcome status counts, closure chain status/reference counts, error class/backoff/manual attention summaries, and skipped reasons. `hub_device_observability.overview`
 adds the operator-oriented device summary: scheduler enabled/disabled/queued/running/coalesced
 state and next-tick reason, project status counts, provider queue/backoff/circuit/recent-failure
 pressure, active attempts, pending start intents, workspace leases, unreleased capacity, writeback
 conflict/unknown/manual-attention/provider-lookup state, activation preflight blocks/unknowns,
 lifecycle unknown/manual-attention state, cutover gate status, closeout-aware replay decision
-status, replay request audit status, and summary errors. Each project in
+status, replay request audit status, closure chain status/reference counts, and summary errors. Each project in
 `hub_device_observability.projects` also includes a `detail` block for safe identity/provider scope,
 migration and ownership, config fingerprint/snapshot version, preflight result, poll eligibility,
 cutover gate decision, candidate intake, dispatch planning/application, worker start handoff, replay
-decision, replay request audit, lifecycle reconciliation, and writeback
+decision, replay request audit, closure chain, lifecycle reconciliation, and writeback
 completed/retryable/unknown/manual-attention/dangerous-replay state.
 `hub_device_observability.migration_readiness` adds a migration readiness report derived from the
 same safe summaries. At the device level it reports Hub runtime mode, scheduler status,
@@ -672,7 +672,7 @@ checks, call providers, dispatch, start workers, write providers, operate system
 Projects without an explicit replay request show `no_request` / request count 0 rather than pending
 execution or automatic retry.
 `SymphonyElixir.Hub.CutoverClosureChain` 是 replay request audit 之后的最小 closure chain
-合同基线，但当前只作为库级 read model 使用。调用方可以用已有脱敏 summary 或 fixture 构造
+合同基线。Runtime 现在会用已有脱敏 cutover summaries 构造
 closure safe summary，看到 project/provider scope、operation/source、attempt fingerprint 或 replay key、
 request、permit、authorization、guard、outcome、safe evidence fingerprint 和安全时间摘要的绑定关系。
 `closed_succeeded` 只能来自 evidence 未漂移的 matching `succeeded` outcome；guard 阻断、无
@@ -687,9 +687,13 @@ request audit 只作为安全引用保留，不能把 open outcome 推导为 suc
 `unsupported` 的库级只读状态，并在 summary、project summary、recent chain 中暴露 closeout /
 replay decision / replay request audit counts 和最近 reason/action code；输出只包含安全状态、code 和
 safe fingerprint / digest，不包含 token、raw provider payload、完整 prompt/transcript、完整评论或 PR
-正文、本地私有路径、原始 systemd 输出或异常栈。它不会
+正文、本地私有路径、原始 systemd 输出或异常栈。`/api/v1/state` 会暴露
+`hub_cutover_closure_chain`，`hub_device_observability.overview.cutover_closure_chain` 和每个项目的
+`cutover_closure_chain` / `detail.closure_chain` 会给 Dashboard 和后续 closure report 提供稳定只读输入。
+它不会
 创建/消费 authorization、调用 provider、dispatch、启动 worker、writeback、操作 systemd、改配置、
-自动 retry 或 replay，也还没有接入 Runtime/API/Dashboard。
+自动 retry 或 replay；它不是完整 operator-facing closure report，也没有新增 Dashboard UI 或接管 legacy
+service。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -729,13 +733,19 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.cutover_authorization_consumption_guard`,
    `hub_cutover_execution_outcome_ledger`, and
    `hub_device_observability.cutover_execution_outcome_ledger`,
-   `hub_cutover_replay_request_audit`, and
-   `hub_device_observability.cutover_replay_request_audit`. The Dashboard shows the
+   `hub_cutover_execution_outcome_closeout`,
+   `hub_device_observability.cutover_execution_outcome_closeout`,
+   `hub_cutover_replay_decision`,
+   `hub_device_observability.cutover_replay_decision`,
+   `hub_cutover_replay_request_audit`,
+   `hub_device_observability.cutover_replay_request_audit`,
+   `hub_cutover_closure_chain`, and
+   `hub_device_observability.cutover_closure_chain`. The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
    permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
    execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,
-   replay-request audit counts and linked outcome status, allowed/blocked operations, request
-   counts, and action codes when Hub summary fields exist.
+   replay-request audit counts and linked outcome status, closure-chain status/reference counts,
+   allowed/blocked operations, request counts, and action codes when Hub summary fields exist.
 4. Treat `ready_for_dry_run` as permission to continue read-only or low-risk Hub checks, not as
    ownership transfer. Treat `ready_for_hub_management` as evidence that an operator may consider
    changing `HUB.yaml` to `hub_managed`. Treat `blocked` and `unknown_manual_attention` as stop

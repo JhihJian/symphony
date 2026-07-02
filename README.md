@@ -299,8 +299,12 @@ allowed 或 replay request allowed 只能作为安全引用保留，不能单独
 reason/action code。reference status 只保留状态、reason/action code 和 safe fingerprint，不保存
 provider token、raw provider response、完整 prompt/transcript、完整 PR/comment body、本地私有路径或
 原始 systemd/异常堆栈。
-它还没有接入 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，也没有实现完整
-closeout/replay 聚合或 closure report 视图，不会自动 retry 或排队 replay。
+Hub Runtime 现在会从既有安全摘要构建 `hub_cutover_closure_chain`，Presenter 会在
+`/api/v1/state` 中输出这个只读 snapshot；`hub_device_observability.overview.cutover_closure_chain`
+和每个项目的 `cutover_closure_chain` / `detail.closure_chain` 也会暴露 closure status counts、
+三类 reference status counts、最近 reason/action code 和 safe evidence fingerprint。这个接入仍然
+不是完整 operator-facing closure report，也没有新增 Dashboard UI，不会自动 retry、排队 replay 或
+接管 legacy service。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
@@ -396,11 +400,16 @@ and inspect `hub_activation_preflight`,
 `hub_device_observability.cutover_execution_authorization_ledger`,
 `hub_cutover_authorization_consumption_guard`,
 `hub_device_observability.cutover_authorization_consumption_guard`,
-`hub_cutover_execution_outcome_ledger`, and
+`hub_cutover_execution_outcome_ledger`,
 `hub_device_observability.cutover_execution_outcome_ledger`,
-`hub_cutover_replay_request_audit`, and
-`hub_device_observability.cutover_replay_request_audit`, and the Dashboard Hub sections in
-`/api/v1/state`.
+`hub_cutover_execution_outcome_closeout`,
+`hub_device_observability.cutover_execution_outcome_closeout`,
+`hub_cutover_replay_decision`,
+`hub_device_observability.cutover_replay_decision`,
+`hub_cutover_replay_request_audit`,
+`hub_device_observability.cutover_replay_request_audit`,
+`hub_cutover_closure_chain`, and
+`hub_device_observability.cutover_closure_chain`, and the Dashboard Hub sections in `/api/v1/state`.
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.
