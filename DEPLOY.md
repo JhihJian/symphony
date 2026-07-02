@@ -229,10 +229,12 @@ blocked-by、closure-chain counts/reference counts 和 safe evidence fingerprint
 scope、evidence reference 与 action code 不串项。Hub Runtime/API 现在会把它暴露为
 `hub_cutover_closure_report_packet`，并在 `hub_device_observability.cutover_closure_report_packet`、
 `hub_device_observability.overview.cutover_closure_report_packet` 和项目 detail 中给出对应安全摘要。
-部署语义不变：这个 packet 仍只消费 chain/conclusion safe snapshot，不重新读取 raw cutover evidence，
-不创建或消费 authorization，不调用 provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，
-不新增 durable queue、一键迁移、Live Dashboard UI 或 legacy service takeover，也不是完整 #171
-operator-facing closure report。
+Live Dashboard 现在只展示这些已有 safe packet 字段，让 operator 在 Hub 设备总览和项目明细中看到
+report status、operator conclusion、required actions、blocked-by、section status、provider scope、
+safe evidence fingerprint/reference 和只读边界信号。部署语义不变：这个 packet 仍只消费
+chain/conclusion safe snapshot，不重新读取 raw cutover evidence，不创建或消费 authorization，不调用
+provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，不新增执行入口、durable queue、
+一键迁移或 legacy service takeover，也不是完整 #171 operator-facing closure report。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

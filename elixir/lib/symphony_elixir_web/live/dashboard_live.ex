@@ -358,6 +358,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   pending execution <%= hub_cutover_closure_conclusion_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_flag(@payload, :legacy_takeover) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Report Packet</p>
+                <p class="metric-value"><%= hub_cutover_closure_report_packet_status(@payload) %></p>
+                <p class="metric-detail">
+                  conclusion <%= hub_cutover_closure_report_packet_value(@payload, :operator_conclusion, "no_explicit_closure_chain") %> · severity <%= hub_cutover_closure_report_packet_value(@payload, :severity, "none") %> · attention <%= hub_cutover_closure_report_packet_value(@payload, :attention_level, "none") %>
+                </p>
+                <p class="metric-detail event-meta">
+                  actions <%= hub_cutover_closure_report_packet_list(@payload, :required_action_codes) %> (<%= hub_cutover_closure_report_packet_count(@payload, :required_action_count) %>) · blocked <%= hub_cutover_closure_report_packet_blocked_by(@payload) %> (<%= hub_cutover_closure_report_packet_count(@payload, :blocked_by_count) %>)
+                </p>
+                <p class="metric-detail event-meta">
+                  sections <%= hub_cutover_closure_report_packet_section_statuses(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  chain <%= hub_cutover_closure_report_packet_chain_status(@payload) %> · status <%= hub_cutover_closure_report_packet_chain_status_counts(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  evidence <%= hub_cutover_closure_report_packet_evidence(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_report_packet_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_report_packet_flag(@payload, :no_side_effects) %> · advisory <%= hub_cutover_closure_report_packet_flag(@payload, :actions_are_advisory) %> · auto retry allowed <%= hub_cutover_closure_report_packet_flag(@payload, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_report_packet_flag(@payload, :auto_replay_allowed) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  pending execution <%= hub_cutover_closure_report_packet_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_report_packet_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_report_packet_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_report_packet_flag(@payload, :legacy_takeover) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -437,6 +463,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_closure_conclusion_badge_class(project.cutover_closure_conclusion && project.cutover_closure_conclusion.conclusion)}>
                           conclusion <%= hub_cutover_closure_conclusion_project_status(project.cutover_closure_conclusion) %>
+                        </span>
+                        <span class={hub_cutover_closure_report_packet_badge_class(hub_cutover_closure_report_packet_project_status(project))}>
+                          report <%= hub_cutover_closure_report_packet_project_status(project) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -567,6 +596,30 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :if={project.cutover_closure_conclusion} class="muted event-meta">
                           conclusion pending execution <%= hub_cutover_closure_conclusion_project_flag(project, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_project_flag(project, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_project_flag(project, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_project_flag(project, :legacy_takeover) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report status <%= hub_cutover_closure_report_packet_project_status(project) %> · conclusion <%= hub_cutover_closure_report_packet_project_value(project, :operator_conclusion, "no_explicit_closure_chain") %> · scope <%= hub_cutover_closure_report_packet_project_scope(project) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report section <%= hub_cutover_closure_report_packet_project_section_statuses(project) %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_report_packet_actions(project)} class="muted event-meta">
+                          report action <%= action %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_closure_report_packet_blockers(project)} class="muted event-meta">
+                          report blocked <%= blocked %>
+                        </span>
+                        <span :for={evidence <- hub_cutover_project_closure_report_packet_evidence(project)} class="muted event-meta">
+                          report evidence <%= evidence %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_report_packet_fingerprints(project)} class="muted event-meta mono">
+                          report fp <%= fingerprint %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report read-only <%= hub_cutover_closure_report_packet_project_flag(project, :read_only) %> · no side effects <%= hub_cutover_closure_report_packet_project_flag(project, :no_side_effects) %> · advisory <%= hub_cutover_closure_report_packet_project_flag(project, :actions_are_advisory) %> · auto retry allowed <%= hub_cutover_closure_report_packet_project_flag(project, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_report_packet_project_flag(project, :auto_replay_allowed) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report pending execution <%= hub_cutover_closure_report_packet_project_flag(project, :pending_execution) %> · pending retry <%= hub_cutover_closure_report_packet_project_flag(project, :pending_retry) %> · queued replay <%= hub_cutover_closure_report_packet_project_flag(project, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_report_packet_project_flag(project, :legacy_takeover) %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -1284,6 +1337,88 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> format_boolean_flag()
   end
 
+  defp hub_cutover_closure_report_packet_status(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(:report_status)
+    |> string_or_default("no_chain")
+  end
+
+  defp hub_cutover_closure_report_packet_value(payload, key, default) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_report_packet_count(payload, count_key) do
+    packet = closure_report_packet_from_payload(payload)
+
+    case value_from_map(packet, count_key) do
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      _value ->
+        packet
+        |> value_from_map(packet_count_source_key(count_key))
+        |> short_values()
+        |> length()
+    end
+  end
+
+  defp hub_cutover_closure_report_packet_list(payload, key) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(key)
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_report_packet_blocked_by(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(:blocked_by)
+    |> format_blockers()
+  end
+
+  defp hub_cutover_closure_report_packet_section_statuses(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_section_statuses()
+  end
+
+  defp hub_cutover_closure_report_packet_chain_status(payload) do
+    packet = closure_report_packet_from_payload(payload)
+    closure_chain = report_packet_closure_chain(packet)
+
+    (value_from_map(closure_chain, :status) || value_from_map(packet, :closure_chain_status))
+    |> string_or_default("no_chain")
+  end
+
+  defp hub_cutover_closure_report_packet_chain_status_counts(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_closure_chain()
+    |> value_from_map(:closure_status_counts)
+    |> format_count_map()
+  end
+
+  defp hub_cutover_closure_report_packet_evidence(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_evidence_values()
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, ", ")
+    end
+  end
+
+  defp hub_cutover_closure_report_packet_flag(payload, key) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_flag(key)
+    |> format_boolean_flag()
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1455,6 +1590,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_closure_conclusion_badge_class("input_malformed"), do: "state-badge state-badge-danger"
   defp hub_cutover_closure_conclusion_badge_class(_conclusion), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_closure_report_packet_badge_class("fully_closed"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_report_packet_badge_class("closed_succeeded_review"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_report_packet_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("no_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("retry_consideration_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("stale_evidence_review_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("unsupported_report_slice"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("manual_attention_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class("conflict_review_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class("malformed_input_review_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -1499,6 +1647,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_closure_conclusion_project_status(%{conclusion: conclusion}) when is_binary(conclusion), do: conclusion
   defp hub_cutover_closure_conclusion_project_status(_conclusion), do: "no_explicit_closure_chain"
+
+  defp hub_cutover_closure_report_packet_project_status(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:report_status)
+    |> string_or_default("no_chain")
+  end
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1761,6 +1916,65 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> fingerprint_values()
   end
 
+  defp hub_project_closure_report_packet?(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> map_size() > 0
+  end
+
+  defp hub_cutover_closure_report_packet_project_value(project, key, default) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_report_packet_project_scope(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:provider_scope)
+    |> format_provider_scope()
+  end
+
+  defp hub_cutover_closure_report_packet_project_section_statuses(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_section_statuses()
+  end
+
+  defp hub_cutover_project_closure_report_packet_actions(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:required_action_codes)
+    |> short_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_blockers(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:blocked_by)
+    |> blocker_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_evidence(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_evidence_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_fingerprints(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_fingerprint_values()
+  end
+
+  defp hub_cutover_closure_report_packet_project_flag(project, key) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_flag(key)
+    |> format_boolean_flag()
+  end
+
   defp closure_chain_reference_count_key(:closeout), do: :closeout_reference_status_counts
   defp closure_chain_reference_count_key(:replay_decision), do: :replay_decision_reference_status_counts
   defp closure_chain_reference_count_key(:replay_request_audit), do: :replay_request_audit_reference_status_counts
@@ -1885,6 +2099,175 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp closure_conclusion_from_project(_project), do: %{}
+
+  defp closure_report_packet_from_payload(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_report_packet])
+    |> case do
+      packet when is_map(packet) -> if usable_report_packet?(packet), do: packet, else: %{}
+      _packet -> %{}
+    end
+  end
+
+  defp closure_report_packet_from_project(%{detail: %{closure_report_packet: packet}}) when is_map(packet) do
+    if usable_report_packet?(packet), do: packet, else: %{}
+  end
+
+  defp closure_report_packet_from_project(%{cutover_closure_report_packet: packet}) when is_map(packet) do
+    if usable_report_packet?(packet), do: packet, else: %{}
+  end
+
+  defp closure_report_packet_from_project(_project), do: %{}
+
+  defp usable_report_packet?(packet) when is_map(packet) do
+    not is_nil(value_from_map(packet, :report_status)) or
+      not is_nil(value_from_map(packet, :operator_conclusion)) or
+      not is_nil(value_from_map(packet, :summary_code)) or
+      is_map(value_from_map(packet, :closure_chain)) or
+      is_map(value_from_map(packet, :section_statuses)) or
+      is_list(value_from_map(packet, :required_action_codes)) or
+      is_list(value_from_map(packet, :evidence_references))
+  end
+
+  defp packet_count_source_key(:required_action_count), do: :required_action_codes
+  defp packet_count_source_key(:blocked_by_count), do: :blocked_by
+
+  defp report_packet_closure_chain(packet) when is_map(packet) do
+    case value_from_map(packet, :closure_chain) do
+      chain when is_map(chain) -> chain
+      _chain -> %{}
+    end
+  end
+
+  defp report_packet_section_statuses(packet) when is_map(packet) do
+    packet
+    |> value_from_map(:section_statuses)
+    |> case do
+      statuses when is_map(statuses) and map_size(statuses) > 0 ->
+        statuses
+
+      _statuses ->
+        %{
+          closure_chain:
+            value_from_map(packet, :closure_chain_status) ||
+              value_from_map(report_packet_closure_chain(packet), :status) ||
+              "no_chain",
+          operator_conclusion:
+            value_from_map(packet, :operator_conclusion) ||
+              "no_explicit_closure_chain"
+        }
+    end
+    |> format_status_map()
+  end
+
+  defp report_packet_evidence_values(packet) when is_map(packet) do
+    evidence =
+      packet
+      |> value_from_map(:evidence_references)
+      |> evidence_reference_values()
+
+    (evidence ++ report_packet_fingerprint_values(packet))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(6)
+  end
+
+  defp report_packet_fingerprint_values(packet) when is_map(packet) do
+    closure_chain = report_packet_closure_chain(packet)
+
+    direct_fingerprint =
+      packet
+      |> value_from_map(:safe_evidence_fingerprint)
+      |> case do
+        fingerprint when is_binary(fingerprint) and fingerprint != "" -> ["packet=#{fingerprint}"]
+        _fingerprint -> []
+      end
+
+    chain_fingerprint =
+      closure_chain
+      |> value_from_map(:safe_evidence_fingerprint)
+      |> case do
+        fingerprint when is_binary(fingerprint) and fingerprint != "" -> ["chain=#{fingerprint}"]
+        _fingerprint -> []
+      end
+
+    (direct_fingerprint ++
+       fingerprint_values(value_from_map(packet, :safe_evidence_fingerprints)) ++
+       chain_fingerprint ++
+       fingerprint_values(value_from_map(closure_chain, :safe_evidence_fingerprints)))
+    |> Enum.uniq()
+    |> Enum.take(6)
+  end
+
+  defp report_packet_flag(packet, key) when is_map(packet) do
+    boundary = value_from_map(packet, :boundary_flags) || value_from_map(packet, :read_only_boundary) || %{}
+
+    case value_from_map(packet, key) do
+      value when is_boolean(value) -> value
+      _value -> boundary_flag_or_default(boundary, key)
+    end
+  end
+
+  defp boundary_flag_or_default(boundary, key) when is_map(boundary) do
+    case value_from_map(boundary, key) do
+      value when is_boolean(value) -> value
+      _value -> default_report_packet_flag(key)
+    end
+  end
+
+  defp default_report_packet_flag(key) when key in [:read_only, :no_side_effects, :actions_are_advisory], do: true
+  defp default_report_packet_flag(_key), do: false
+
+  defp format_provider_scope(scope) when is_map(scope) do
+    key =
+      scope
+      |> value_from_map(:provider_scope_key)
+      |> string_or_default("")
+      |> case do
+        "" -> scope |> value_from_map(:key) |> string_or_default("")
+        value -> value
+      end
+
+    kind = scope |> value_from_map(:kind) |> string_or_default("")
+    nested_scope = value_from_map(scope, :scope)
+    owner = if is_map(nested_scope), do: nested_scope |> value_from_map(:owner) |> string_or_default(""), else: ""
+    repo = if is_map(nested_scope), do: nested_scope |> value_from_map(:repo) |> string_or_default(""), else: ""
+
+    cond do
+      key != "" -> key
+      kind != "" and owner != "" and repo != "" -> "#{kind}:#{owner}/#{repo}"
+      kind != "" -> kind
+      true -> "unknown scope"
+    end
+  end
+
+  defp format_provider_scope(_scope), do: "unknown scope"
+
+  defp format_status_map(statuses) when is_map(statuses) do
+    statuses
+    |> Enum.map(fn {key, value} -> "#{key} #{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, " "))
+    |> Enum.sort()
+    |> Enum.take(4)
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, " · ")
+    end
+  end
+
+  defp format_count_map(counts) when is_map(counts) do
+    counts
+    |> Enum.filter(fn {_key, value} -> is_integer(value) and value > 0 end)
+    |> Enum.map(fn {key, value} -> "#{key} #{value}" end)
+    |> Enum.sort()
+    |> Enum.take(4)
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, " · ")
+    end
+  end
+
+  defp format_count_map(_counts), do: "none"
 
   defp value_from_map(map, key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
