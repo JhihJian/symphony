@@ -306,6 +306,14 @@ Hub Runtime 现在会从既有安全摘要构建 `hub_cutover_closure_chain`，P
 不是完整 operator-facing closure report；Live Dashboard 只把这个已有 safe snapshot 展示为
 Hub 设备总览和项目明细中的只读摘要，不会自动 retry、排队 replay、创建/消费 authorization 或
 接管 legacy service。
+`SymphonyElixir.Hub.CutoverClosureConclusion` 在这个 safe snapshot 之上新增库级
+operator conclusion baseline。它可以消费 device summary、project summary 或单条 recent chain，
+把 `closed_succeeded`、`closed_no_side_effect`、`open_retryable`、`open_manual_attention`、
+`stale`、`conflict`、`malformed`、`unsupported`、`no_chain` 和 `no_request` 归一为
+operator-facing conclusion、severity/attention level、summary code、required action codes、
+blocked-by 和 safe evidence references。这个解释层仍然只读：不重新聚合底层 request/permit/
+authorization/guard/outcome evidence，不接 Runtime/API/Dashboard，不自动 retry/replay，不创建或消费
+authorization，也不接管 legacy service。它只给后续 closure report API 或 Dashboard 文案提供稳定输入。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

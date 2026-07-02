@@ -1876,6 +1876,18 @@ Runtime entrypoint:
   reason/action codes, and safe fingerprints, but MUST NOT present `auto_replay_allowed`, resolved
   closeouts, allowed replay decisions, or allowed replay request audits as automatic retry, queued
   replay, execution success, or legacy takeover.
+- Hub-compatible implementations MAY 在最小 closure chain safe snapshot 之上增加库级 operator
+  conclusion baseline。这个 read model SHOULD 接受 device summary、project summary 或单条 recent
+  chain，并输出稳定的 operator-facing conclusion、severity 或 attention level、summary code、
+  required action codes、blocked-by entries、safe evidence references，以及明确的 read-only /
+  no-side-effect / no-auto-retry / no-auto-replay 边界信号。它 MUST 只从现有 safe snapshot 字段派生，
+  例如 closure status、counts、reference status、reason/action codes 和 safe fingerprints。它
+  MUST NOT 重新聚合 raw request/permit/authorization/guard/outcome evidence，不得要求 provider raw
+  payload，不得调用 provider、dispatch work、start workers、write providers、operate systemd、
+  edit configuration、创建或消费 authorization、queue retry/replay、单独暴露 Runtime/API/Dashboard
+  字段，或声明 legacy service ownership。project/provider scope MUST NOT 在不同 project conclusion
+  之间串项；只要任一 project 仍 open、stale、conflicting、malformed 或 unsupported，device rollup
+  MUST 保守处理，不能显示为 fully closed。
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
