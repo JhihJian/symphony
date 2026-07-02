@@ -1030,7 +1030,41 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeLedger do
   end
 
   defp same_attempt?(left, right) do
-    fact_snapshot(left).replay_key == fact_snapshot(right).replay_key
+    left = fact_snapshot(left)
+    right = fact_snapshot(right)
+
+    left.replay_key == right.replay_key or same_replay_boundary?(left, right)
+  end
+
+  defp same_replay_boundary?(left, right) do
+    same_project_scope_operation_source?(left, right) and
+      replay_side_effect_class(left) == replay_side_effect_class(right) and
+      same_required_replay_evidence?(left, right)
+  end
+
+  defp same_project_scope_operation_source?(left, right) do
+    optional_string(left, :project_id) == optional_string(right, :project_id) and
+      provider_scope_matches?(value(left, :provider_scope), value(right, :provider_scope)) and
+      operation_name(value(left, :operation)) == operation_name(value(right, :operation)) and
+      source_name(value(left, :side_effect_source)) == source_name(value(right, :side_effect_source))
+  end
+
+  defp same_required_replay_evidence?(left, right) do
+    [
+      :authorization_record_fingerprint,
+      :authorization_request_fingerprint,
+      :cutover_operation_request_fingerprint,
+      :readiness_permit_fingerprint,
+      :cutover_gate_fingerprint
+    ]
+    |> Enum.all?(&same_required_value?(left, right, &1))
+  end
+
+  defp same_required_value?(left, right, key) do
+    left_value = optional_string(left, key)
+    right_value = optional_string(right, key)
+
+    not blank?(left_value) and left_value == right_value
   end
 
   defp dedupe_facts(events) do
@@ -1217,6 +1251,22 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeLedger do
   end
 
   defp provider_scope_snapshot(_scope), do: %{}
+
+  defp provider_scope_matches?(left, right) do
+    left = provider_scope_snapshot(left || %{})
+    right = provider_scope_snapshot(right || %{})
+
+    cond do
+      left == %{} or right == %{} ->
+        false
+
+      optional_string(left, :provider_scope_key) != nil and optional_string(right, :provider_scope_key) != nil ->
+        optional_string(left, :provider_scope_key) == optional_string(right, :provider_scope_key)
+
+      true ->
+        left == right
+    end
+  end
 
   defp action_snapshots(actions) do
     actions

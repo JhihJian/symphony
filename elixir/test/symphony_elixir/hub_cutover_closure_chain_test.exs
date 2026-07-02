@@ -95,6 +95,103 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
     assert Enum.all?(summary.recent_chains, &(get_in(&1, [:outcome, :side_effect_entered]) == false))
   end
 
+  test "opens retryable outcomes without granting automatic replay" do
+    outcome = outcome_fact(status: "retryable")
+
+    summary =
+      CutoverClosureChain.build(
+        %{execution_outcomes: [outcome]},
+        now: @now
+      )
+
+    [chain] = summary.recent_chains
+    [project] = summary.projects
+
+    assert summary.status == "open_retryable"
+    assert summary.counts.open_retryable_count == 1
+    assert summary.counts.unsupported_count == 0
+    assert summary.counts.operation_status_counts.writeback.open_retryable == 1
+    assert summary.counts.source_status_counts.writeback_executor.open_retryable == 1
+    assert summary.auto_replay_allowed == false
+    assert summary.read_only == true
+
+    assert project.status == "open_retryable"
+    assert project.counts.open_retryable_count == 1
+
+    assert chain.closure_status == "open_retryable"
+    assert chain.reason_code == "retryable_outcome_waiting_for_explicit_consideration"
+    assert chain.action_code == "re_evaluate_explicit_retry_consideration"
+    assert action_code?(chain, "re_evaluate_explicit_retry_consideration")
+    assert chain.auto_replay_allowed == false
+    assert chain.request.request_fingerprint == outcome.cutover_operation_request_fingerprint
+    assert chain.readiness_permit.permit_fingerprint == outcome.readiness_permit_fingerprint
+    assert chain.authorization.authorization_record_fingerprint == outcome.authorization_record_fingerprint
+    assert chain.authorization.authorization_request_fingerprint == outcome.authorization_request_fingerprint
+    assert chain.consumption_guard.decision == "allowed"
+    assert chain.outcome.status == "retryable"
+    assert chain.execution_key.attempt_fingerprint == outcome.attempt_fingerprint
+    assert chain.safe_evidence_fingerprints.outcome == outcome.evidence_fingerprint
+    refute chain.closure_status == "closed_succeeded"
+    refute chain.closure_status == "closed_no_side_effect"
+  end
+
+  test "opens unknown and manual attention outcomes for operator closeout" do
+    unknown = outcome_fact(status: "unknown")
+    manual_attention = outcome_fact(status: "manual_attention")
+
+    summary =
+      CutoverClosureChain.build(
+        %{execution_outcomes: [unknown, manual_attention]},
+        now: @now
+      )
+
+    assert summary.status == "open_manual_attention"
+    assert summary.counts.open_manual_attention_count == 2
+    assert summary.counts.closed_succeeded_count == 0
+    assert summary.counts.closed_no_side_effect_count == 0
+    assert Enum.all?(summary.recent_chains, &(&1.closure_status == "open_manual_attention"))
+    assert Enum.all?(summary.recent_chains, &(&1.action_code == "perform_operator_closeout"))
+    assert Enum.all?(summary.recent_chains, &action_code?(&1, "perform_operator_closeout"))
+    assert Enum.map(summary.recent_chains, & &1.outcome.status) |> Enum.sort() == ["manual_attention", "unknown"]
+
+    assert Enum.map(summary.recent_chains, & &1.reason_code) |> Enum.sort() == [
+             "manual_attention_outcome_requires_closeout",
+             "unknown_outcome_requires_manual_attention"
+           ]
+  end
+
+  test "retained references do not resolve open retryable outcomes" do
+    outcome = outcome_fact(status: "retryable")
+
+    chain =
+      build_one(%{
+        outcome: outcome,
+        closeout: %{
+          status: "resolved",
+          resolution_code: "confirmed_resolved",
+          closeout_record_fingerprint: "closeout-alpha"
+        },
+        replay_decision: %{
+          decision: "retry_consideration_allowed",
+          allowed: true,
+          replay_decision_fingerprint: "replay-decision-alpha"
+        },
+        replay_request_audit: %{
+          status: "would_allow_retry_consideration",
+          request_fingerprint: "replay-request-alpha"
+        }
+      })
+
+    assert chain.closure_status == "open_retryable"
+    assert chain.retained_references.closeout.status == "resolved"
+    assert chain.retained_references.replay_decision.decision == "retry_consideration_allowed"
+    assert chain.retained_references.replay_decision.allowed == true
+    assert chain.retained_references.replay_request_audit.status == "would_allow_retry_consideration"
+    assert chain.auto_replay_allowed == false
+    refute chain.closure_status == "closed_succeeded"
+    refute chain.closure_status == "closed_no_side_effect"
+  end
+
   test "marks drift, conflicts, malformed, and unsupported input without closing success" do
     outcome = outcome_fact(status: "succeeded")
 
@@ -151,6 +248,46 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
     refute conflict.closure_status == "closed_succeeded"
     refute malformed.closure_status == "closed_succeeded"
     refute unsupported.closure_status == "closed_succeeded"
+  end
+
+  test "prioritizes stale conflict and malformed evidence before open outcome classification" do
+    retryable = outcome_fact(status: "retryable")
+
+    stale =
+      %{
+        outcome: retryable,
+        safe_evidence_fingerprints: %{outcome: "outcome-alpha-new"}
+      }
+      |> build_one()
+
+    assert stale.closure_status == "stale"
+    assert "outcome_fingerprint_drift" in stale.reason_codes
+
+    manual_attention = outcome_fact(status: "manual_attention")
+
+    conflict =
+      %{
+        project_id: "alpha",
+        provider_scope: provider_scope("other"),
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        outcome: manual_attention
+      }
+      |> build_one()
+
+    assert conflict.closure_status == "conflict"
+    assert "outcome_provider_scope_mismatch" in conflict.reason_codes
+
+    malformed =
+      "unknown"
+      |> open_outcome_without_permit()
+      |> build_one()
+
+    assert malformed.closure_status == "malformed"
+    assert malformed.reason_code == "readiness_permit_fingerprint_missing"
+    refute stale.closure_status == "open_retryable"
+    refute conflict.closure_status == "open_manual_attention"
+    refute malformed.closure_status == "open_manual_attention"
   end
 
   test "allowed references alone do not imply succeeded closure" do
@@ -243,6 +380,52 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
     record
   end
 
+  defp action_code?(chain, code) do
+    Enum.any?(chain.required_operator_actions, &(&1.code == code))
+  end
+
+  defp open_outcome_without_permit(status) do
+    %{
+      project_id: "alpha",
+      provider_scope: provider_scope("alpha"),
+      operation: "writeback",
+      side_effect_source: "writeback_executor",
+      attempt_fingerprint: "attempt-alpha-missing-permit",
+      replay_key: "replay-alpha-missing-permit",
+      request: %{request_fingerprint: "request-alpha"},
+      authorization: %{
+        authorization_record_fingerprint: "record-alpha-writeback",
+        authorization_request_fingerprint: "auth-alpha-writeback"
+      },
+      consumption_guard: %{
+        project_id: "alpha",
+        provider_scope: provider_scope("alpha"),
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        decision: "allowed",
+        allowed: true,
+        decision_fingerprint: "guard-alpha"
+      },
+      outcome: %{
+        project_id: "alpha",
+        provider_scope: provider_scope("alpha"),
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        status: status,
+        attempt_fingerprint: "attempt-alpha-missing-permit",
+        replay_key: "replay-alpha-missing-permit",
+        cutover_operation_request_fingerprint: "request-alpha",
+        authorization_record_fingerprint: "record-alpha-writeback",
+        authorization_request_fingerprint: "auth-alpha-writeback",
+        consumption_guard_fingerprint: "guard-alpha",
+        evidence_fingerprint: "outcome-alpha",
+        side_effect_entered: true,
+        side_effect_may_have_happened: true,
+        generated_at: @now
+      }
+    }
+  end
+
   defp outcome_fact(opts) do
     status = Keyword.get(opts, :status, "succeeded")
 
@@ -299,7 +482,9 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
 
   defp reason_for_status("succeeded"), do: "execution_succeeded"
   defp reason_for_status("not_executed"), do: "side_effect_not_entered"
+  defp reason_for_status("retryable"), do: "execution_retryable"
   defp reason_for_status("unknown"), do: "execution_result_unknown"
+  defp reason_for_status("manual_attention"), do: "execution_requires_manual_attention"
   defp reason_for_status(_status), do: "execution_result"
 
   defp provider_scope(project_id) do

@@ -193,12 +193,15 @@ writeback、操作 systemd、改配置、自动 retry、排队迁移或接管 le
 report 的最小只读 chain contract baseline。它只能从已脱敏 summary 或测试 fixture 构造 safe
 summary，绑定同一 project/provider scope、operation/source、attempt fingerprint 或 replay key、
 request、readiness permit、execution authorization、authorization consumption guard、outcome、
-safe evidence fingerprint 和安全时间摘要。它只区分 `no_chain`、`no_request`、`closed_succeeded`、
-`closed_no_side_effect`、`conflict`、`stale`、`malformed`、`unsupported`；只有 matching
-`succeeded` outcome 能显示成功，guard allowed、authorization record、closeout resolved、replay
-decision allowed 或 replay request allowed 都不能单独推导成功。这个切片没有接入 Hub Runtime
-`/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动 retry、
-排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
+safe evidence fingerprint 和安全时间摘要。它区分 `no_chain`、`no_request`、`closed_succeeded`、
+`closed_no_side_effect`、`open_retryable`、`open_manual_attention`、`conflict`、`stale`、
+`malformed`、`unsupported`；只有 matching `succeeded` outcome 能显示成功，matching `retryable`
+outcome 只显示 `open_retryable`，matching `unknown` 或 `manual_attention` outcome 只显示
+`open_manual_attention`。这些 open 状态只是库级只读分类：表示后续仍需显式 retry consideration
+或 operator closeout/manual review，不能自动授权、自动消费、自动 replay，也不能从 closeout resolved、
+replay decision allowed 或 replay request allowed 推导 resolved/success。这个切片没有接入 Hub
+Runtime `/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动
+retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

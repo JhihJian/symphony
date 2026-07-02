@@ -23,6 +23,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
     "no_request",
     "closed_succeeded",
     "closed_no_side_effect",
+    "open_retryable",
+    "open_manual_attention",
     "conflict",
     "stale",
     "malformed",
@@ -37,7 +39,9 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   @blocking_guard_decisions ["blocked", "no_authorization", "stale", "manual_attention", "unsupported", "malformed"]
   @blocking_authorization_statuses ["blocked", "no_ready_permit", "stale", "manual_attention", "unsupported", "malformed"]
   @blocking_permit_decisions ["blocked", "stale", "manual_attention", "unsupported", "malformed"]
-  @future_open_outcome_statuses ["unknown", "manual_attention", "retryable", "failed"]
+  @open_retryable_outcome_statuses ["retryable"]
+  @open_manual_attention_outcome_statuses ["unknown", "manual_attention"]
+  @future_open_outcome_statuses ["failed"]
   @default_recent_limit 20
 
   @type chain :: map()
@@ -341,6 +345,12 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       value(outcome, :status) == "succeeded" ->
         succeeded_status(snapshot, outcome, guard, validation)
 
+      value(outcome, :status) in @open_retryable_outcome_statuses ->
+        open_outcome_status("open_retryable", snapshot, outcome, guard, validation)
+
+      value(outcome, :status) in @open_manual_attention_outcome_statuses ->
+        open_outcome_status("open_manual_attention", snapshot, outcome, guard, validation)
+
       closed_no_side_effect?(snapshot, outcome, guard) ->
         status_snapshot(
           "closed_no_side_effect",
@@ -384,6 +394,24 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
           outcome,
           guard
         )
+    end
+  end
+
+  defp open_outcome_status(status, snapshot, outcome, guard, validation) do
+    case missing_open_evidence(snapshot, outcome, guard) do
+      nil ->
+        status_snapshot(
+          status,
+          open_outcome_reason(status, outcome),
+          open_outcome_action(status, outcome),
+          validation,
+          snapshot,
+          outcome,
+          guard
+        )
+
+      missing ->
+        status_snapshot("malformed", missing, "refresh_closure_chain_evidence", validation, snapshot, outcome, guard)
     end
   end
 
@@ -445,6 +473,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
         nil
     end
   end
+
+  defp missing_open_evidence(snapshot, outcome, guard), do: missing_success_evidence(snapshot, outcome, guard)
 
   defp validation_reasons(snapshot, input, outcome, guard) do
     []
@@ -962,6 +992,18 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp outcome_reason(outcome, default), do: safe_status(value(outcome || %{}, :reason_code)) |> blank_to_default(default)
   defp outcome_action(outcome), do: safe_status(value(outcome || %{}, :action_code)) |> blank_to_nil()
 
+  defp open_outcome_reason("open_retryable", _outcome), do: "retryable_outcome_waiting_for_explicit_consideration"
+
+  defp open_outcome_reason("open_manual_attention", outcome) do
+    case safe_status(value(outcome || %{}, :status)) do
+      "unknown" -> "unknown_outcome_requires_manual_attention"
+      _status -> "manual_attention_outcome_requires_closeout"
+    end
+  end
+
+  defp open_outcome_action("open_retryable", _outcome), do: "re_evaluate_explicit_retry_consideration"
+  defp open_outcome_action("open_manual_attention", _outcome), do: "perform_operator_closeout"
+
   defp no_side_effect_reason(_snapshot, outcome, guard) do
     safe_status(value(guard || %{}, :reason_code))
     |> blank_to_default(outcome_reason(outcome, "side_effect_not_entered"))
@@ -1040,6 +1082,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
           if(chains == [] and project_ids != [], do: length(project_ids), else: Enum.count(chains, &(&1.closure_status == "no_request"))),
       closed_succeeded_count: count_or_existing(counts, :closed_succeeded_count, chains, "closed_succeeded"),
       closed_no_side_effect_count: count_or_existing(counts, :closed_no_side_effect_count, chains, "closed_no_side_effect"),
+      open_retryable_count: count_or_existing(counts, :open_retryable_count, chains, "open_retryable"),
+      open_manual_attention_count: count_or_existing(counts, :open_manual_attention_count, chains, "open_manual_attention"),
       conflict_count: count_or_existing(counts, :conflict_count, chains, "conflict"),
       stale_count: count_or_existing(counts, :stale_count, chains, "stale"),
       malformed_count: count_or_existing(counts, :malformed_count, chains, "malformed"),
@@ -1100,6 +1144,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
       Enum.any?(chains, &(&1.closure_status == "conflict")) -> "conflict"
       Enum.any?(chains, &(&1.closure_status == "stale")) -> "stale"
       Enum.any?(chains, &(&1.closure_status == "unsupported")) -> "unsupported"
+      Enum.any?(chains, &(&1.closure_status == "open_manual_attention")) -> "open_manual_attention"
+      Enum.any?(chains, &(&1.closure_status == "open_retryable")) -> "open_retryable"
       Enum.any?(chains, &(&1.closure_status == "no_request")) -> "no_request"
       Enum.any?(chains, &(&1.closure_status == "closed_no_side_effect")) -> "closed_no_side_effect"
       Enum.any?(chains, &(&1.closure_status == "closed_succeeded")) -> "closed_succeeded"
@@ -1313,6 +1359,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   defp default_reason("no_request"), do: "cutover_operation_request_missing"
   defp default_reason("closed_succeeded"), do: "execution_succeeded"
   defp default_reason("closed_no_side_effect"), do: "side_effect_not_entered"
+  defp default_reason("open_retryable"), do: "retryable_outcome_waiting_for_explicit_consideration"
+  defp default_reason("open_manual_attention"), do: "open_outcome_requires_manual_attention"
   defp default_reason("conflict"), do: "closure_chain_conflict"
   defp default_reason("stale"), do: "closure_chain_evidence_stale"
   defp default_reason("malformed"), do: "closure_chain_malformed"
