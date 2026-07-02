@@ -281,6 +281,16 @@ read-only audit boundary: it does not create or consume authorization, call prov
 start workers, write back, operate systemd, edit config, auto-replay side effects, or take over
 legacy services. Without a request it reports `no_request` and request count 0, not pending retry or
 pending execution.
+`SymphonyElixir.Hub.CutoverClosureChain` 现在提供 Hub cutover closure report 的最小只读 chain
+contract baseline。它只从已经脱敏的 summary 或测试 fixture 构造 safe summary，绑定同一
+project/provider scope、operation/source、attempt fingerprint 或 replay key、cutover request、
+readiness permit、execution authorization、authorization consumption guard、outcome 与 evidence
+fingerprint。这个 baseline 只稳定区分 `no_chain`、`no_request`、`closed_succeeded`、
+`closed_no_side_effect`、`conflict`、`stale`、`malformed` 和 `unsupported`：只有匹配的
+`succeeded` outcome 可以显示 `closed_succeeded`；guard allowed、authorization record、closeout
+resolved、replay decision allowed 或 replay request allowed 只能作为安全引用保留，不能单独解释为成功。
+它还没有接入 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，也没有实现完整
+retry/manual attention、closeout/replay 聚合或 closure report 视图。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
