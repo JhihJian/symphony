@@ -439,6 +439,24 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "orchestrator surfaces workflow-stage tracker config errors as configuration diagnostics" do
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    on_exit(fn ->
+      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+        TrackerConfig.clear_tracker_file_path()
+
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+      end
+    end)
+
+    if is_pid(orchestrator_pid) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    end
+
     workflow_path = Workflow.workflow_file_path()
     tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
