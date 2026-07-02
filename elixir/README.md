@@ -731,8 +731,11 @@ cutover evidence，不调用 provider、dispatch、worker starter、writeback、
 `hub_device_observability.overview.cutover_closure_report_packet` 和每个项目的
 `cutover_closure_report_packet` / `detail.closure_report_packet` 会暴露 report status、operator
 conclusion、section status、required action/blocked-by counts、provider scope 和 safe evidence
-fingerprint/reference。这个 Runtime/API 接入仍不是完整 #171 execution closure report，不新增 Live
-Dashboard UI、自动 retry/replay 队列、durable execution queue、一键迁移或 legacy service takeover。
+fingerprint/reference。Live Dashboard 现在只展示这些 Runtime/API 已有 safe packet 字段，在 Hub 设备
+总览和项目明细中呈现 report status、operator conclusion、required actions、blocked-by、section
+status、provider scope、safe evidence fingerprint/reference 和只读边界信号。这个展示切片仍不是完整
+#171 execution closure report，不新增执行入口、自动 retry/replay 队列、durable execution queue、
+一键迁移或 legacy service takeover。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -778,11 +781,11 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.cutover_replay_decision`,
    `hub_cutover_replay_request_audit`,
    `hub_device_observability.cutover_replay_request_audit`,
-   `hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
-   `hub_cutover_closure_report_packet`, `hub_device_observability.cutover_closure_chain`,
-   `hub_device_observability.cutover_closure_conclusion`, and
-   `hub_device_observability.cutover_closure_report_packet`。API 会给消费者暴露 conclusion 和 report
-   packet 安全数据，但不新增 Dashboard UI。The Dashboard shows the
+`hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
+`hub_cutover_closure_report_packet`, `hub_device_observability.cutover_closure_chain`,
+`hub_device_observability.cutover_closure_conclusion`, and
+`hub_device_observability.cutover_closure_report_packet`。API 会给消费者暴露 conclusion 和 report
+   packet 安全数据；Live Dashboard 也会展示已有 closure report packet safe summary。The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
    permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
    execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,

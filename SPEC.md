@@ -1924,10 +1924,14 @@ Runtime entrypoint:
   report status, operator conclusion/severity/attention, required-action counts, blocked-by counts,
   section status, and recent safe evidence reference/fingerprint. Project detail SHOULD express each
   project's report status, closure-chain status, operator conclusion, required actions, blocked-by,
-  provider scope, and safe evidence fingerprint/reference. This Runtime/API integration MUST remain
-  a read-only organization layer over chain/conclusion safe snapshots; it is not full #171 execution
-  closure report, not a Dashboard UI requirement, not an automatic retry/replay queue, not a durable
-  execution queue, not one-click migration, and not legacy service takeover.
+  provider scope, and safe evidence fingerprint/reference. Live Dashboard MAY render this existing
+  packet in Hub device overview and project detail, but Dashboard MUST consume only the safe packet
+  or equivalent safe fixture fields and MUST degrade missing, nil, summary-error-like, legacy/non-Hub
+  or incompatible inputs without crashing or implying pending execution, automatic retry, queued
+  replay, migration queued, or legacy takeover. This Runtime/API/Dashboard integration MUST remain a
+  read-only organization/display layer over chain/conclusion safe snapshots; it is not full #171
+  execution closure report, not an execution entrypoint, not an automatic retry/replay queue, not a
+  durable execution queue, not one-click migration, and not legacy service takeover.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
