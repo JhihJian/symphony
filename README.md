@@ -320,6 +320,18 @@ blocked-by、安全 evidence/fingerprint 与只读边界摘要；它不重新聚
 request/permit/authorization/guard/outcome evidence，不新增执行入口，不是完整 #171
 operator-facing closure report，不自动 retry/replay，不创建或消费 authorization，不调用
 provider/dispatch/worker/writeback/systemd/config，也不接管 legacy service。
+`SymphonyElixir.Hub.CutoverClosureReportPacket` 在 chain/conclusion safe snapshot 之上新增库级
+closure report safe packet baseline。它只把已有 `hub_cutover_closure_chain` 与
+`hub_cutover_closure_conclusion` 或等价测试 fixture 组织成设备级和项目级只读 report packet，包含
+report version、generated_at、只读边界旗标、report status、operator conclusion、severity/attention、
+summary code、required action codes、blocked-by、closure chain section、project provider scope 和
+safe evidence fingerprint。这个 packet 会保守 roll up 多 project 状态：任一 project 仍 open、stale、
+conflict、malformed 或 unsupported 时，device report 不显示 fully closed；`closed_no_side_effect`
+只表示无副作用闭环，不表示 operation success；`open_retryable` 只要求显式后续判断，不表示自动 retry、
+queued replay 或执行中；`no_chain` / `no_request` 不表示 pending execution、migration queued 或
+legacy takeover。这个切片仍不接 Runtime `/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，
+也不重新聚合 raw cutover evidence，不调用 provider/dispatch/worker/writeback/systemd/config，不新增
+durable queue、一键迁移、自动 replay 或 legacy takeover。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

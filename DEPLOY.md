@@ -222,6 +222,14 @@ severity/attention、summary code、required action、blocked-by、安全 eviden
 Runtime `/api/v1/state`、DeviceObservability、Dashboard 和 systemd template 部署路径不会因此自动 retry、
 排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。这不是完整 #171
 operator-facing closure report。
+`SymphonyElixir.Hub.CutoverClosureReportPacket` 现在提供库级 closure report safe packet baseline，
+只把已有 chain/conclusion safe snapshot 或等价 fixture 组织成设备级和项目级只读 report 输入。它会保留
+report version、generated_at、只读边界、report status、operator conclusion、required action、
+blocked-by、closure-chain counts/reference counts 和 safe evidence fingerprint，并保证 project/provider
+scope、evidence reference 与 action code 不串项。部署语义不变：这个 packet 不接 Runtime
+`/api/v1/state`、DeviceObservability、Presenter 或 Dashboard，不重新读取 raw cutover evidence，不创建或
+消费 authorization，不调用 provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，不新增
+durable queue、一键迁移或 legacy service takeover。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

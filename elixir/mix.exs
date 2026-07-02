@@ -31,6 +31,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Hub.CutoverAuthorizationConsumptionGuard,
           SymphonyElixir.Hub.CutoverClosureChain,
           SymphonyElixir.Hub.CutoverClosureConclusion,
+          SymphonyElixir.Hub.CutoverClosureReportPacket,
           SymphonyElixir.Hub.CutoverExecutionAuthorization,
           SymphonyElixir.Hub.CutoverExecutionOutcomeCloseout,
           SymphonyElixir.Hub.CutoverExecutionOutcomeLedger,
