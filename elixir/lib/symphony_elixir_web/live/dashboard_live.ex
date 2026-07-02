@@ -318,6 +318,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   stale <%= hub_cutover_replay_request_audit_count(@payload, :stale_count) %> · conflict <%= hub_cutover_replay_request_audit_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_request_audit_count(@payload, :manual_attention_count) %> · outcome recorded <%= hub_cutover_replay_request_audit_count(@payload, :linked_outcome_recorded_count) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Chain</p>
+                <p class="metric-value"><%= hub_cutover_closure_chain_status(@payload) %></p>
+                <p class="metric-detail">
+                  closed <%= hub_cutover_closure_chain_count(@payload, :closed_succeeded) %> · no-side <%= hub_cutover_closure_chain_count(@payload, :closed_no_side_effect) %> · retryable <%= hub_cutover_closure_chain_count(@payload, :open_retryable) %> · manual <%= hub_cutover_closure_chain_count(@payload, :open_manual_attention) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_closure_chain_count(@payload, :stale) %> · conflict <%= hub_cutover_closure_chain_count(@payload, :conflict) %> · malformed <%= hub_cutover_closure_chain_count(@payload, :malformed) %> · unsupported <%= hub_cutover_closure_chain_count(@payload, :unsupported) %> · no chain <%= hub_cutover_closure_chain_count(@payload, :no_chain) %> · no request <%= hub_cutover_closure_chain_count(@payload, :no_request) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  closeout refs current <%= hub_cutover_closure_chain_ref_count(@payload, :closeout, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :closeout, :missing) %> · replay decision refs current <%= hub_cutover_closure_chain_ref_count(@payload, :replay_decision, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :replay_decision, :missing) %> · request audit refs current <%= hub_cutover_closure_chain_ref_count(@payload, :replay_request_audit, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :replay_request_audit, :missing) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  reason <%= hub_cutover_closure_chain_recent_codes(@payload, :reason) %> · action <%= hub_cutover_closure_chain_recent_codes(@payload, :action) %> · fp <%= hub_cutover_closure_chain_recent_fingerprints(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_chain_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_chain_flag(@payload, :no_side_effects) %> · auto replay allowed <%= hub_cutover_closure_chain_flag(@payload, :auto_replay_allowed) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -391,6 +411,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_replay_request_audit_badge_class(project.cutover_replay_request_audit && project.cutover_replay_request_audit.status)}>
                           replay request <%= hub_cutover_replay_request_audit_project_status(project.cutover_replay_request_audit) %>
+                        </span>
+                        <span class={hub_cutover_closure_chain_badge_class(project.cutover_closure_chain && project.cutover_closure_chain.status)}>
+                          closure <%= hub_cutover_closure_chain_project_status(project.cutover_closure_chain) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -485,6 +508,21 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={request <- hub_cutover_project_replay_requests(project)} class="muted event-meta">
                           replay request <%= request.side_effect_source %> <%= request.status %> / <%= request.outcome_link_status %>
+                        </span>
+                        <span :if={project.cutover_closure_chain} class="muted event-meta">
+                          closure closed <%= hub_cutover_closure_chain_project_count(project, :closed_succeeded) %> · retryable <%= hub_cutover_closure_chain_project_count(project, :open_retryable) %> · manual <%= hub_cutover_closure_chain_project_count(project, :open_manual_attention) %> · no request <%= hub_cutover_closure_chain_project_count(project, :no_request) %>
+                        </span>
+                        <span :if={project.cutover_closure_chain} class="muted event-meta">
+                          closure refs closeout current <%= hub_cutover_closure_chain_project_ref_count(project, :closeout, :current) %> · replay decision current <%= hub_cutover_closure_chain_project_ref_count(project, :replay_decision, :current) %> · request audit current <%= hub_cutover_closure_chain_project_ref_count(project, :replay_request_audit, :current) %>
+                        </span>
+                        <span :for={reason <- hub_cutover_project_closure_reason_codes(project)} class="muted event-meta">
+                          closure reason <%= reason %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_action_codes(project)} class="muted event-meta">
+                          closure action <%= action %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_fingerprints(project)} class="muted event-meta mono">
+                          closure fp <%= fingerprint %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -1109,6 +1147,60 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_closure_chain_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_chain"
+    end
+  end
+
+  defp hub_cutover_closure_chain_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :closure_status_counts])
+    |> hub_count(Atom.to_string(key))
+  end
+
+  defp hub_cutover_closure_chain_ref_count(payload, reference_type, status) do
+    payload
+    |> get_in([
+      :hub_device_observability,
+      :overview,
+      :cutover_closure_chain,
+      closure_chain_reference_count_key(reference_type)
+    ])
+    |> hub_count(Atom.to_string(status))
+  end
+
+  defp hub_cutover_closure_chain_recent_codes(payload, :reason) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_reason_codes])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_recent_codes(payload, :action) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_action_codes])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_recent_fingerprints(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_evidence_fingerprints])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_flag(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, key])
+    |> case do
+      true -> "true"
+      false -> "false"
+      _value -> "false"
+    end
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1256,6 +1348,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_replay_request_audit_badge_class("unsupported"), do: "state-badge state-badge-danger"
   defp hub_cutover_replay_request_audit_badge_class(_status), do: "state-badge state-badge-muted"
 
+  defp hub_cutover_closure_chain_badge_class("closed_succeeded"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_chain_badge_class("closed_no_side_effect"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_chain_badge_class("no_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_chain_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_chain_badge_class("open_retryable"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_chain_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_chain_badge_class("open_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class(_status), do: "state-badge state-badge-muted"
+
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
 
@@ -1294,6 +1398,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_replay_request_audit_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_replay_request_audit_project_status(_audit), do: "no_request"
+
+  defp hub_cutover_closure_chain_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_closure_chain_project_status(_closure_chain), do: "no_chain"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1473,6 +1580,65 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_cutover_project_replay_reason_codes(_project), do: []
+
+  defp hub_cutover_closure_chain_project_count(%{detail: %{closure_chain: %{closure_status_counts: counts}}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_closure_chain_project_count(_project, _key), do: 0
+
+  defp hub_cutover_closure_chain_project_ref_count(%{detail: %{closure_chain: closure_chain}}, reference_type, status)
+       when is_map(closure_chain) do
+    closure_chain
+    |> Map.get(closure_chain_reference_count_key(reference_type), %{})
+    |> hub_count(Atom.to_string(status))
+  end
+
+  defp hub_cutover_closure_chain_project_ref_count(_project, _reference_type, _status), do: 0
+
+  defp hub_cutover_project_closure_reason_codes(%{detail: %{closure_chain: %{recent_reason_codes: reason_codes}}})
+       when is_list(reason_codes) do
+    Enum.take(reason_codes, 3)
+  end
+
+  defp hub_cutover_project_closure_reason_codes(_project), do: []
+
+  defp hub_cutover_project_closure_action_codes(%{detail: %{closure_chain: %{recent_action_codes: action_codes}}})
+       when is_list(action_codes) do
+    Enum.take(action_codes, 3)
+  end
+
+  defp hub_cutover_project_closure_action_codes(_project), do: []
+
+  defp hub_cutover_project_closure_fingerprints(%{detail: %{closure_chain: %{safe_evidence_fingerprints: fingerprints}}})
+       when is_map(fingerprints) do
+    fingerprints
+    |> Enum.map(fn {key, value} -> "#{key}=#{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, "="))
+    |> Enum.sort()
+    |> Enum.take(3)
+  end
+
+  defp hub_cutover_project_closure_fingerprints(_project), do: []
+
+  defp closure_chain_reference_count_key(:closeout), do: :closeout_reference_status_counts
+  defp closure_chain_reference_count_key(:replay_decision), do: :replay_decision_reference_status_counts
+  defp closure_chain_reference_count_key(:replay_request_audit), do: :replay_request_audit_reference_status_counts
+
+  defp format_short_list(values) when is_list(values) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+    |> case do
+      [] -> "none"
+      items -> Enum.join(items, ", ")
+    end
+  end
+
+  defp format_short_list(_values), do: "none"
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

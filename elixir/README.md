@@ -438,9 +438,11 @@ time metadata. It distinguishes only `no_chain`, `no_request`, `closed_succeeded
 references remain evidence and do not imply execution success. For open chains it also exposes
 library-only retained-reference status for closeout, replay decision, and replay request audit:
 `missing`, `current`, `stale`, `conflict`, `malformed`, or `unsupported`, with summary/project
-counts and recent safe reason/action codes. These statuses are not a full closure report, do not
-allow retry, and are not wired into Runtime `/api/v1/state`, DeviceObservability, Presenter, or
-Dashboard.
+counts and recent safe reason/action codes. These statuses are not a full closure report and do not
+allow retry. Runtime, Presenter, `/api/v1/state`, DeviceObservability, and the Live Dashboard now
+surface the same safe snapshot as read-only device/project status, counts, reference-status counts,
+reason/action codes, and safe fingerprints only; they do not queue replay, retry automatically, or
+turn allowed replay references into execution success.
 Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
 `hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
 snapshot plus an injected `activation_probe` map or function and returns a serializable,
@@ -692,8 +694,10 @@ safe fingerprint / digest，不包含 token、raw provider payload、完整 prom
 `cutover_closure_chain` / `detail.closure_chain` 会给 Dashboard 和后续 closure report 提供稳定只读输入。
 它不会
 创建/消费 authorization、调用 provider、dispatch、启动 worker、writeback、操作 systemd、改配置、
-自动 retry 或 replay；它不是完整 operator-facing closure report，也没有新增 Dashboard UI 或接管 legacy
-service。
+自动 retry 或 replay；它不是完整 operator-facing closure report。Live Dashboard 现在只展示这些
+Runtime/API 已有 safe snapshot 的 Hub 设备级和项目级摘要，不会把 `auto_replay_allowed`、resolved
+closeout、allowed replay decision 或 allowed replay request audit 显示成自动 retry、已排队 replay、
+operation 成功或 legacy takeover。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

@@ -1871,7 +1871,11 @@ Runtime entrypoint:
   existing sanitized request/gate/permit/authorization/consumption-guard/outcome/closeout/replay
   summaries, SHOULD use `no_chain` or `no_request` when evidence is absent, and MUST NOT report
   pending execution or pending retry solely because closure evidence is missing. This projection is
-  not a complete closure report, not a Dashboard UI requirement, and not a retry/replay queue.
+  not a complete closure report and not a retry/replay queue. Dashboard views MAY render the
+  existing safe snapshot as read-only device/project status, counts, reference-status counts,
+  reason/action codes, and safe fingerprints, but MUST NOT present `auto_replay_allowed`, resolved
+  closeouts, allowed replay decisions, or allowed replay request audits as automatic retry, queued
+  replay, execution success, or legacy takeover.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

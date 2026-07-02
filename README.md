@@ -303,7 +303,8 @@ Hub Runtime 现在会从既有安全摘要构建 `hub_cutover_closure_chain`，P
 `/api/v1/state` 中输出这个只读 snapshot；`hub_device_observability.overview.cutover_closure_chain`
 和每个项目的 `cutover_closure_chain` / `detail.closure_chain` 也会暴露 closure status counts、
 三类 reference status counts、最近 reason/action code 和 safe evidence fingerprint。这个接入仍然
-不是完整 operator-facing closure report，也没有新增 Dashboard UI，不会自动 retry、排队 replay 或
+不是完整 operator-facing closure report；Live Dashboard 只把这个已有 safe snapshot 展示为
+Hub 设备总览和项目明细中的只读摘要，不会自动 retry、排队 replay、创建/消费 authorization 或
 接管 legacy service。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
