@@ -199,7 +199,13 @@ safe evidence fingerprint 和安全时间摘要。它区分 `no_chain`、`no_req
 outcome 只显示 `open_retryable`，matching `unknown` 或 `manual_attention` outcome 只显示
 `open_manual_attention`。这些 open 状态只是库级只读分类：表示后续仍需显式 retry consideration
 或 operator closeout/manual review，不能自动授权、自动消费、自动 replay，也不能从 closeout resolved、
-replay decision allowed 或 replay request allowed 推导 resolved/success。这个切片没有接入 Hub
+replay decision allowed 或 replay request allowed 推导 resolved/success。
+对 open chain，closure chain 还会把 retained closeout、replay decision、replay request audit
+归纳为 `missing` / `current` / `stale` / `conflict` / `malformed` / `unsupported` 的只读
+reference status，并在 summary、project summary 和 recent chain 中给出三类 status counts 与最近
+reason/action code。reference status 只是给后续报告解释 retained evidence 的库级 baseline，不会触发
+retry、创建/消费 authorization 或调用任何 side-effect 路径；输出也只保留 safe fingerprint / digest。
+这个切片没有接入 Hub
 Runtime `/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动
 retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走

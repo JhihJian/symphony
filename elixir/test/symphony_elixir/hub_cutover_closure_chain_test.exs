@@ -160,6 +160,167 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
            ]
   end
 
+  test "summarizes closeout reference status for open manual-attention chains" do
+    missing = outcome_fact(status: "unknown", project_id: "missing")
+    current = outcome_fact(status: "manual_attention", project_id: "current", side_effect_entered: true, side_effect_may_have_happened: true)
+    stale = outcome_fact(status: "unknown", project_id: "stale")
+    conflict = outcome_fact(status: "unknown", project_id: "conflict")
+    malformed = outcome_fact(status: "unknown", project_id: "malformed")
+    unsupported = outcome_fact(status: "unknown", project_id: "unsupported")
+
+    summary =
+      CutoverClosureChain.build(
+        %{
+          closure_chains: [
+            %{outcome: missing},
+            %{outcome: current, closeout: closeout_reference(current)},
+            %{outcome: stale, closeout: closeout_reference(stale, %{outcome_fingerprint: "old-outcome"})},
+            %{
+              outcome: conflict,
+              closeout:
+                closeout_reference(conflict, %{
+                  project_id: "other",
+                  provider_scope: provider_scope("other")
+                })
+            },
+            %{outcome: malformed, closeout: malformed |> closeout_reference() |> Map.delete(:resolution_code)},
+            %{outcome: unsupported, closeout: closeout_reference(unsupported, %{resolution_code: "retry_without_contract"})}
+          ]
+        },
+        now: @now
+      )
+
+    closeout_statuses = reference_statuses_by_project(summary, :closeout)
+
+    assert summary.status == "open_manual_attention"
+    assert Enum.all?(summary.recent_chains, &(&1.closure_status == "open_manual_attention"))
+
+    assert closeout_statuses == %{
+             "missing" => "missing",
+             "current" => "current",
+             "stale" => "stale",
+             "conflict" => "conflict",
+             "malformed" => "malformed",
+             "unsupported" => "unsupported"
+           }
+
+    assert summary.counts.reference_status_counts.closeout.current == 1
+    assert summary.counts.closeout_reference_status_counts.missing == 1
+    assert summary.counts.closeout_reference_status_counts.current == 1
+    assert summary.counts.closeout_reference_status_counts.stale == 1
+    assert summary.counts.closeout_reference_status_counts.conflict == 1
+    assert summary.counts.closeout_reference_status_counts.malformed == 1
+    assert summary.counts.closeout_reference_status_counts.unsupported == 1
+
+    current_project = Enum.find(summary.projects, &(&1.project_id == "current"))
+    assert current_project.counts.closeout_reference_status_counts.current == 1
+    assert "closeout_reference_current" in summary.recent_reference_reason_codes
+
+    snapshot = CutoverClosureChain.to_snapshot(summary)
+    assert snapshot.counts.closeout_reference_status_counts == summary.counts.closeout_reference_status_counts
+    assert reference_statuses_by_project(snapshot, :closeout) == closeout_statuses
+  end
+
+  test "summarizes replay decision and replay request audit reference status for retryable chains" do
+    missing = outcome_fact(status: "retryable", project_id: "missing")
+    current = outcome_fact(status: "retryable", project_id: "current")
+    stale = outcome_fact(status: "retryable", project_id: "stale")
+    conflict = outcome_fact(status: "retryable", project_id: "conflict")
+    malformed = outcome_fact(status: "retryable", project_id: "malformed")
+    unsupported = outcome_fact(status: "retryable", project_id: "unsupported")
+
+    current_decision = replay_decision_reference(current)
+    stale_decision = replay_decision_reference(stale, %{outcome_fingerprint: "old-outcome"})
+    conflict_decision = replay_decision_reference(conflict, %{project_id: "other", provider_scope: provider_scope("other")})
+    malformed_decision = malformed |> replay_decision_reference() |> Map.delete(:replay_decision_fingerprint)
+    unsupported_decision = replay_decision_reference(unsupported, %{decision: "retry_now"})
+
+    summary =
+      CutoverClosureChain.build(
+        %{
+          closure_chains: [
+            %{outcome: missing},
+            %{
+              outcome: current,
+              replay_decision: current_decision,
+              replay_request_audit: replay_request_audit_reference(current, current_decision)
+            },
+            %{
+              outcome: stale,
+              replay_decision: stale_decision,
+              replay_request_audit: replay_request_audit_reference(stale, stale_decision, %{outcome_fingerprint: "old-outcome"})
+            },
+            %{
+              outcome: conflict,
+              replay_decision: conflict_decision,
+              replay_request_audit:
+                replay_request_audit_reference(conflict, conflict_decision, %{
+                  project_id: "other",
+                  provider_scope: provider_scope("other")
+                })
+            },
+            %{
+              outcome: malformed,
+              replay_decision: malformed_decision,
+              replay_request_audit:
+                malformed
+                |> replay_request_audit_reference(malformed_decision)
+                |> Map.delete(:audit_record_fingerprint)
+            },
+            %{
+              outcome: unsupported,
+              replay_decision: unsupported_decision,
+              replay_request_audit: replay_request_audit_reference(unsupported, unsupported_decision, %{status: "execute_now"})
+            }
+          ]
+        },
+        now: @now
+      )
+
+    decision_statuses = reference_statuses_by_project(summary, :replay_decision)
+    request_statuses = reference_statuses_by_project(summary, :replay_request_audit)
+
+    assert summary.status == "open_retryable"
+    assert summary.auto_replay_allowed == false
+    assert Enum.all?(summary.recent_chains, &(&1.closure_status == "open_retryable"))
+
+    assert decision_statuses == %{
+             "missing" => "missing",
+             "current" => "current",
+             "stale" => "stale",
+             "conflict" => "conflict",
+             "malformed" => "malformed",
+             "unsupported" => "unsupported"
+           }
+
+    assert request_statuses == decision_statuses
+    assert summary.counts.replay_decision_reference_status_counts.missing == 1
+    assert summary.counts.replay_decision_reference_status_counts.current == 1
+    assert summary.counts.replay_decision_reference_status_counts.stale == 1
+    assert summary.counts.replay_decision_reference_status_counts.conflict == 1
+    assert summary.counts.replay_decision_reference_status_counts.malformed == 1
+    assert summary.counts.replay_decision_reference_status_counts.unsupported == 1
+    assert summary.counts.replay_request_audit_reference_status_counts == summary.counts.replay_decision_reference_status_counts
+
+    current_project = Enum.find(summary.projects, &(&1.project_id == "current"))
+    assert current_project.counts.replay_decision_reference_status_counts.current == 1
+    assert current_project.counts.replay_request_audit_reference_status_counts.current == 1
+    assert "replay_decision_reference_current" in summary.recent_reference_reason_codes
+    assert "replay_request_audit_reference_current" in summary.recent_reference_reason_codes
+
+    snapshot = CutoverClosureChain.to_snapshot(summary)
+    assert snapshot.counts.replay_decision_reference_status_counts == summary.counts.replay_decision_reference_status_counts
+    assert snapshot.counts.replay_request_audit_reference_status_counts == summary.counts.replay_request_audit_reference_status_counts
+    assert reference_statuses_by_project(snapshot, :replay_decision) == decision_statuses
+    assert reference_statuses_by_project(snapshot, :replay_request_audit) == request_statuses
+
+    safe_text = inspect(summary, limit: :infinity, printable_limit: :infinity)
+    refute safe_text =~ "ghp_secret"
+    refute safe_text =~ "raw_provider_response"
+    refute safe_text =~ "full prompt"
+    refute safe_text =~ "/home/jhihjian/private"
+  end
+
   test "retained references do not resolve open retryable outcomes" do
     outcome = outcome_fact(status: "retryable")
 
@@ -384,6 +545,13 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
     Enum.any?(chain.required_operator_actions, &(&1.code == code))
   end
 
+  defp reference_statuses_by_project(summary, type) do
+    summary.recent_chains
+    |> Map.new(fn chain ->
+      {chain.project_id, get_in(chain, [:retained_reference_statuses, type, :status])}
+    end)
+  end
+
   defp open_outcome_without_permit(status) do
     %{
       project_id: "alpha",
@@ -428,16 +596,19 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
 
   defp outcome_fact(opts) do
     status = Keyword.get(opts, :status, "succeeded")
+    project_id = Keyword.get(opts, :project_id, "alpha")
 
     CutoverExecutionOutcomeLedger.fact_snapshot(%{
-      project_id: "alpha",
-      provider_scope: provider_scope("alpha"),
+      project_id: project_id,
+      provider_scope: Keyword.get(opts, :provider_scope, provider_scope(project_id)),
       operation: "writeback",
       side_effect_source: "writeback_executor",
+      attempt_fingerprint: Keyword.get(opts, :attempt_fingerprint),
+      replay_key: Keyword.get(opts, :replay_key),
       status: status,
       reason_code: Keyword.get(opts, :reason_code, reason_for_status(status)),
       action_code: Keyword.get(opts, :action_code),
-      authorization_consumption_guard: guard_decision(decision: "allowed", allowed: true),
+      authorization_consumption_guard: guard_decision(decision: "allowed", allowed: true, project_id: project_id),
       executor_result:
         Keyword.get(opts, :executor_result, %{
           provider_io: status == "succeeded",
@@ -457,27 +628,125 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
   defp guard_decision(opts) do
     decision = Keyword.get(opts, :decision, "allowed")
     allowed = Keyword.get(opts, :allowed, decision == "allowed")
+    project_id = Keyword.get(opts, :project_id, "alpha")
 
     CutoverAuthorizationConsumptionGuard.to_decision(%{
-      project_id: "alpha",
-      provider_scope: provider_scope("alpha"),
+      project_id: project_id,
+      provider_scope: provider_scope(project_id),
       operation: "writeback",
       side_effect_source: "writeback_executor",
       decision: decision,
       allowed: allowed,
-      authorization_record_fingerprint: if(allowed, do: "record-alpha-writeback"),
-      authorization_request_fingerprint: if(allowed, do: "auth-alpha-writeback"),
+      authorization_record_fingerprint: if(allowed, do: "record-#{project_id}-writeback"),
+      authorization_request_fingerprint: if(allowed, do: "auth-#{project_id}-writeback"),
       reason_code: Keyword.get(opts, :reason_code, if(allowed, do: "authorization_consumed", else: "authorization_blocked")),
       action_code: Keyword.get(opts, :action_code),
       safe_evidence_fingerprints: %{
-        cutover_operation_request: "request-alpha",
-        readiness_permit: "permit-alpha",
+        cutover_operation_request: "request-#{project_id}",
+        readiness_permit: "permit-#{project_id}",
         readiness_permit_decision: "ready_for_execution_consideration",
-        cutover_gate: "gate-alpha",
-        dry_run_audit: "audit-alpha",
-        audit_history: "history-alpha"
+        cutover_gate: "gate-#{project_id}",
+        dry_run_audit: "audit-#{project_id}",
+        audit_history: "history-#{project_id}"
       }
     })
+  end
+
+  defp closeout_reference(outcome, attrs \\ %{}) do
+    Map.merge(
+      %{
+        closeout_record_fingerprint: "closeout-#{outcome.project_id}",
+        project_id: outcome.project_id,
+        provider_scope: outcome.provider_scope,
+        operation: outcome.operation,
+        side_effect_source: outcome.side_effect_source,
+        replay_key: outcome.replay_key,
+        attempt_fingerprint: outcome.attempt_fingerprint,
+        outcome_id: outcome.outcome_id,
+        status: "resolved",
+        resolution_code: "confirmed_resolved",
+        outcome_fingerprint: outcome.evidence_fingerprint,
+        outcome_status: outcome.status,
+        side_effect_entered: outcome.side_effect_entered,
+        side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+        cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+        authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+        authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+        readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+        readiness_permit_decision: outcome.readiness_permit_decision,
+        cutover_gate_fingerprint: outcome.cutover_gate_fingerprint,
+        dry_run_audit_fingerprint: outcome.dry_run_audit_fingerprint,
+        audit_history_fingerprint: outcome.audit_history_fingerprint,
+        consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+        safe_evidence_fingerprints: outcome.safe_evidence_fingerprints,
+        reason_code: "closeout_reference_current",
+        action_code: "review_closeout_reference",
+        source: "test"
+      },
+      attrs
+    )
+  end
+
+  defp replay_decision_reference(outcome, attrs \\ %{}) do
+    Map.merge(
+      %{
+        replay_decision_fingerprint: "replay-decision-#{outcome.project_id}",
+        project_id: outcome.project_id,
+        provider_scope: outcome.provider_scope,
+        operation: outcome.operation,
+        side_effect_source: outcome.side_effect_source,
+        replay_key: outcome.replay_key,
+        decision: "retry_consideration_allowed",
+        allowed: true,
+        reason_code: "replay_decision_reference_current",
+        action_code: "review_replay_decision_reference",
+        outcome_fingerprint: outcome.evidence_fingerprint,
+        outcome_status: outcome.status,
+        side_effect_entered: outcome.side_effect_entered,
+        side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+        cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+        authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+        authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+        readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+        readiness_permit_decision: outcome.readiness_permit_decision,
+        consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+        safe_evidence_fingerprints: outcome.safe_evidence_fingerprints
+      },
+      attrs
+    )
+  end
+
+  defp replay_request_audit_reference(outcome, decision, attrs \\ %{}) do
+    Map.merge(
+      %{
+        request_fingerprint: "replay-request-#{outcome.project_id}",
+        audit_record_fingerprint: "replay-request-audit-#{outcome.project_id}",
+        project_id: outcome.project_id,
+        provider_scope: outcome.provider_scope,
+        operation: outcome.operation,
+        side_effect_source: outcome.side_effect_source,
+        replay_key: outcome.replay_key,
+        status: "would_allow_retry_consideration",
+        outcome_link_status: "not_linked",
+        outcome_fingerprint: outcome.evidence_fingerprint,
+        outcome_status: outcome.status,
+        side_effect_entered: outcome.side_effect_entered,
+        side_effect_may_have_happened: outcome.side_effect_may_have_happened,
+        replay_decision_fingerprint: Map.get(decision, :replay_decision_fingerprint),
+        replay_decision_status: Map.get(decision, :decision),
+        cutover_operation_request_fingerprint: outcome.cutover_operation_request_fingerprint,
+        authorization_record_fingerprint: outcome.authorization_record_fingerprint,
+        authorization_request_fingerprint: outcome.authorization_request_fingerprint,
+        readiness_permit_fingerprint: outcome.readiness_permit_fingerprint,
+        readiness_permit_decision: outcome.readiness_permit_decision,
+        consumption_guard_fingerprint: outcome.safe_evidence_fingerprints.consumption_guard,
+        safe_evidence_fingerprints: outcome.safe_evidence_fingerprints,
+        reason_code: "replay_request_audit_reference_current",
+        action_code: "review_replay_request_audit_reference",
+        source: "test"
+      },
+      attrs
+    )
   end
 
   defp reason_for_status("succeeded"), do: "execution_succeeded"

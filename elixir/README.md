@@ -432,12 +432,15 @@ library-only read model. It consumes already-sanitized summaries or test fixture
 explicit attempt/replay key to project/provider scope, operation/source, cutover request, readiness
 permit, execution authorization, consumption guard, outcome, safe evidence fingerprint, and safe
 time metadata. It distinguishes only `no_chain`, `no_request`, `closed_succeeded`,
-`closed_no_side_effect`, `conflict`, `stale`, `malformed`, and `unsupported`. A matching
-`succeeded` outcome is the only source of `closed_succeeded`; allowed guard, authorization,
-closeout, replay decision, or replay request references remain evidence and do not imply execution
-success. This slice is not wired into Runtime `/api/v1/state`, DeviceObservability, Presenter, or
-Dashboard, and full retry/manual-attention, closeout/replay aggregation, and closure-report views
-remain later work.
+`closed_no_side_effect`, `open_retryable`, `open_manual_attention`, `conflict`, `stale`,
+`malformed`, and `unsupported`. A matching `succeeded` outcome is the only source of
+`closed_succeeded`; allowed guard, authorization, closeout, replay decision, or replay request
+references remain evidence and do not imply execution success. For open chains it also exposes
+library-only retained-reference status for closeout, replay decision, and replay request audit:
+`missing`, `current`, `stale`, `conflict`, `malformed`, or `unsupported`, with summary/project
+counts and recent safe reason/action codes. These statuses are not a full closure report, do not
+allow retry, and are not wired into Runtime `/api/v1/state`, DeviceObservability, Presenter, or
+Dashboard.
 Hub activation preflight runs before Hub-owned real actions for projects explicitly marked
 `hub_managed`. `SymphonyElixir.Hub.ActivationPreflight.build/2` consumes the safe registry/project
 snapshot plus an injected `activation_probe` map or function and returns a serializable,
@@ -679,7 +682,12 @@ consideration 重新判断 permit、authorization、consumption guard 和 replay
 `unknown` 或 `manual_attention` outcome 显示 `open_manual_attention`，表示需要 operator closeout 或
 人工复核。scope/source/operation/key/fingerprint 不匹配、字段不足、malformed 或 unsupported 输入仍
 优先显示 `stale`、`conflict`、`malformed` 或 `unsupported`。closeout、replay decision、replay
-request audit 只作为安全引用保留，不能把 open outcome 推导为 success、resolved 或 retry allowed。它不会
+request audit 只作为安全引用保留，不能把 open outcome 推导为 success、resolved 或 retry allowed。
+这些 retained reference 现在会额外输出 `missing`、`current`、`stale`、`conflict`、`malformed`、
+`unsupported` 的库级只读状态，并在 summary、project summary、recent chain 中暴露 closeout /
+replay decision / replay request audit counts 和最近 reason/action code；输出只包含安全状态、code 和
+safe fingerprint / digest，不包含 token、raw provider payload、完整 prompt/transcript、完整评论或 PR
+正文、本地私有路径、原始 systemd 输出或异常栈。它不会
 创建/消费 authorization、调用 provider、dispatch、启动 worker、writeback、操作 systemd、改配置、
 自动 retry 或 replay，也还没有接入 Runtime/API/Dashboard。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub

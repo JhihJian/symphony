@@ -1849,6 +1849,15 @@ Runtime entrypoint:
   imply success, resolved closeout, or retry allowed. Guard/no-authorization/validation blocks MAY
   close only as `closed_no_side_effect` when side-effect entry is explicitly false and
   may-have-happened is not true.
+- For open closure chains, the minimal contract SHOULD summarize retained closeout, replay decision,
+  and replay request audit references as read-only reference status. The status SHOULD distinguish
+  at least `missing`, `current`, `stale`, `conflict`, `malformed`, and `unsupported`, and summary,
+  project summary, and recent-chain output SHOULD expose per-reference-type status counts plus
+  recent safe reason/action codes. These reference statuses MUST NOT change closure final status,
+  create or consume authorization, allow retry, or trigger provider/dispatch/worker/writeback/systemd
+  paths. They MUST remain sanitized and include only safe status, reason/action code, and safe
+  fingerprints or digests, not tokens, raw provider payloads, full prompts/transcripts, full
+  comment/PR bodies, local private paths, raw systemd output, or exception stacks.
 - 最小 closure chain 合同 MUST remain read-only. It MUST NOT create authorization, consume
   authorization, call providers, dispatch work, start workers, write providers, operate systemd,
   edit configuration, queue retries, auto-replay side effects, or claim legacy service ownership.
