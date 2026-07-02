@@ -321,6 +321,43 @@ defmodule SymphonyElixir.HubCutoverClosureChainTest do
     refute safe_text =~ "/home/jhihjian/private"
   end
 
+  test "attaches retained references from existing safe summaries to matching outcome chains" do
+    outcome = outcome_fact(status: "retryable")
+    ledger = CutoverExecutionOutcomeLedger.build(%{events: [outcome]}, now: @now)
+    closeout = closeout_reference(outcome)
+
+    closeout_binding = %{
+      closeout_record_fingerprint: closeout.closeout_record_fingerprint,
+      closeout_resolution_code: closeout.resolution_code,
+      closeout_operator_request_fingerprint: Map.get(closeout, :operator_request_fingerprint)
+    }
+
+    decision = replay_decision_reference(outcome, closeout_binding)
+    request = replay_request_audit_reference(outcome, decision, closeout_binding)
+
+    summary =
+      CutoverClosureChain.build(
+        %{
+          cutover_execution_outcome_ledger: ledger,
+          cutover_execution_outcome_closeout: %{recent_closeouts: [closeout]},
+          cutover_replay_decision: %{recent_decisions: [decision]},
+          cutover_replay_request_audit: %{recent_requests: [request]}
+        },
+        now: @now
+      )
+
+    [chain] = summary.recent_chains
+
+    assert chain.closure_status == "open_retryable"
+    assert chain.retained_reference_statuses.closeout.status == "current"
+    assert chain.retained_reference_statuses.replay_decision.status == "current"
+    assert chain.retained_reference_statuses.replay_request_audit.status == "current"
+    assert summary.counts.closeout_reference_status_counts.current == 1
+    assert summary.counts.replay_decision_reference_status_counts.current == 1
+    assert summary.counts.replay_request_audit_reference_status_counts.current == 1
+    assert chain.auto_replay_allowed == false
+  end
+
   test "retained references do not resolve open retryable outcomes" do
     outcome = outcome_fact(status: "retryable")
 

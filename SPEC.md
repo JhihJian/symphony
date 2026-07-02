@@ -1441,7 +1441,8 @@ Runtime entrypoint:
   `hub_cutover_operation_audit`, `hub_cutover_audit_history`, `hub_cutover_readiness_permit`,
   `hub_cutover_execution_authorization_ledger`, `hub_cutover_authorization_consumption_guard`,
   `hub_cutover_execution_outcome_ledger`, `hub_cutover_execution_outcome_closeout`,
-  `hub_cutover_replay_decision`, `hub_cutover_replay_request_audit`, and
+  `hub_cutover_replay_decision`, `hub_cutover_replay_request_audit`,
+  `hub_cutover_closure_chain`, and
   `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
   SHOULD keep the existing API shape.
 - `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
@@ -1457,7 +1458,7 @@ Runtime entrypoint:
   replay-request-audit counts, and per-project summary errors. Each project detail SHOULD expose
   safe identity, provider scope, migration/ownership status, config snapshot version or fingerprint,
   activation preflight reason, cutover gate decision, cutover request/audit/history/permit summaries,
-  replay decision and replay request audit summaries, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
+  replay decision, replay request audit, and closure chain summaries, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
   candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
   and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
   MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
@@ -1864,6 +1865,13 @@ Runtime entrypoint:
   Retryable/manual-attention outcomes and closeout/replay aggregations MAY be retained as safe
   references or reported as open/unsupported until later closure-report slices define their full
   semantics.
+- Hub Runtime/API-safe snapshots MAY expose this minimal chain as `hub_cutover_closure_chain` and
+  as `hub_device_observability.overview.cutover_closure_chain` plus per-project
+  `cutover_closure_chain` / `detail.closure_chain`. These projections SHOULD be derived only from
+  existing sanitized request/gate/permit/authorization/consumption-guard/outcome/closeout/replay
+  summaries, SHOULD use `no_chain` or `no_request` when evidence is absent, and MUST NOT report
+  pending execution or pending retry solely because closure evidence is missing. This projection is
+  not a complete closure report, not a Dashboard UI requirement, and not a retry/replay queue.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

@@ -203,9 +203,11 @@ replay decision allowed 或 replay request allowed 推导 resolved/success。
 对 open chain，closure chain 还会把 retained closeout、replay decision、replay request audit
 归纳为 `missing` / `current` / `stale` / `conflict` / `malformed` / `unsupported` 的只读
 reference status，并在 summary、project summary 和 recent chain 中给出三类 status counts 与最近
-reason/action code。reference status 只是给后续报告解释 retained evidence 的库级 baseline，不会触发
+reason/action code。Hub Runtime/API 现在会把该只读摘要暴露为 `hub_cutover_closure_chain`，并在
+`hub_device_observability.overview.cutover_closure_chain` 和项目 detail 中给出对应 project/provider
+scope 的安全摘要。reference status 只是给后续报告解释 retained evidence 的 baseline，不会触发
 retry、创建/消费 authorization 或调用任何 side-effect 路径；输出也只保留 safe fingerprint / digest。
-这个切片没有接入 Hub
+这仍然不是完整 closure report、Dashboard UI 或自动 retry/replay 队列。
 Runtime `/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动
 retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
@@ -262,7 +264,10 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   cutover_replay_decision: .hub_cutover_replay_decision,
   device_cutover_replay_decision: .hub_device_observability.cutover_replay_decision,
   cutover_replay_request_audit: .hub_cutover_replay_request_audit,
-  device_cutover_replay_request_audit: .hub_device_observability.cutover_replay_request_audit
+  device_cutover_replay_request_audit: .hub_device_observability.cutover_replay_request_audit,
+  cutover_closure_chain: .hub_cutover_closure_chain,
+  device_cutover_closure_chain: .hub_device_observability.cutover_closure_chain,
+  overview_cutover_closure_chain: .hub_device_observability.overview.cutover_closure_chain
 }'
 ```
 

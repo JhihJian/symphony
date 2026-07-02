@@ -1031,13 +1031,37 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeCloseout do
   end
 
   defp side_effect_snapshot(record) do
+    existing = value(record, :outcome_side_effect) || value(record, :side_effect) || %{}
+
     %{
-      entered: boolean_value(value(record, :side_effect_entered)),
-      may_have_happened: boolean_value(value(record, :side_effect_may_have_happened))
+      entered:
+        first_boolean([
+          boolean_field(record, :side_effect_entered),
+          boolean_field(existing, :entered),
+          boolean_field(existing, :side_effect_entered)
+        ]),
+      may_have_happened:
+        first_boolean([
+          boolean_field(record, :side_effect_may_have_happened),
+          boolean_field(existing, :may_have_happened),
+          boolean_field(existing, :side_effect_may_have_happened)
+        ])
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
+
+  defp first_boolean(values), do: Enum.find(List.wrap(values), &is_boolean/1)
+
+  defp boolean_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_boolean(value) -> value
+      _other -> boolean_field(map, Atom.to_string(key))
+    end
+  end
+
+  defp boolean_field(map, key) when is_map(map), do: Map.get(map, key)
+  defp boolean_field(_map, _key), do: nil
 
   defp provider_scope_snapshot(scope) when is_map(scope) do
     %{
@@ -1232,9 +1256,6 @@ defmodule SymphonyElixir.Hub.CutoverExecutionOutcomeCloseout do
 
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
   defp non_negative_integer(_value), do: nil
-
-  defp boolean_value(value) when value in [true, false], do: value
-  defp boolean_value(_value), do: nil
 
   defp boolean_binding(value, _fallback) when value in [true, false], do: value
   defp boolean_binding(_value, fallback) when fallback in [true, false], do: fallback

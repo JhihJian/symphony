@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.HubDeviceObservabilityTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixir.Hub.DeviceObservability
+  alias SymphonyElixir.Hub.{CutoverClosureChain, DeviceObservability}
   alias SymphonyElixirWeb.Presenter
 
   defmodule StaticHubOrchestrator do
@@ -174,6 +174,56 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
     assert "workspace_occupied" in aggregate_reasons
     assert "writeback_unknown" in aggregate_reasons
     assert "manual_attention" in aggregate_reasons
+  end
+
+  test "exposes closure chain overview and project detail without crossing project scope" do
+    closure_chain =
+      CutoverClosureChain.build(
+        %{
+          closure_chains: [
+            device_closure_chain("alpha", "github:o/r", "retryable"),
+            device_closure_chain("beta", "gitlab:g/p", "succeeded")
+          ]
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    projection =
+      DeviceObservability.build(
+        %{
+          registry: %{
+            projects: [
+              registry_project("alpha", "github:o/r"),
+              registry_project("beta", "gitlab:g/p")
+            ],
+            warnings: [],
+            errors: []
+          },
+          runtime_ledger: %{projects: []},
+          cutover_closure_chain: closure_chain
+        },
+        now: ~U[2026-06-28 09:00:00Z]
+      )
+
+    assert projection.cutover_closure_chain.status == "open_retryable"
+    assert projection.cutover_closure_chain.counts.open_retryable_count == 1
+    assert projection.cutover_closure_chain.counts.closed_succeeded_count == 1
+    assert projection.overview.cutover_closure_chain.status == "open_retryable"
+    assert projection.overview.cutover_closure_chain.closure_status_counts.open_retryable == 1
+    assert projection.overview.cutover_closure_chain.closure_status_counts.closed_succeeded == 1
+    assert projection.overview.cutover_closure_chain.read_only == true
+    assert projection.overview.cutover_closure_chain.auto_replay_allowed == false
+
+    projects = Map.new(projection.projects, &{&1.project_id, &1})
+    assert projects["alpha"].cutover_closure_chain.status == "open_retryable"
+    assert projects["alpha"].detail.closure_chain.status == "open_retryable"
+    assert projects["alpha"].detail.closure_chain.safe_evidence_fingerprints["outcome"] == "alpha-outcome-fp"
+    assert projects["alpha"].detail.identity.provider_scope_key == "github:o/r"
+    assert projects["beta"].cutover_closure_chain.status == "closed_succeeded"
+    assert projects["beta"].detail.closure_chain.status == "closed_succeeded"
+    assert projects["beta"].detail.closure_chain.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
+    assert projects["beta"].detail.identity.provider_scope_key == "gitlab:g/p"
+    refute projects["alpha"].detail.closure_chain.safe_evidence_fingerprints["outcome"] == "beta-outcome-fp"
   end
 
   test "builds ready dry-run and hub-management decisions from safe summaries" do
@@ -686,6 +736,67 @@ defmodule SymphonyElixir.HubDeviceObservabilityTest do
       fingerprint: "#{project_id}-fingerprint",
       loaded_at: ~U[2026-06-28 08:55:00Z],
       load_error: nil
+    }
+  end
+
+  defp device_closure_chain(project_id, scope_key, status) do
+    kind = scope_key |> String.split(":", parts: 2) |> List.first()
+
+    provider_scope = %{
+      kind: kind,
+      key: scope_key,
+      provider_scope_key: scope_key,
+      scope: provider_scope(kind, scope_key)
+    }
+
+    %{
+      project_id: project_id,
+      provider_scope: provider_scope,
+      operation: "writeback",
+      side_effect_source: "writeback_executor",
+      attempt_fingerprint: "#{project_id}-attempt-fp",
+      replay_key: "#{project_id}-replay-key",
+      request: %{request_fingerprint: "#{project_id}-request-fp"},
+      readiness_permit: %{
+        permit_fingerprint: "#{project_id}-permit-fp",
+        decision: "ready_for_execution_consideration"
+      },
+      authorization: %{
+        status: "authorized_for_explicit_execution",
+        authorization_record_fingerprint: "#{project_id}-record-fp",
+        authorization_request_fingerprint: "#{project_id}-auth-request-fp"
+      },
+      consumption_guard: %{
+        project_id: project_id,
+        provider_scope: provider_scope,
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        decision: "allowed",
+        allowed: true,
+        decision_fingerprint: "#{project_id}-guard-fp"
+      },
+      outcome: %{
+        project_id: project_id,
+        provider_scope: provider_scope,
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        status: status,
+        attempt_fingerprint: "#{project_id}-attempt-fp",
+        replay_key: "#{project_id}-replay-key",
+        cutover_operation_request_fingerprint: "#{project_id}-request-fp",
+        readiness_permit_fingerprint: "#{project_id}-permit-fp",
+        readiness_permit_decision: "ready_for_execution_consideration",
+        authorization_record_fingerprint: "#{project_id}-record-fp",
+        authorization_request_fingerprint: "#{project_id}-auth-request-fp",
+        evidence_fingerprint: "#{project_id}-outcome-fp",
+        safe_evidence_fingerprints: %{
+          outcome: "#{project_id}-outcome-fp",
+          consumption_guard: "#{project_id}-guard-fp"
+        },
+        side_effect_entered: status == "succeeded",
+        side_effect_may_have_happened: status == "succeeded",
+        generated_at: "2026-06-28T09:00:00Z"
+      }
     }
   end
 

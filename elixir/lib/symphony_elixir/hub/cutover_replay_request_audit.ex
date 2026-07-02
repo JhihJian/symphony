@@ -1589,10 +1589,10 @@ defmodule SymphonyElixir.Hub.CutoverReplayRequestAudit do
 
   defp side_effect_snapshot(value) when is_map(value) do
     may_have_happened =
-      first_bound(value(value, :may_have_happened), value(value, :side_effect_may_have_happened))
+      first_bound(boolean_field(value, :may_have_happened), boolean_field(value, :side_effect_may_have_happened))
 
     %{
-      entered: boolean_value(first_bound(value(value, :entered), value(value, :side_effect_entered))),
+      entered: boolean_value(first_bound(boolean_field(value, :entered), boolean_field(value, :side_effect_entered))),
       may_have_happened: boolean_value(may_have_happened)
     }
     |> compact_map()
@@ -1753,6 +1753,15 @@ defmodule SymphonyElixir.Hub.CutoverReplayRequestAudit do
   defp first_bound(nil, right), do: right
   defp first_bound("", right), do: right
   defp first_bound(left, _right), do: left
+
+  defp boolean_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} when is_boolean(value) -> value
+      _other -> boolean_field(map, Atom.to_string(key))
+    end
+  end
+
+  defp boolean_field(map, key) when is_map(map), do: Map.get(map, key)
 
   defp truthy?(value), do: value in [true, "true", true, 1, "1", "yes", :yes]
   defp blank?(nil), do: true

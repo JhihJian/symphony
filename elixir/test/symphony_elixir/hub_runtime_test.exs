@@ -134,6 +134,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_replay_decision.status == "no_replay_decision"
       assert payload.hub_cutover_replay_decision.counts.decision_count == 0
       assert payload.hub_cutover_replay_decision.auto_replay_allowed == false
+      assert payload.hub_cutover_closure_chain.status == "no_request"
+      assert payload.hub_cutover_closure_chain.counts.no_request_count == 1
+      assert payload.hub_cutover_closure_chain.auto_replay_allowed == false
       assert payload.hub_project_registry.project_count == 1
       assert payload.hub_poll_coordination.registry.project_count == 1
       assert payload.hub_candidate_intake.counts.candidate_count == 0
@@ -145,6 +148,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_device_observability.overview.cutover_execution_outcome_closeout.status == "no_outcome"
       assert payload.hub_device_observability.cutover_replay_decision.status == "no_replay_decision"
       assert payload.hub_device_observability.overview.cutover_replay_decision.status == "no_replay_decision"
+      assert payload.hub_device_observability.cutover_closure_chain.status == "no_request"
+      assert payload.hub_device_observability.overview.cutover_closure_chain.status == "no_request"
 
       safe_text = inspect(payload)
       refute safe_text =~ "GITHUB_TOKEN"
@@ -168,6 +173,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_cutover_gate)
       refute Map.has_key?(legacy_payload, :hub_cutover_readiness_permit)
       refute Map.has_key?(legacy_payload, :hub_cutover_execution_outcome_ledger)
+      refute Map.has_key?(legacy_payload, :hub_cutover_closure_chain)
       refute Map.has_key?(legacy_payload, :hub_project_registry)
       refute Map.has_key?(legacy_payload, :hub_poll_coordination)
       refute Map.has_key?(legacy_payload, :hub_candidate_intake)
@@ -224,10 +230,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot.hub_cutover_replay_decision.auto_replay_allowed == false
       assert snapshot.hub_cutover_replay_request_audit.status == "no_request"
       assert snapshot.hub_cutover_replay_request_audit.counts.request_count == 0
+      assert snapshot.hub_cutover_closure_chain.status == "open_manual_attention"
+      assert snapshot.hub_cutover_closure_chain.counts.open_manual_attention_count == 1
+      assert snapshot.hub_cutover_closure_chain.counts.closed_succeeded_count == 0
+      assert snapshot.hub_cutover_closure_chain.counts.closeout_reference_status_counts.current == 1
+      assert snapshot.hub_cutover_closure_chain.auto_replay_allowed == false
       assert snapshot.hub_runtime.cutover_replay_decision.status == "retry_consideration_allowed"
       assert snapshot.hub_runtime.cutover_replay_request_audit.status == "no_request"
+      assert snapshot.hub_runtime.cutover_closure_chain.status == "open_manual_attention"
       assert snapshot.hub_device_observability.overview.cutover_replay_decision.status == "retry_consideration_allowed"
       assert snapshot.hub_device_observability.overview.cutover_replay_request_audit.status == "no_request"
+      assert snapshot.hub_device_observability.overview.cutover_closure_chain.status == "open_manual_attention"
 
       [project] = snapshot.hub_device_observability.projects
       assert project.cutover_execution_outcome_closeout.status == "resolved"
@@ -238,6 +251,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert project.detail.replay_decision.requires_operator_attention == false
       assert project.cutover_replay_request_audit.status == "no_request"
       assert project.detail.replay_request_audit.status == "no_request"
+      assert project.cutover_closure_chain.status == "open_manual_attention"
+      assert project.cutover_closure_chain.counts.closeout_reference_status_counts.current == 1
+      assert project.detail.closure_chain.status == "open_manual_attention"
+      assert project.detail.closure_chain.closeout_reference_status_counts["current"] == 1
+      assert project.detail.closure_chain.auto_replay_allowed == false
 
       replay_request =
         replay_request_from_snapshot(
@@ -266,8 +284,15 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert snapshot_with_request.hub_cutover_replay_request_audit.counts.request_count == 1
       assert snapshot_with_request.hub_cutover_replay_request_audit.counts.allow_count == 1
       assert snapshot_with_request.hub_cutover_replay_request_audit.auto_replay_allowed == false
+      assert snapshot_with_request.hub_cutover_closure_chain.status == "open_manual_attention"
+      assert snapshot_with_request.hub_cutover_closure_chain.counts.closed_succeeded_count == 0
+      assert snapshot_with_request.hub_cutover_closure_chain.counts.replay_decision_reference_status_counts.current == 1
+      assert snapshot_with_request.hub_cutover_closure_chain.counts.replay_request_audit_reference_status_counts.current == 1
+      assert snapshot_with_request.hub_cutover_closure_chain.auto_replay_allowed == false
       assert snapshot_with_request.hub_runtime.cutover_replay_request_audit.status == "would_allow_retry_consideration"
+      assert snapshot_with_request.hub_runtime.cutover_closure_chain.auto_replay_allowed == false
       assert snapshot_with_request.hub_device_observability.overview.cutover_replay_request_audit.allow_count == 1
+      assert snapshot_with_request.hub_device_observability.overview.cutover_closure_chain.auto_replay_allowed == false
 
       [project_with_request] = snapshot_with_request.hub_device_observability.projects
       assert project_with_request.cutover_replay_request_audit.status == "would_allow_retry_consideration"
@@ -275,6 +300,10 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert [audit_record] = project_with_request.cutover_replay_request_audit.requests
       assert audit_record.outcome_link_status == "not_linked"
       assert audit_record.no_side_effects == true
+      assert project_with_request.cutover_closure_chain.status == "open_manual_attention"
+      assert project_with_request.cutover_closure_chain.counts.replay_request_audit_reference_status_counts.current == 1
+      assert project_with_request.detail.closure_chain.status == "open_manual_attention"
+      assert project_with_request.detail.closure_chain.replay_request_audit_reference_status_counts["current"] == 1
 
       runtime_name = Module.concat(__MODULE__, :OutcomeCloseoutPresenter)
       static_snapshot_module = Module.concat(__MODULE__, :StaticSnapshot)
@@ -290,11 +319,19 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert payload.hub_cutover_replay_decision.counts.retry_consideration_allowed_count == 1
       assert payload.hub_cutover_replay_request_audit.status == "would_allow_retry_consideration"
       assert payload.hub_cutover_replay_request_audit.counts.allow_count == 1
+      assert payload.hub_cutover_closure_chain.status == "open_manual_attention"
+      assert payload.hub_cutover_closure_chain.counts.replay_request_audit_reference_status_counts.current == 1
+      assert payload.hub_cutover_closure_chain.auto_replay_allowed == false
 
       payload_closeout = payload.hub_device_observability.overview.cutover_execution_outcome_closeout
       assert payload_closeout.allow_explicit_retry_consideration_count == 1
       assert payload.hub_device_observability.overview.cutover_replay_decision.retry_consideration_allowed_count == 1
       assert payload.hub_device_observability.overview.cutover_replay_request_audit.allow_count == 1
+
+      closure_counts =
+        payload.hub_device_observability.overview.cutover_closure_chain.closure_status_counts
+
+      assert closure_counts.open_manual_attention == 1
 
       safe_text =
         inspect(
@@ -302,9 +339,11 @@ defmodule SymphonyElixir.HubRuntimeTest do
             payload.hub_cutover_execution_outcome_closeout,
             payload.hub_cutover_replay_decision,
             payload.hub_cutover_replay_request_audit,
+            payload.hub_cutover_closure_chain,
             payload.hub_device_observability.cutover_execution_outcome_closeout,
             payload.hub_device_observability.cutover_replay_decision,
-            payload.hub_device_observability.cutover_replay_request_audit
+            payload.hub_device_observability.cutover_replay_request_audit,
+            payload.hub_device_observability.cutover_closure_chain
           },
           limit: :infinity,
           printable_limit: :infinity
@@ -312,6 +351,111 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       refute safe_text =~ "ghp_secret"
       refute safe_text =~ "raw_provider_response"
+      refute safe_text =~ "/home/jhihjian/private"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "Runtime closure chain snapshot counts succeeded no-side-effect retryable manual and malformed evidence" do
+    root = tmp_root("hub-runtime-closure-chain-counts")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      for project_id <- ["success", "clear", "retry", "manual", "unknown", "malformed"] do
+        write_project!(root, project_id, tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", project_id]))
+      end
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: success
+          workflow_path: success/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: clear
+          workflow_path: clear/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: retry
+          workflow_path: retry/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: manual
+          workflow_path: manual/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: unknown
+          workflow_path: unknown/WORKFLOW.md
+          migration_state: hub_managed
+        - project_id: malformed
+          workflow_path: malformed/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      {:ok, registry} = ProjectRegistry.load(hub_path)
+
+      outcomes = [
+        closure_outcome("success", "succeeded"),
+        closure_outcome("clear", "not_executed",
+          guard_decision: "no_authorization",
+          side_effect_entered: false,
+          side_effect_may_have_happened: false
+        ),
+        closure_outcome("retry", "retryable"),
+        closure_outcome("manual", "manual_attention"),
+        closure_outcome("unknown", "unknown"),
+        closure_outcome("malformed", "malformed")
+      ]
+
+      snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-07-01 09:00:00Z], registry,
+          now: ~U[2026-07-01 09:00:00Z],
+          cutover_execution_outcome_ledger:
+            CutoverExecutionOutcomeLedger.build(%{events: outcomes},
+              now: ~U[2026-07-01 09:00:00Z]
+            )
+        )
+
+      closure = snapshot.hub_cutover_closure_chain
+      assert closure.status == "malformed"
+      assert closure.counts.chain_count == 6
+      assert closure.counts.closed_succeeded_count == 1
+      assert closure.counts.closed_no_side_effect_count == 1
+      assert closure.counts.open_retryable_count == 1
+      assert closure.counts.open_manual_attention_count == 2
+      assert closure.counts.malformed_count == 1
+      assert closure.auto_replay_allowed == false
+      assert snapshot.hub_runtime.cutover_closure_chain.counts.chain_count == 6
+
+      closure_counts =
+        snapshot.hub_device_observability.overview.cutover_closure_chain.closure_status_counts
+
+      assert closure_counts.open_manual_attention == 2
+
+      projects = Map.new(snapshot.hub_device_observability.projects, &{&1.project_id, &1})
+      assert projects["success"].cutover_closure_chain.status == "closed_succeeded"
+      assert projects["clear"].cutover_closure_chain.status == "closed_no_side_effect"
+      assert projects["retry"].cutover_closure_chain.status == "open_retryable"
+      assert projects["manual"].cutover_closure_chain.status == "open_manual_attention"
+      assert projects["unknown"].cutover_closure_chain.status == "open_manual_attention"
+      assert projects["malformed"].cutover_closure_chain.status == "malformed"
+
+      runtime_name = Module.concat(__MODULE__, :ClosureChainCountsSnapshot)
+
+      start_supervised!(
+        {__MODULE__.StaticSnapshot, name: runtime_name, snapshot: snapshot},
+        id: :hub_runtime_closure_chain_counts_snapshot
+      )
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_cutover_closure_chain.counts.chain_count == 6
+      assert payload.hub_device_observability.overview.cutover_closure_chain.closure_status_counts.open_retryable == 1
+
+      safe_text =
+        inspect({
+          payload.hub_cutover_closure_chain,
+          payload.hub_device_observability.overview.cutover_closure_chain
+        })
+
+      refute safe_text =~ "ghp_secret"
+      refute safe_text =~ "raw_provider_response"
+      refute safe_text =~ "full prompt"
       refute safe_text =~ "/home/jhihjian/private"
     after
       File.rm_rf(root)
@@ -2764,6 +2908,52 @@ defmodule SymphonyElixir.HubRuntimeTest do
       },
       side_effect_entered: side_effect_entered?,
       side_effect_may_have_happened: side_effect_entered?,
+      started_at: ~U[2026-07-01 09:00:00Z],
+      completed_at: ~U[2026-07-01 09:00:00Z]
+    })
+  end
+
+  defp closure_outcome(project_id, status, opts \\ []) do
+    guard_decision = Keyword.get(opts, :guard_decision, "allowed")
+    side_effect_entered = Keyword.get(opts, :side_effect_entered, status == "succeeded")
+
+    guard =
+      CutoverAuthorizationConsumptionGuard.to_decision(%{
+        project_id: project_id,
+        provider_scope: %{kind: "memory", key: "memory:#{project_id}", provider_scope_key: "memory:#{project_id}", scope: %{namespace: project_id}},
+        operation: "writeback",
+        side_effect_source: "writeback_executor",
+        decision: guard_decision,
+        allowed: guard_decision == "allowed",
+        authorization_record_fingerprint: "#{project_id}-record-fp",
+        authorization_request_fingerprint: "#{project_id}-auth-request-fp",
+        safe_evidence_fingerprints: %{
+          cutover_operation_request: "#{project_id}-request-fp",
+          readiness_permit: "#{project_id}-permit-fp",
+          readiness_permit_decision: "ready_for_execution_consideration",
+          cutover_gate: "#{project_id}-gate-fp",
+          dry_run_audit: "#{project_id}-audit-fp",
+          audit_history: "#{project_id}-history-fp"
+        }
+      })
+
+    CutoverExecutionOutcomeLedger.fact_snapshot(%{
+      project_id: project_id,
+      provider_scope: %{kind: "memory", key: "memory:#{project_id}", provider_scope_key: "memory:#{project_id}", scope: %{namespace: project_id}},
+      operation: "writeback",
+      side_effect_source: "writeback_executor",
+      status: status,
+      reason_code: "runtime_closure_#{status}",
+      action_code: "inspect_runtime_closure",
+      authorization_consumption_guard: guard,
+      executor_result: %{
+        provider_io: side_effect_entered,
+        raw_provider_response: "full provider response with ghp_secret",
+        full_prompt: "full prompt should not appear",
+        local_path: "/home/jhihjian/private/runtime.log"
+      },
+      side_effect_entered: side_effect_entered,
+      side_effect_may_have_happened: Keyword.get(opts, :side_effect_may_have_happened, side_effect_entered),
       started_at: ~U[2026-07-01 09:00:00Z],
       completed_at: ~U[2026-07-01 09:00:00Z]
     })

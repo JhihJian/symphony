@@ -11,7 +11,10 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
 
   alias SymphonyElixir.Hub.{
     CutoverAuthorizationConsumptionGuard,
+    CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
+    CutoverReplayDecision,
+    CutoverReplayRequestAudit,
     SafeSummary
   }
 
@@ -714,6 +717,8 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   end
 
   defp events_from_sources(sources, opts) do
+    references = reference_context(sources)
+
     direct =
       list_value(sources, :closure_chains) ++
         list_value(sources, :chains) ++
@@ -730,7 +735,10 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
             value(sources, :execution_outcome_ledger)
         )
 
-    direct ++ Enum.map(outcomes, &%{outcome: &1})
+    direct =
+      Enum.map(direct, &enrich_retained_references(&1, references))
+
+    direct ++ Enum.map(outcomes, &outcome_event(&1, references))
   end
 
   defp outcomes_from_ledger(nil), do: []
@@ -749,6 +757,134 @@ defmodule SymphonyElixir.Hub.CutoverClosureChain do
   end
 
   defp outcomes_from_ledger(_ledger), do: []
+
+  defp reference_context(sources) do
+    %{
+      closeouts:
+        sources
+        |> value(:cutover_execution_outcome_closeout)
+        |> Kernel.||(value(sources, :hub_cutover_execution_outcome_closeout))
+        |> all_closeout_references(),
+      replay_decisions:
+        sources
+        |> value(:cutover_replay_decision)
+        |> Kernel.||(value(sources, :hub_cutover_replay_decision))
+        |> all_replay_decision_references(),
+      replay_request_audits:
+        sources
+        |> value(:cutover_replay_request_audit)
+        |> Kernel.||(value(sources, :hub_cutover_replay_request_audit))
+        |> all_replay_request_references()
+    }
+  end
+
+  defp outcome_event(outcome, references) do
+    outcome = outcome_snapshot(outcome)
+
+    %{outcome: outcome}
+    |> enrich_retained_references(references)
+  end
+
+  defp enrich_retained_references(event, references) when is_map(event) do
+    outcome = outcome_snapshot(value(event, :outcome) || value(event, :execution_outcome) || event)
+
+    event
+    |> maybe_put_reference(:closeout, :execution_outcome_closeout, matching_reference(references.closeouts, outcome))
+    |> maybe_put_reference(:replay_decision, :replay_decision, matching_reference(references.replay_decisions, outcome))
+    |> maybe_put_reference(
+      :replay_request_audit,
+      :replay_request_audit,
+      matching_reference(references.replay_request_audits, outcome)
+    )
+  end
+
+  defp enrich_retained_references(event, _references), do: event
+
+  defp maybe_put_reference(event, key, alternate_key, reference) do
+    existing = value(event, key) || value(event, alternate_key) || get_in_value(event, [:retained_references, key])
+
+    if is_map(reference) and not is_map(existing) do
+      Map.put(event, key, reference)
+    else
+      event
+    end
+  end
+
+  defp all_closeout_references(nil), do: []
+
+  defp all_closeout_references(summary) when is_map(summary) do
+    snapshot = CutoverExecutionOutcomeCloseout.to_snapshot(summary)
+
+    (list_value(snapshot, :recent_closeouts) ++
+       Enum.flat_map(list_value(snapshot, :projects), &list_value(&1, :closeouts)))
+    |> Enum.map(&closeout_reference/1)
+    |> Enum.reject(&(&1 == %{}))
+  end
+
+  defp all_closeout_references(_summary), do: []
+
+  defp all_replay_decision_references(nil), do: []
+
+  defp all_replay_decision_references(summary) when is_map(summary) do
+    snapshot = CutoverReplayDecision.to_snapshot(summary)
+
+    (list_value(snapshot, :recent_decisions) ++
+       Enum.flat_map(list_value(snapshot, :projects), &list_value(&1, :recent_decisions)))
+    |> Enum.map(&replay_decision_reference/1)
+    |> Enum.reject(&(&1 == %{}))
+  end
+
+  defp all_replay_decision_references(_summary), do: []
+
+  defp all_replay_request_references(nil), do: []
+
+  defp all_replay_request_references(summary) when is_map(summary) do
+    snapshot = CutoverReplayRequestAudit.to_snapshot(summary)
+
+    (list_value(snapshot, :recent_requests) ++
+       Enum.flat_map(list_value(snapshot, :projects), &list_value(&1, :requests)))
+    |> Enum.map(&replay_request_reference/1)
+    |> Enum.reject(&(&1 == %{}))
+  end
+
+  defp all_replay_request_references(_summary), do: []
+
+  defp matching_reference(references, outcome) when is_list(references) and is_map(outcome) do
+    Enum.find(references, &reference_matches_outcome?(&1, outcome))
+  end
+
+  defp matching_reference(_references, _outcome), do: nil
+
+  defp reference_matches_outcome?(reference, outcome) do
+    same_project_operation_source?(reference, outcome) and
+      provider_scope_matches?(value(reference, :provider_scope), value(outcome, :provider_scope)) and
+      same_execution_reference?(reference, outcome)
+  end
+
+  defp same_project_operation_source?(left, right) do
+    optional_string(left, :project_id) == optional_string(right, :project_id) and
+      operation_name(value(left, :operation)) == operation_name(value(right, :operation)) and
+      source_name(value(left, :side_effect_source) || value(left, :source)) ==
+        source_name(value(right, :side_effect_source) || value(right, :source))
+  end
+
+  defp same_execution_reference?(reference, outcome) do
+    reference_outcome_fingerprint = optional_string(reference, :outcome_fingerprint)
+    outcome_fingerprint = optional_string(outcome, :evidence_fingerprint)
+    reference_replay_key = optional_string(reference, :replay_key)
+    outcome_replay_key = optional_string(outcome, :replay_key)
+
+    cond do
+      bound?(reference_outcome_fingerprint) and bound?(outcome_fingerprint) ->
+        reference_outcome_fingerprint == outcome_fingerprint
+
+      bound?(reference_replay_key) and bound?(outcome_replay_key) ->
+        reference_replay_key == outcome_replay_key
+
+      true ->
+        false
+    end
+  end
 
   defp outcome_snapshot(nil), do: nil
 
