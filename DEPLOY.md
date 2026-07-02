@@ -235,6 +235,18 @@ safe evidence fingerprint/reference 和只读边界信号。部署语义不变�
 chain/conclusion safe snapshot，不重新读取 raw cutover evidence，不创建或消费 authorization，不调用
 provider/dispatch/worker/writeback/systemd/config，不自动 retry/replay，不新增执行入口、durable queue、
 一键迁移或 legacy service takeover，也不是完整 #171 operator-facing closure report。
+仓库内 dry-run baseline 使用固定 safe fixture 验证上述 packet 在 Presenter、`/api/v1/state` 与
+Live Dashboard 之间的一致性：
+
+```bash
+cd elixir
+mise exec -- mix test test/symphony_elixir/hub_cutover_closure_report_packet_dry_run_test.exs
+```
+
+runbook 见 [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md)。
+该验证入口不读取 raw cutover evidence，不调用 provider、dispatch、worker starter、writeback、
+systemd、workspace hook 或配置修改路径，也不是自动 retry/replay、durable execution queue、一键迁移
+或 legacy service takeover。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

@@ -736,6 +736,18 @@ fingerprint/reference。Live Dashboard 现在只展示这些 Runtime/API 已有 
 status、provider scope、safe evidence fingerprint/reference 和只读边界信号。这个展示切片仍不是完整
 #171 execution closure report，不新增执行入口、自动 retry/replay 队列、durable execution queue、
 一键迁移或 legacy service takeover。
+Closure report packet dry-run baseline 通过 `SymphonyElixir.HubCutoverClosureReportPacketDryRunFixture`
+提供一个固定 safe fixture，并用 targeted test 复现同一 packet 进入 Presenter、`/api/v1/state` 与
+Live Dashboard 的输出：
+
+```bash
+mise exec -- mix test test/symphony_elixir/hub_cutover_closure_report_packet_dry_run_test.exs
+```
+
+该 dry-run 覆盖 `closed_succeeded`、`closed_no_side_effect`、`open_retryable`、manual/unknown、
+`no_request`、`no_chain` 和 stale 降级，并断言 provider scope、required action、blocked-by 和 safe
+evidence fingerprint/reference 不跨 project 串项。完整 runbook 见
+[`../docs/hub-cutover-closure-report-packet-dry-run.md`](../docs/hub-cutover-closure-report-packet-dry-run.md)。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

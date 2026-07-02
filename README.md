@@ -341,6 +341,11 @@ required actions、blocked-by、section status、provider scope、safe evidence 
 和只读边界信号。这个展示切片不重新聚合 raw cutover evidence，不调用
 provider/dispatch/worker/writeback/systemd/config，不新增执行入口、durable queue、一键迁移、自动
 retry/replay 或 legacy takeover，也不是完整 #171 operator-facing closure report。
+仓库内还提供 closure report packet dry-run baseline，用固定 safe fixture 复现同一 packet 如何进入
+Presenter、`/api/v1/state` 和 Live Dashboard。运行方式和预期字段见
+[`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md)；
+该 baseline 延续 #171/#172 拆分后 #173-#193 已完成的只读切片，不新增完整自动 cutover、
+durable execution queue、自动 retry/replay、一键迁移或 legacy service takeover。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
