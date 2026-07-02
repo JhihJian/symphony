@@ -698,6 +698,16 @@ safe fingerprint / digest，不包含 token、raw provider payload、完整 prom
 Runtime/API 已有 safe snapshot 的 Hub 设备级和项目级摘要，不会把 `auto_replay_allowed`、resolved
 closeout、allowed replay decision 或 allowed replay request audit 显示成自动 retry、已排队 replay、
 operation 成功或 legacy takeover。
+`SymphonyElixir.Hub.CutoverClosureConclusion` 是 closure chain safe snapshot 之上的库级 operator
+conclusion baseline。它接受 device summary、project summary 或单条 recent chain，输出稳定的
+conclusion、severity/attention level、summary code、required action codes、blocked-by、safe
+evidence references，以及 `read_only: true`、`no_side_effects: true`、`auto_retry_allowed: false`、
+`auto_replay_allowed: false` 等边界信号。`closed_no_side_effect` 会被解释为无副作用闭环而不是
+operation 成功；`open_retryable` 只会要求显式 retry consideration，不表示自动 retry、queued replay
+或执行中；`no_chain` / `no_request` 不表示 pending execution、pending retry、migration queued 或
+legacy takeover。这个模块不接 Runtime/API/Dashboard，不重新聚合底层 request/permit/authorization/
+guard/outcome evidence，不创建或消费 authorization，也不调用 provider、dispatch、worker、writeback、
+systemd 或配置路径。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
