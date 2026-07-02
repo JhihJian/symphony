@@ -757,6 +757,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_cutover_replay_request_audit",
              "hub_cutover_closure_chain",
              "hub_cutover_closure_conclusion",
+             "hub_cutover_closure_report_packet",
              "hub_device_observability"
            ],
            poll_tick: tick_summary

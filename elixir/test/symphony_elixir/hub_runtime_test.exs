@@ -1246,7 +1246,12 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_poll_tick_success
       )
 
-      assert %{poll_tick: %{status: "completed", selected_count: 1}} = Runtime.request_refresh(runtime_name)
+      assert %{
+               operations: operations,
+               poll_tick: %{status: "completed", selected_count: 1}
+             } = Runtime.request_refresh(runtime_name)
+
+      assert "hub_cutover_closure_report_packet" in operations
 
       assert_receive {:provider_candidate_scan, request}, 1_000
       assert request.operation_kind == :candidate_scan
