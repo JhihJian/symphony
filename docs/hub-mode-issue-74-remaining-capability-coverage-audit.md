@@ -94,15 +94,18 @@ Authorization/cookie、secret env、raw provider payload、完整 prompt/transcr
 
 ### 1. provider exit residual coverage and decision audit
 
-状态：`remaining_gap`
+状态：`owner_decision_needed`
 
 #74 原始验收要求“所有 provider 读写请求进入统一治理层”。当前 Hub-owned candidate scan、safe writeback 子集、
 structured provider tool routing 已有代码和测试；legacy single-project poll/writeback、raw GraphQL 工具、
 auto-update 或维护类 provider 访问仍保持兼容直连或未归入同一覆盖决策。
 
-首个切片的范围是一份最小、可审查的 inventory / decision baseline：哪些路径已经 Hub-governed，
-哪些路径按当前 baseline 明确保留 legacy direct，哪些路径属于后续最小迁移候选。所有 legacy 路径的
-行为迁移应由后续独立 issue 承担。
+#201 建立了首份最小、可审查的 inventory / decision baseline：
+[`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](hub-provider-exit-residual-coverage-decision-baseline.md)。
+该 baseline 明确区分哪些路径已经 Hub-governed、哪些路径按当前 baseline 保留 legacy direct、
+哪些 raw/unsupported path 必须 manual attention / provider lookup / permanent failure，以及哪些路径属于
+后续最小迁移候选。所有 legacy 路径的行为迁移仍应由后续独立 issue 承担；当前剩余动作是 Owner 判断
+是否关闭该 residual gap、降级为 scoped non-goal，或按候选继续拆迁移 issue。
 
 ### 2. restart/replay acceptance fixture for #74 runtime facts
 
@@ -125,24 +128,26 @@ attention。当前证据分散在多个模块测试中，缺少一个固定 safe
 
 ## 后续最小 issue 建议
 
-### 建议 1：Add Hub provider exit residual coverage decision baseline
+### 建议 1：Review Hub provider exit residual decision baseline and split scoped migrations
 
-目标：建立一份仓库内 provider exit inventory，把 Hub-owned governed paths、legacy direct paths、
-unsupported/raw escape hatches 和后续迁移候选分开列清，并补一个只读验证命令或测试引用证明 Hub-owned
-真实入口没有绕过 ProviderGovernance。
+目标：基于 #201 的 provider exit inventory，Owner 决定 residual gap 是关闭、降级为 scoped non-goal，
+还是按清单中的 `future_migration_candidate` 拆出 1 到 3 个后续迁移 issue。
 
-非目标：不迁移 legacy poll loop，不新增 provider I/O，不改 dynamic tool 行为，不接管 auto-update 或维护路径，
-不扩大 real writeback supported operations。
+非目标：不迁移 legacy poll loop，不新增 provider I/O，不改 dynamic tool 默认行为，不接管 auto-update
+或维护路径，不扩大 real writeback supported operations，不直接关闭 #74。
 
 验收重点：
 
-- 覆盖 GitHub/GitLab/Linear/Memory candidate scan、structured tools、real writeback safe subset、
-  raw `linear_graphql`、legacy single-project tracker path、auto-update/维护路径。
-- 每项标注 `hub_governed`、`legacy_direct_scoped_non_goal`、`unsupported_manual_attention` 或
-  `future_migration_candidate`。
-- 引用模块、测试和文档路径；不泄露 provider payload、token 或完整 comment/PR body。
+- 复核
+  [`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](hub-provider-exit-residual-coverage-decision-baseline.md)
+  中的 `hub_governed`、`legacy_direct_scoped_non_goal`、`unsupported_manual_attention`、
+  `future_migration_candidate` 和 `non_runtime_provider_access` 分类。
+- 明确哪些 legacy direct / raw escape hatch 保持 scoped non-goal，哪些需要单独迁移。
+- 后续 issue 必须继承本 baseline 的非目标和脱敏边界，不泄露 provider payload、token 或完整 comment/PR
+  body。
 
-更安全的原因：它先做出口事实和范围裁定，把“迁移所有 provider 调用”留给后续按路径拆分的 issue。
+更安全的原因：#201 已完成出口事实和范围裁定，后续只需要按 Owner 选择拆最小迁移，而不是在一个 issue 中
+一次性迁移所有 provider 调用。
 
 ### 建议 2：Add Hub runtime ledger restart/replay safe fixture baseline
 
@@ -208,6 +213,8 @@ mise exec -- mix test \
 
 - #74 epic：https://github.com/JhihJian/symphony/issues/74
 - #199 audit issue：https://github.com/JhihJian/symphony/issues/199
+- #201 provider exit decision baseline issue：https://github.com/JhihJian/symphony/issues/201
+- provider exit decision baseline：[`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](hub-provider-exit-residual-coverage-decision-baseline.md)
 - #171/#172 closure report 覆盖审计：[`docs/hub-cutover-closure-report-coverage-audit.md`](hub-cutover-closure-report-coverage-audit.md)
 - closure report packet dry-run runbook：[`docs/hub-cutover-closure-report-packet-dry-run.md`](hub-cutover-closure-report-packet-dry-run.md)
 - 项目说明：[`README.md`](../README.md)

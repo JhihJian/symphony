@@ -754,6 +754,13 @@ evidence fingerprint/reference 不跨 project 串项。完整 runbook 见
 #74 Hub mode 原始目标、已交付切片、remaining gaps 和后续最小 issue 建议的总覆盖审计见
 [`../docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](../docs/hub-mode-issue-74-remaining-capability-coverage-audit.md)；
 该文档只作为证据索引和 Owner 决策输入，不新增 Elixir runtime/API/Dashboard 语义。
+#74 provider exit residual coverage 的决策基线见
+[`../docs/hub-provider-exit-residual-coverage-decision-baseline.md`](../docs/hub-provider-exit-residual-coverage-decision-baseline.md)；
+它逐项标注 Hub-owned candidate scan、structured provider tools、writeback processor、real writeback
+safe subset、legacy tracker direct path、raw `linear_graphql`、auto-update/审查类路径和
+Dashboard/API safe summary 路径的 `hub_governed` / `legacy_direct_scoped_non_goal` /
+`unsupported_manual_attention` / `future_migration_candidate` / `non_runtime_provider_access`
+分类。该文档只补 #199 remaining gap 1 的 inventory / decision baseline，不新增 runtime provider I/O。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

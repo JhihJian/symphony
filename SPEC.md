@@ -1953,6 +1953,15 @@ Runtime entrypoint:
   this matrix maps goals, acceptance criteria, evidence, remaining gaps, and owner decisions. It is
   an audit artifact and MUST NOT imply new provider, dispatch, worker, writeback, systemd, config,
   retry/replay, durable queue, or legacy takeover behavior.
+- Repository maintainers SHOULD keep a separate provider exit residual coverage decision baseline
+  when #74-style provider governance is delivered incrementally. The Symphony repository baseline is
+  documented in
+  [`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](docs/hub-provider-exit-residual-coverage-decision-baseline.md);
+  it classifies provider access paths as `hub_governed`, `legacy_direct_scoped_non_goal`,
+  `unsupported_manual_attention`, `future_migration_candidate`, or `non_runtime_provider_access`.
+  This is a decision artifact only: it MUST distinguish code coverage, test coverage, and
+  documentation/decision coverage, and MUST NOT treat a documented legacy or raw escape hatch as a
+  runtime-governed Hub provider exit.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
