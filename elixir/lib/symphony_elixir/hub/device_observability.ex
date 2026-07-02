@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     CutoverAuditHistory,
     CutoverAuthorizationConsumptionGuard,
     CutoverClosureChain,
+    CutoverClosureConclusion,
     CutoverExecutionAuthorization,
     CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
@@ -190,6 +191,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     cutover_closure_chain =
       source_map(sources, [:cutover_closure_chain, :hub_cutover_closure_chain])
 
+    cutover_closure_conclusion =
+      source_map(sources, [:cutover_closure_conclusion, :hub_cutover_closure_conclusion])
+
     provider_queue = provider_queue_summary(sources, poll_coordination)
     legacy_projects = list_value(sources, :legacy_projects)
     managed_project_ids = managed_project_ids(sources, opts)
@@ -247,7 +251,8 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_execution_outcome_closeout: cutover_execution_outcome_closeout,
       cutover_replay_decision: cutover_replay_decision,
       cutover_replay_request_audit: cutover_replay_request_audit,
-      cutover_closure_chain: cutover_closure_chain
+      cutover_closure_chain: cutover_closure_chain,
+      cutover_closure_conclusion: cutover_closure_conclusion
     }
 
     projects =
@@ -289,6 +294,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_replay_decision: cutover_replay_decision,
       cutover_replay_request_audit: cutover_replay_request_audit,
       cutover_closure_chain: cutover_closure_chain,
+      cutover_closure_conclusion: cutover_closure_conclusion,
       migration_boundary: migration_boundary_summary(sources),
       provider_queue: sanitize_value(provider_queue),
       projects: projects,
@@ -543,6 +549,26 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         cutover_closure_chain_overview_snapshot(cutover_closure_chain)
       )
 
+    cutover_closure_conclusion =
+      cutover_closure_conclusion_snapshot(
+        value(projection, :cutover_closure_conclusion),
+        cutover_closure_chain,
+        generated_at
+      )
+
+    projects =
+      attach_project_cutover_closure_conclusions(
+        projects,
+        cutover_closure_conclusion.projects
+      )
+
+    overview =
+      Map.put(
+        overview,
+        :cutover_closure_conclusion,
+        cutover_closure_conclusion_overview_snapshot(cutover_closure_conclusion)
+      )
+
     %{
       version: positive_integer(value(projection, :version)) || @version,
       generated_at: generated_at,
@@ -562,6 +588,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_replay_decision: cutover_replay_decision,
       cutover_replay_request_audit: cutover_replay_request_audit,
       cutover_closure_chain: cutover_closure_chain,
+      cutover_closure_conclusion: cutover_closure_conclusion,
       migration_boundary: migration_boundary_snapshot(value(projection, :migration_boundary)),
       provider_queue: sanitize_value(value(projection, :provider_queue) || %{}),
       projects: projects,
@@ -761,6 +788,9 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     cutover_closure_chain =
       cutover_closure_chain_project_snapshot(value(project, :cutover_closure_chain))
 
+    cutover_closure_conclusion =
+      cutover_closure_conclusion_project_snapshot(value(project, :cutover_closure_conclusion))
+
     %{
       project_id: project_id,
       name: optional_string(project, :name),
@@ -789,6 +819,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_replay_decision: cutover_replay_decision,
       cutover_replay_request_audit: cutover_replay_request_audit,
       cutover_closure_chain: cutover_closure_chain,
+      cutover_closure_conclusion: cutover_closure_conclusion,
       summary_error: summary_error_snapshot(value(project, :summary_error)),
       backpressure_reasons: reason_snapshots(list_value(project, :backpressure_reasons))
     }
@@ -834,6 +865,11 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       |> value(:cutover_closure_chain)
       |> cutover_closure_chain_overview_snapshot()
 
+    cutover_closure_conclusion =
+      overview
+      |> value(:cutover_closure_conclusion)
+      |> cutover_closure_conclusion_overview_snapshot()
+
     %{
       hub_runtime: hub_runtime_overview_snapshot(value(overview, :hub_runtime)),
       scheduler: scheduler_overview_snapshot(value(overview, :scheduler)),
@@ -857,6 +893,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       cutover_replay_decision: cutover_replay_decision,
       cutover_replay_request_audit: cutover_replay_request_audit,
       cutover_closure_chain: cutover_closure_chain,
+      cutover_closure_conclusion: cutover_closure_conclusion,
       lifecycle: lifecycle_overview_snapshot(value(overview, :lifecycle)),
       manual_attention: manual_attention_overview_snapshot(value(overview, :manual_attention)),
       summary_errors: sanitize_list(value(overview, :summary_errors))
@@ -1625,6 +1662,64 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
         _detail -> %{}
       end
       |> Map.put(:closure_chain, project_closure_chain_detail(closure_chain, optional_string(project, :project_id)))
+
+    Map.put(project, :detail, detail)
+  end
+
+  defp cutover_closure_conclusion_snapshot(conclusion, closure_chain, generated_at) do
+    if usable_closure_conclusion?(conclusion) do
+      CutoverClosureConclusion.to_snapshot(conclusion)
+    else
+      CutoverClosureConclusion.build(closure_chain, now: generated_at)
+    end
+  end
+
+  defp usable_closure_conclusion?(conclusion) when is_map(conclusion) do
+    list_value(conclusion, :projects) != [] or
+      list_value(conclusion, :recent_chains) != [] or
+      not blank?(optional_string(conclusion, :conclusion)) or
+      not blank?(optional_string(conclusion, :summary_code))
+  end
+
+  defp usable_closure_conclusion?(_conclusion), do: false
+
+  defp cutover_closure_conclusion_project_snapshot(nil), do: nil
+
+  defp cutover_closure_conclusion_project_snapshot(conclusion) when is_map(conclusion) do
+    closure_conclusion_project_summary(conclusion)
+  end
+
+  defp cutover_closure_conclusion_project_snapshot(_conclusion), do: nil
+
+  defp attach_project_cutover_closure_conclusions(projects, conclusions) do
+    conclusions_by_project =
+      conclusions
+      |> Enum.reject(&is_nil/1)
+      |> Map.new(&{&1.project_id, &1})
+
+    Enum.map(projects, fn project ->
+      conclusion =
+        conclusions_by_project
+        |> Map.get(project.project_id)
+        |> cutover_closure_conclusion_project_snapshot()
+
+      project
+      |> Map.put(:cutover_closure_conclusion, conclusion)
+      |> put_project_detail_closure_conclusion(conclusion)
+    end)
+  end
+
+  defp put_project_detail_closure_conclusion(project, nil), do: project
+
+  defp put_project_detail_closure_conclusion(project, conclusion) do
+    detail =
+      project
+      |> value(:detail)
+      |> case do
+        detail when is_map(detail) -> detail
+        _detail -> %{}
+      end
+      |> Map.put(:closure_conclusion, closure_conclusion_detail_snapshot(conclusion))
 
     Map.put(project, :detail, detail)
   end
@@ -2949,6 +3044,75 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
     |> Enum.uniq()
   end
 
+  defp cutover_closure_conclusion_overview_snapshot(conclusion) when is_map(conclusion) do
+    %{
+      conclusion: optional_string(conclusion, :conclusion) || "no_explicit_closure_chain",
+      severity: optional_string(conclusion, :severity) || "none",
+      attention_level: optional_string(conclusion, :attention_level) || "none",
+      summary_code: optional_string(conclusion, :summary_code) || "closure_no_chain",
+      required_action_codes: string_list(value(conclusion, :required_action_codes)),
+      blocked_by: sanitize_list(value(conclusion, :blocked_by)),
+      evidence_references: sanitize_list(value(conclusion, :evidence_references)),
+      closure_chain_status: safe_status(value(conclusion, :closure_chain_status)) |> blank_to_default("no_chain"),
+      closure_status_counts: sanitize_value(value(conclusion, :closure_status_counts) || %{}),
+      reference_status_counts: sanitize_value(value(conclusion, :reference_status_counts) || %{}),
+      project_count: non_negative_integer(value(conclusion, :project_count)) || 0,
+      chain_count: non_negative_integer(value(conclusion, :chain_count)) || 0,
+      fully_closed: value(conclusion, :fully_closed) == true,
+      operation_success: value(conclusion, :operation_success) == true,
+      read_only: value(conclusion, :read_only) != false,
+      no_side_effects: value(conclusion, :no_side_effects) != false,
+      actions_are_advisory: value(conclusion, :actions_are_advisory) != false,
+      auto_retry_allowed: false,
+      auto_replay_allowed: false,
+      queued_replay: false,
+      pending_execution: false,
+      pending_retry: false,
+      legacy_takeover: false
+    }
+  end
+
+  defp cutover_closure_conclusion_overview_snapshot(_conclusion), do: cutover_closure_conclusion_overview_snapshot(%{})
+
+  defp closure_conclusion_project_summary(conclusion) when is_map(conclusion) do
+    %{
+      project_id: optional_string(conclusion, :project_id),
+      provider_scope: sanitize_value(value(conclusion, :provider_scope) || %{}),
+      conclusion: optional_string(conclusion, :conclusion) || "no_explicit_closure_chain",
+      severity: optional_string(conclusion, :severity) || "none",
+      attention_level: optional_string(conclusion, :attention_level) || "none",
+      summary_code: optional_string(conclusion, :summary_code) || "closure_no_chain",
+      required_action_codes: string_list(value(conclusion, :required_action_codes)),
+      blocked_by: sanitize_list(value(conclusion, :blocked_by)),
+      evidence_references: sanitize_list(value(conclusion, :evidence_references)),
+      closure_chain_status: safe_status(value(conclusion, :closure_chain_status)) |> blank_to_default("no_chain"),
+      closure_status_counts: sanitize_value(value(conclusion, :closure_status_counts) || %{}),
+      reference_status_counts: sanitize_value(value(conclusion, :reference_status_counts) || %{}),
+      safe_evidence_fingerprints: sanitize_value(value(conclusion, :safe_evidence_fingerprints) || %{}),
+      reason_codes: string_list(value(conclusion, :reason_codes)),
+      action_codes: string_list(value(conclusion, :action_codes)),
+      fully_closed: value(conclusion, :fully_closed) == true,
+      operation_success: value(conclusion, :operation_success) == true,
+      read_only: value(conclusion, :read_only) != false,
+      no_side_effects: value(conclusion, :no_side_effects) != false,
+      actions_are_advisory: value(conclusion, :actions_are_advisory) != false,
+      auto_retry_allowed: false,
+      auto_replay_allowed: false,
+      queued_replay: false,
+      pending_execution: false,
+      pending_retry: false,
+      legacy_takeover: false
+    }
+  end
+
+  defp closure_conclusion_detail_snapshot(conclusion) when is_map(conclusion) do
+    conclusion
+    |> closure_conclusion_project_summary()
+    |> Map.drop([:project_id])
+  end
+
+  defp closure_conclusion_detail_snapshot(_conclusion), do: closure_conclusion_detail_snapshot(%{})
+
   defp recent_replay_request_audit_codes(audit, key) do
     audit
     |> list_value(:recent_requests)
@@ -3020,6 +3184,7 @@ defmodule SymphonyElixir.Hub.DeviceObservability do
       replay_decision: replay_decision_detail_snapshot(value(detail, :replay_decision)),
       replay_request_audit: replay_request_audit_detail_snapshot(value(detail, :replay_request_audit)),
       closure_chain: closure_chain_detail_snapshot(value(detail, :closure_chain)),
+      closure_conclusion: closure_conclusion_detail_snapshot(value(detail, :closure_conclusion)),
       lifecycle: lifecycle_detail_snapshot(value(detail, :lifecycle)),
       writeback: writeback_detail_snapshot(value(detail, :writeback)),
       summary_error: summary_error_snapshot(value(detail, :summary_error))

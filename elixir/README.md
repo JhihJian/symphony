@@ -490,7 +490,8 @@ When `--port` is provided, `/api/v1/state` exposes Hub fields such as `hub_runti
 `hub_poll_coordination`, `hub_candidate_intake`, `hub_dispatch_planning`, `hub_dispatch_plan_application`,
 `hub_worker_start_handoff`, `hub_worker_lifecycle_reconciliation`, `hub_cutover_replay_decision`,
 `hub_cutover_replay_request_audit`,
-`hub_cutover_closure_chain`, `hub_dispatch_boundary`, and `hub_device_observability`.
+`hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`, `hub_dispatch_boundary`, and
+`hub_device_observability`.
 These snapshots are safe summaries: they show tick status, project eligibility, last poll/backoff,
 provider queue/scope summaries, intake counts, candidate identities, safe poll correlation ids,
 planning counts, planned/skipped outcomes, application applied/skipped/blocked/already-applied
@@ -698,16 +699,20 @@ safe fingerprint / digest，不包含 token、raw provider payload、完整 prom
 Runtime/API 已有 safe snapshot 的 Hub 设备级和项目级摘要，不会把 `auto_replay_allowed`、resolved
 closeout、allowed replay decision 或 allowed replay request audit 显示成自动 retry、已排队 replay、
 operation 成功或 legacy takeover。
-`SymphonyElixir.Hub.CutoverClosureConclusion` 是 closure chain safe snapshot 之上的库级 operator
-conclusion baseline。它接受 device summary、project summary 或单条 recent chain，输出稳定的
-conclusion、severity/attention level、summary code、required action codes、blocked-by、safe
-evidence references，以及 `read_only: true`、`no_side_effects: true`、`auto_retry_allowed: false`、
+`SymphonyElixir.Hub.CutoverClosureConclusion` 是 closure chain safe snapshot 之上的 operator
+conclusion baseline。Hub Runtime 现在只从既有 `hub_cutover_closure_chain` safe snapshot 派生
+`hub_cutover_closure_conclusion`，Presenter 会在 `/api/v1/state` 输出该只读结论；
+`hub_device_observability.cutover_closure_conclusion`、
+`hub_device_observability.overview.cutover_closure_conclusion` 和每个项目的
+`cutover_closure_conclusion` / `detail.closure_conclusion` 会输出稳定的 conclusion、
+severity/attention level、summary code、required action codes、blocked-by、safe evidence
+references，以及 `read_only: true`、`no_side_effects: true`、`auto_retry_allowed: false`、
 `auto_replay_allowed: false` 等边界信号。`closed_no_side_effect` 会被解释为无副作用闭环而不是
 operation 成功；`open_retryable` 只会要求显式 retry consideration，不表示自动 retry、queued replay
 或执行中；`no_chain` / `no_request` 不表示 pending execution、pending retry、migration queued 或
-legacy takeover。这个模块不接 Runtime/API/Dashboard，不重新聚合底层 request/permit/authorization/
-guard/outcome evidence，不创建或消费 authorization，也不调用 provider、dispatch、worker、writeback、
-systemd 或配置路径。
+legacy takeover。这个解释层不新增 Dashboard UI，不是完整 #171 operator-facing closure report，不重新
+聚合底层 request/permit/authorization/guard/outcome evidence，不创建或消费 authorization，也不调用
+provider、dispatch、worker、writeback、systemd 或配置路径。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
@@ -753,8 +758,10 @@ Use readiness for migration preparation only; it does not execute a migration.
    `hub_device_observability.cutover_replay_decision`,
    `hub_cutover_replay_request_audit`,
    `hub_device_observability.cutover_replay_request_audit`,
-   `hub_cutover_closure_chain`, and
-   `hub_device_observability.cutover_closure_chain`. The Dashboard shows the
+   `hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
+   `hub_device_observability.cutover_closure_chain`, and
+   `hub_device_observability.cutover_closure_conclusion`。API 会给消费者暴露 conclusion 数据，
+   但不新增 Dashboard UI。The Dashboard shows the
    same readiness, plan, ack, gate status, dry-run audit status, audit-history/closeout counts,
    permit status, authorization-ledger counts, consumption-guard counts and blocked sources,
    execution-outcome status/unknown/manual-attention/no-side-effect counts, leading reasons,

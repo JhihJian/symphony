@@ -306,14 +306,17 @@ Hub Runtime 现在会从既有安全摘要构建 `hub_cutover_closure_chain`，P
 不是完整 operator-facing closure report；Live Dashboard 只把这个已有 safe snapshot 展示为
 Hub 设备总览和项目明细中的只读摘要，不会自动 retry、排队 replay、创建/消费 authorization 或
 接管 legacy service。
-`SymphonyElixir.Hub.CutoverClosureConclusion` 在这个 safe snapshot 之上新增库级
-operator conclusion baseline。它可以消费 device summary、project summary 或单条 recent chain，
-把 `closed_succeeded`、`closed_no_side_effect`、`open_retryable`、`open_manual_attention`、
-`stale`、`conflict`、`malformed`、`unsupported`、`no_chain` 和 `no_request` 归一为
-operator-facing conclusion、severity/attention level、summary code、required action codes、
-blocked-by 和 safe evidence references。这个解释层仍然只读：不重新聚合底层 request/permit/
-authorization/guard/outcome evidence，不接 Runtime/API/Dashboard，不自动 retry/replay，不创建或消费
-authorization，也不接管 legacy service。它只给后续 closure report API 或 Dashboard 文案提供稳定输入。
+`SymphonyElixir.Hub.CutoverClosureConclusion` 在这个 safe snapshot 之上新增 operator conclusion
+baseline。Hub Runtime 现在只从既有 `hub_cutover_closure_chain` safe snapshot 派生
+`hub_cutover_closure_conclusion`，Presenter 会在 `/api/v1/state` 输出这个只读结论；
+`hub_device_observability.cutover_closure_conclusion`、
+`hub_device_observability.overview.cutover_closure_conclusion` 和每个项目的
+`cutover_closure_conclusion` / `detail.closure_conclusion` 也会暴露 conclusion、
+severity/attention level、summary code、required action codes、blocked-by、安全 evidence
+references，以及 read-only / no-side-effect / no-auto-retry / no-auto-replay 边界信号。这个解释层仍然
+只读：不重新聚合底层 request/permit/authorization/guard/outcome evidence，不新增 Dashboard UI，
+不是完整 #171 operator-facing closure report，不自动 retry/replay，不创建或消费 authorization，
+不调用 provider/dispatch/worker/writeback/systemd/config，也不接管 legacy service。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly
@@ -417,8 +420,10 @@ and inspect `hub_activation_preflight`,
 `hub_device_observability.cutover_replay_decision`,
 `hub_cutover_replay_request_audit`,
 `hub_device_observability.cutover_replay_request_audit`,
-`hub_cutover_closure_chain`, and
-`hub_device_observability.cutover_closure_chain`, and the Dashboard Hub sections in `/api/v1/state`.
+`hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`,
+`hub_device_observability.cutover_closure_chain`, and
+`hub_device_observability.cutover_closure_conclusion`。这只是给 API 消费者新增安全结论数据，
+不是新增 Dashboard UI。
 If an operator wants to record a non-executing acknowledgement, pass
 `--hub-activation-ack /path/to/ack.yaml`; the file is parsed into the safe summary and does not
 trigger migration or config edits.

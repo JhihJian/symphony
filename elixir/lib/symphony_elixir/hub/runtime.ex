@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     CutoverAuditHistory,
     CutoverAuthorizationConsumptionGuard,
     CutoverClosureChain,
+    CutoverClosureConclusion,
     CutoverExecutionAuthorization,
     CutoverExecutionOutcomeCloseout,
     CutoverExecutionOutcomeLedger,
@@ -89,6 +90,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:cutover_replay_decision) => map(),
           required(:cutover_replay_request_audit) => map(),
           required(:cutover_closure_chain) => map(),
+          required(:cutover_closure_conclusion) => map(),
           required(:worker_lifecycle_result_source) => WorkerLifecycleReconciliation.result_source(),
           required(:runtime_ledger) => RuntimeLedger.ledger(),
           required(:candidate_intake) => map(),
@@ -580,6 +582,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       cutover_replay_decision = initial_snapshot.hub_cutover_replay_decision
       cutover_replay_request_audit = initial_snapshot.hub_cutover_replay_request_audit
       cutover_closure_chain = initial_snapshot.hub_cutover_closure_chain
+      cutover_closure_conclusion = initial_snapshot.hub_cutover_closure_conclusion
 
       state = %{
         config_path: config_path,
@@ -604,6 +607,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_replay_decision: cutover_replay_decision,
         cutover_replay_request_audit: cutover_replay_request_audit,
         cutover_closure_chain: cutover_closure_chain,
+        cutover_closure_conclusion: cutover_closure_conclusion,
         activation_preflight: activation_preflight,
         cutover_gate: cutover_gate,
         worker_lifecycle_result_source: Keyword.get(opts, :worker_lifecycle_result_source, worker_lifecycle_result_source()),
@@ -748,6 +752,7 @@ defmodule SymphonyElixir.Hub.Runtime do
              "hub_cutover_replay_decision",
              "hub_cutover_replay_request_audit",
              "hub_cutover_closure_chain",
+             "hub_cutover_closure_conclusion",
              "hub_device_observability"
            ],
            poll_tick: tick_summary
@@ -1044,6 +1049,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         now: now
       )
 
+    cutover_closure_conclusion = CutoverClosureConclusion.build(cutover_closure_chain, now: now)
+
     device_observability =
       device_observability
       |> Map.put(:cutover_operation_audit, cutover_operation_audit)
@@ -1056,6 +1063,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       |> Map.put(:cutover_replay_decision, cutover_replay_decision)
       |> Map.put(:cutover_replay_request_audit, cutover_replay_request_audit)
       |> Map.put(:cutover_closure_chain, cutover_closure_chain)
+      |> Map.put(:cutover_closure_conclusion, cutover_closure_conclusion)
       |> DeviceObservability.to_snapshot()
 
     %{
@@ -1093,6 +1101,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_replay_decision: cutover_replay_decision,
         cutover_replay_request_audit: cutover_replay_request_audit,
         cutover_closure_chain: cutover_closure_chain,
+        cutover_closure_conclusion: cutover_closure_conclusion,
         writeback: writeback,
         scheduler: scheduler,
         poll_tick: tick,
@@ -1118,6 +1127,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       hub_cutover_replay_decision: cutover_replay_decision,
       hub_cutover_replay_request_audit: cutover_replay_request_audit,
       hub_cutover_closure_chain: cutover_closure_chain,
+      hub_cutover_closure_conclusion: cutover_closure_conclusion,
       hub_project_registry: registry_summary,
       hub_poll_coordination: poll_plan,
       hub_candidate_intake: candidate_intake,
@@ -1391,6 +1401,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_replay_decision: snapshot.hub_cutover_replay_decision,
         cutover_replay_request_audit: snapshot.hub_cutover_replay_request_audit,
         cutover_closure_chain: snapshot.hub_cutover_closure_chain,
+        cutover_closure_conclusion: snapshot.hub_cutover_closure_conclusion,
         tick: tick,
         snapshot: snapshot
     }
@@ -1459,6 +1470,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         "hub_cutover_replay_decision",
         "hub_cutover_replay_request_audit",
         "hub_cutover_closure_chain",
+        "hub_cutover_closure_conclusion",
         "hub_device_observability"
       ]
     }
@@ -1630,7 +1642,12 @@ defmodule SymphonyElixir.Hub.Runtime do
         scheduler: state.scheduler
       )
 
-    %{state | snapshot: snapshot, cutover_closure_chain: snapshot.hub_cutover_closure_chain}
+    %{
+      state
+      | snapshot: snapshot,
+        cutover_closure_chain: snapshot.hub_cutover_closure_chain,
+        cutover_closure_conclusion: snapshot.hub_cutover_closure_conclusion
+    }
   end
 
   defp next_schedule_delay(state, now) do
@@ -1904,6 +1921,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       "hub_cutover_replay_decision",
       "hub_cutover_replay_request_audit",
       "hub_cutover_closure_chain",
+      "hub_cutover_closure_conclusion",
       "hub_device_observability"
     ]
   end

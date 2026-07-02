@@ -209,14 +209,17 @@ scope 的安全摘要。reference status 只是给后续报告解释 retained ev
 retry、创建/消费 authorization 或调用任何 side-effect 路径；输出也只保留 safe fingerprint / digest。
 这仍然不是完整 closure report 或自动 retry/replay 队列；Live Dashboard 只展示 Runtime/API 已有
 safe snapshot 的设备级和项目级只读摘要。
-库级 `SymphonyElixir.Hub.CutoverClosureConclusion` 进一步把这个 safe snapshot 翻译成 operator
+`SymphonyElixir.Hub.CutoverClosureConclusion` 进一步把这个 safe snapshot 翻译成 operator
 conclusion、severity/attention、summary code、required action、blocked-by 和 safe evidence
-references。它只消费既有 closure chain safe snapshot、project summary 或单条 recent chain，不重新读取
+references。Hub Runtime/API 现在只从既有 closure chain safe snapshot 派生
+`hub_cutover_closure_conclusion`，并在 `hub_device_observability.cutover_closure_conclusion`、
+`hub_device_observability.overview.cutover_closure_conclusion` 和项目
+`cutover_closure_conclusion` / `detail.closure_conclusion` 中暴露对应摘要。它不重新读取
 provider、dispatch、worker、writeback、systemd 或配置路径来补 evidence。当前部署语义不变：它不新增
-Runtime `/api/v1/state` 字段、不新增 Dashboard 视图、不自动 retry/replay、不创建或消费 authorization，
-也不会接管 legacy service。
-Runtime `/api/v1/state`、DeviceObservability、Dashboard 或 systemd template 部署路径，也不会自动
-retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd 或修改配置。
+Dashboard 视图、不自动 retry/replay、不创建或消费 authorization，也不会接管 legacy service。
+Runtime `/api/v1/state` 和 DeviceObservability 只增加只读结论字段；Dashboard 或 systemd template
+部署路径不会因此自动 retry、排队迁移、调用 provider、dispatch、启动 worker、writeback、操作 systemd
+或修改配置。这不是完整 #171 operator-facing closure report。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、
@@ -274,7 +277,10 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
   device_cutover_replay_request_audit: .hub_device_observability.cutover_replay_request_audit,
   cutover_closure_chain: .hub_cutover_closure_chain,
   device_cutover_closure_chain: .hub_device_observability.cutover_closure_chain,
-  overview_cutover_closure_chain: .hub_device_observability.overview.cutover_closure_chain
+  overview_cutover_closure_chain: .hub_device_observability.overview.cutover_closure_chain,
+  cutover_closure_conclusion: .hub_cutover_closure_conclusion,
+  device_cutover_closure_conclusion: .hub_device_observability.cutover_closure_conclusion,
+  overview_cutover_closure_conclusion: .hub_device_observability.overview.cutover_closure_conclusion
 }'
 ```
 
