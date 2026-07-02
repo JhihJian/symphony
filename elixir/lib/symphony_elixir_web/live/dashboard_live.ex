@@ -338,6 +338,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   read-only <%= hub_cutover_closure_chain_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_chain_flag(@payload, :no_side_effects) %> · auto replay allowed <%= hub_cutover_closure_chain_flag(@payload, :auto_replay_allowed) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Conclusion</p>
+                <p class="metric-value"><%= hub_cutover_closure_conclusion(@payload) %></p>
+                <p class="metric-detail">
+                  severity <%= hub_cutover_closure_conclusion_value(@payload, :severity, "none") %> · attention <%= hub_cutover_closure_conclusion_value(@payload, :attention_level, "none") %>
+                </p>
+                <p class="metric-detail event-meta">
+                  summary <%= hub_cutover_closure_conclusion_value(@payload, :summary_code, "closure_no_chain") %> · actions <%= hub_cutover_closure_conclusion_list(@payload, :required_action_codes) %> · blocked <%= hub_cutover_closure_conclusion_blocked_by(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  evidence <%= hub_cutover_closure_conclusion_evidence(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_conclusion_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_conclusion_flag(@payload, :no_side_effects) %> · auto retry allowed <%= hub_cutover_closure_conclusion_flag(@payload, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_conclusion_flag(@payload, :auto_replay_allowed) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  pending execution <%= hub_cutover_closure_conclusion_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_flag(@payload, :legacy_takeover) %>
+                </p>
+              </article>
             </div>
           </section>
 
@@ -414,6 +434,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span class={hub_cutover_closure_chain_badge_class(project.cutover_closure_chain && project.cutover_closure_chain.status)}>
                           closure <%= hub_cutover_closure_chain_project_status(project.cutover_closure_chain) %>
+                        </span>
+                        <span class={hub_cutover_closure_conclusion_badge_class(project.cutover_closure_conclusion && project.cutover_closure_conclusion.conclusion)}>
+                          conclusion <%= hub_cutover_closure_conclusion_project_status(project.cutover_closure_conclusion) %>
                         </span>
                         <span class="muted event-meta"><%= project.migration_state %></span>
                         <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
@@ -523,6 +546,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                         <span :for={fingerprint <- hub_cutover_project_closure_fingerprints(project)} class="muted event-meta mono">
                           closure fp <%= fingerprint %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion summary <%= hub_cutover_closure_conclusion_project_value(project, :summary_code, "closure_no_chain") %> · severity <%= hub_cutover_closure_conclusion_project_value(project, :severity, "none") %> · attention <%= hub_cutover_closure_conclusion_project_value(project, :attention_level, "none") %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_conclusion_actions(project)} class="muted event-meta">
+                          conclusion action <%= action %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_closure_conclusion_blockers(project)} class="muted event-meta">
+                          conclusion blocked <%= blocked %>
+                        </span>
+                        <span :for={evidence <- hub_cutover_project_closure_conclusion_evidence(project)} class="muted event-meta">
+                          conclusion evidence <%= evidence %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_conclusion_fingerprints(project)} class="muted event-meta mono">
+                          conclusion fp <%= fingerprint %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion read-only <%= hub_cutover_closure_conclusion_project_flag(project, :read_only) %> · no side effects <%= hub_cutover_closure_conclusion_project_flag(project, :no_side_effects) %> · auto retry allowed <%= hub_cutover_closure_conclusion_project_flag(project, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_conclusion_project_flag(project, :auto_replay_allowed) %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion pending execution <%= hub_cutover_closure_conclusion_project_flag(project, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_project_flag(project, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_project_flag(project, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_project_flag(project, :legacy_takeover) %>
                         </span>
                         <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
                           <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
@@ -1201,6 +1245,45 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_cutover_closure_conclusion(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :conclusion])
+    |> case do
+      conclusion when is_binary(conclusion) -> conclusion
+      _conclusion -> "no_explicit_closure_chain"
+    end
+  end
+
+  defp hub_cutover_closure_conclusion_value(payload, key, default) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_conclusion_list(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_conclusion_blocked_by(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :blocked_by])
+    |> format_blockers()
+  end
+
+  defp hub_cutover_closure_conclusion_evidence(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :evidence_references])
+    |> format_evidence_references()
+  end
+
+  defp hub_cutover_closure_conclusion_flag(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> format_boolean_flag()
+  end
+
   defp hub_global_risk_count(payload, key) do
     payload
     |> get_in([:hub_device_observability, :migration_readiness, key])
@@ -1349,7 +1432,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_replay_request_audit_badge_class(_status), do: "state-badge state-badge-muted"
 
   defp hub_cutover_closure_chain_badge_class("closed_succeeded"), do: "state-badge state-badge-active"
-  defp hub_cutover_closure_chain_badge_class("closed_no_side_effect"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_chain_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
   defp hub_cutover_closure_chain_badge_class("no_chain"), do: "state-badge state-badge-muted"
   defp hub_cutover_closure_chain_badge_class("no_request"), do: "state-badge state-badge-muted"
   defp hub_cutover_closure_chain_badge_class("open_retryable"), do: "state-badge state-badge-warning"
@@ -1359,6 +1442,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_cutover_closure_chain_badge_class("malformed"), do: "state-badge state-badge-danger"
   defp hub_cutover_closure_chain_badge_class("unsupported"), do: "state-badge state-badge-danger"
   defp hub_cutover_closure_chain_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_closure_conclusion_badge_class("closed_succeeded"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_conclusion_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("no_explicit_cutover_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("no_explicit_closure_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("waiting_explicit_retry_consideration"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("evidence_stale_reaudit_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("unsupported_closure_report_slice"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("manual_attention_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class("evidence_conflict_reaudit_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class("input_malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class(_conclusion), do: "state-badge state-badge-muted"
 
   defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
   defp hub_readiness_project_status(_readiness), do: "readiness unknown"
@@ -1401,6 +1496,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_closure_chain_project_status(%{status: status}) when is_binary(status), do: status
   defp hub_cutover_closure_chain_project_status(_closure_chain), do: "no_chain"
+
+  defp hub_cutover_closure_conclusion_project_status(%{conclusion: conclusion}) when is_binary(conclusion), do: conclusion
+  defp hub_cutover_closure_conclusion_project_status(_conclusion), do: "no_explicit_closure_chain"
 
   defp hub_project_status("ready_to_poll"), do: "ready"
   defp hub_project_status("manual_attention"), do: "manual attention"
@@ -1621,6 +1719,48 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_cutover_project_closure_fingerprints(_project), do: []
 
+  defp hub_cutover_closure_conclusion_project_value(project, key, default) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_conclusion_project_flag(project, key) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(key)
+    |> format_boolean_flag()
+  end
+
+  defp hub_cutover_project_closure_conclusion_actions(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:required_action_codes)
+    |> short_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_blockers(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:blocked_by)
+    |> blocker_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_evidence(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:evidence_references)
+    |> evidence_reference_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_fingerprints(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:safe_evidence_fingerprints)
+    |> fingerprint_values()
+  end
+
   defp closure_chain_reference_count_key(:closeout), do: :closeout_reference_status_counts
   defp closure_chain_reference_count_key(:replay_decision), do: :replay_decision_reference_status_counts
   defp closure_chain_reference_count_key(:replay_request_audit), do: :replay_request_audit_reference_status_counts
@@ -1639,6 +1779,123 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_short_list(_values), do: "none"
+
+  defp short_values(values) when is_list(values) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp short_values(_values), do: []
+
+  defp format_blockers(values) do
+    values
+    |> blocker_values()
+    |> case do
+      [] -> "none"
+      blockers -> Enum.join(blockers, ", ")
+    end
+  end
+
+  defp blocker_values(values) when is_list(values) do
+    values
+    |> Enum.map(&blocker_text/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp blocker_values(_values), do: []
+
+  defp blocker_text(value) when is_map(value) do
+    code = value |> value_from_map(:code) |> string_or_default("")
+    closure_status = value |> value_from_map(:closure_chain_status) |> string_or_default("")
+    reference_type = value |> value_from_map(:reference_type) |> string_or_default("")
+    reference_status = value |> value_from_map(:reference_status) |> string_or_default("")
+
+    cond do
+      code != "" and closure_status != "" -> "#{code}/#{closure_status}"
+      code != "" and reference_type != "" and reference_status != "" -> "#{code}/#{reference_type}:#{reference_status}"
+      code != "" -> code
+      true -> ""
+    end
+  end
+
+  defp blocker_text(value) when is_binary(value), do: value
+  defp blocker_text(_value), do: ""
+
+  defp format_evidence_references(values) do
+    values
+    |> evidence_reference_values()
+    |> case do
+      [] -> "none"
+      evidence -> Enum.join(evidence, ", ")
+    end
+  end
+
+  defp evidence_reference_values(values) when is_list(values) do
+    values
+    |> Enum.flat_map(&evidence_reference_texts/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp evidence_reference_values(_values), do: []
+
+  defp evidence_reference_texts(reference) when is_map(reference) do
+    [
+      evidence_reference_status_text(reference),
+      reference |> value_from_map(:safe_evidence_fingerprints) |> fingerprint_values() |> Enum.join(", ")
+    ]
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp evidence_reference_texts(_reference), do: []
+
+  defp evidence_reference_status_text(reference) do
+    type = reference |> value_from_map(:type) |> string_or_default("")
+    status = reference |> value_from_map(:closure_chain_status) |> string_or_default("")
+    summary = reference |> value_from_map(:summary_code) |> string_or_default("")
+
+    [type, status, summary]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("/")
+  end
+
+  defp fingerprint_values(fingerprints) when is_map(fingerprints) do
+    fingerprints
+    |> Enum.map(fn {key, value} -> "#{key}=#{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, "="))
+    |> Enum.sort()
+    |> Enum.take(3)
+  end
+
+  defp fingerprint_values(_fingerprints), do: []
+
+  defp closure_conclusion_from_project(%{detail: %{closure_conclusion: conclusion}}) when is_map(conclusion) do
+    conclusion
+  end
+
+  defp closure_conclusion_from_project(%{cutover_closure_conclusion: conclusion}) when is_map(conclusion) do
+    conclusion
+  end
+
+  defp closure_conclusion_from_project(_project), do: %{}
+
+  defp value_from_map(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp string_or_default(value, _default) when is_binary(value) and value != "", do: value
+  defp string_or_default(_value, default), do: default
+
+  defp format_boolean_flag(value) do
+    if value == true, do: "true", else: "false"
+  end
 
   defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
   defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"

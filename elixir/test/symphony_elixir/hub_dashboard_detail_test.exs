@@ -62,12 +62,14 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "Replay Decision"
     assert html =~ "Replay Request"
     assert html =~ "Closure Chain"
+    assert html =~ "Closure Conclusion"
     assert html =~ "scheduler scheduled"
     assert html =~ "runtime_reconciliation"
     assert html =~ "provider_failure"
     assert html =~ "alpha"
     assert html =~ "ready"
     assert html =~ "closure closed_succeeded"
+    assert html =~ "conclusion closed_succeeded"
     assert html =~ "gamma"
     assert html =~ "manual attention"
     assert html =~ "unknown_manual_attention"
@@ -79,6 +81,10 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "replay blocked_unresolved_outcome"
     assert html =~ "replay request no_request"
     assert html =~ "closure open_manual_attention"
+    assert html =~ "manual_attention_required"
+    assert html =~ "summary closure_open_manual_attention_required"
+    assert html =~ "actions resolve_manual_attention"
+    assert html =~ "blocked manual_attention_required/open_manual_attention"
     assert html =~ "closeout refs current"
     assert html =~ "replay decision refs current"
     assert html =~ "request audit refs current"
@@ -86,14 +92,20 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "closure reason closeout_reference_current"
     assert html =~ "closure action record_cutover_replay_request_audit"
     assert html =~ "closure fp outcome=gamma-outcome-fp"
+    assert html =~ "conclusion fp outcome=gamma-outcome-fp"
     assert html =~ "auto replay allowed false"
+    assert html =~ "auto retry allowed false"
+    assert html =~ "pending execution false"
+    assert html =~ "pending retry false"
+    assert html =~ "queued replay false"
+    assert html =~ "legacy takeover false"
     assert html =~ "ack resolve_writeback_manual_attention"
     assert html =~ "action resolve_writeback_manual_attention"
     assert html =~ "writeback pending"
     refute html =~ "ghp_secret"
     refute html =~ "Bearer"
     refute html =~ "raw systemd output"
-    refute html =~ "queued replay"
+    refute html =~ "queued replay true"
     refute html =~ "automatic retry"
   end
 
@@ -166,6 +178,27 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert hub["overview"]["cutover_closure_chain"]["read_only"] == true
     assert hub["overview"]["cutover_closure_chain"]["no_side_effects"] == true
     assert hub["overview"]["cutover_closure_chain"]["auto_replay_allowed"] == false
+    assert hub["cutover_closure_conclusion"]["conclusion"] == "manual_attention_required"
+    assert hub["cutover_closure_conclusion"]["summary_code"] == "closure_open_manual_attention_required"
+    assert hub["cutover_closure_conclusion"]["fully_closed"] == false
+    assert hub["cutover_closure_conclusion"]["operation_success"] == false
+    assert hub["cutover_closure_conclusion"]["auto_retry_allowed"] == false
+    assert hub["cutover_closure_conclusion"]["auto_replay_allowed"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["conclusion"] == "manual_attention_required"
+    assert hub["overview"]["cutover_closure_conclusion"]["severity"] == "warning"
+    assert hub["overview"]["cutover_closure_conclusion"]["attention_level"] == "manual_attention"
+    assert hub["overview"]["cutover_closure_conclusion"]["summary_code"] == "closure_open_manual_attention_required"
+    assert "resolve_manual_attention" in hub["overview"]["cutover_closure_conclusion"]["required_action_codes"]
+    assert hub["overview"]["cutover_closure_conclusion"]["blocked_by"] != []
+    assert hub["overview"]["cutover_closure_conclusion"]["evidence_references"] != []
+    assert hub["overview"]["cutover_closure_conclusion"]["read_only"] == true
+    assert hub["overview"]["cutover_closure_conclusion"]["no_side_effects"] == true
+    assert hub["overview"]["cutover_closure_conclusion"]["auto_retry_allowed"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["auto_replay_allowed"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["pending_execution"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["pending_retry"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["queued_replay"] == false
+    assert hub["overview"]["cutover_closure_conclusion"]["legacy_takeover"] == false
 
     projects = Map.new(hub["projects"], &{&1["project_id"], &1})
     assert projects["alpha"]["detail"]["candidate_intake"]["counts"]["candidate_count"] == 1
@@ -180,6 +213,10 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["alpha"]["cutover_replay_request_audit"]["status"] == "no_request"
     assert projects["alpha"]["cutover_closure_chain"]["status"] == "closed_succeeded"
     assert projects["alpha"]["detail"]["closure_chain"]["safe_evidence_fingerprints"]["outcome"] == "alpha-outcome-fp"
+    assert projects["alpha"]["cutover_closure_conclusion"]["conclusion"] == "closed_succeeded"
+    assert projects["alpha"]["cutover_closure_conclusion"]["operation_success"] == true
+    assert projects["alpha"]["detail"]["closure_conclusion"]["summary_code"] == "closure_closed_succeeded"
+    assert projects["alpha"]["detail"]["closure_conclusion"]["safe_evidence_fingerprints"]["outcome"] == "alpha-outcome-fp"
     assert projects["alpha"]["detail"]["replay_request_audit"]["counts"]["request_count"] == 0
     assert projects["gamma"]["detail"]["writeback"]["counts"]["manual_attention"] == 1
     assert projects["gamma"]["cutover_replay_decision"]["status"] == "blocked_unresolved_outcome"
@@ -188,6 +225,16 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert projects["gamma"]["detail"]["replay_request_audit"]["auto_replay_allowed"] == false
     assert projects["gamma"]["cutover_closure_chain"]["status"] == "open_manual_attention"
     assert projects["gamma"]["detail"]["closure_chain"]["safe_evidence_fingerprints"]["outcome"] == "gamma-outcome-fp"
+    assert projects["gamma"]["cutover_closure_conclusion"]["conclusion"] == "manual_attention_required"
+    assert projects["gamma"]["cutover_closure_conclusion"]["operation_success"] == false
+    assert projects["gamma"]["cutover_closure_conclusion"]["auto_retry_allowed"] == false
+    assert projects["gamma"]["cutover_closure_conclusion"]["auto_replay_allowed"] == false
+    assert projects["gamma"]["detail"]["closure_conclusion"]["summary_code"] == "closure_open_manual_attention_required"
+    assert projects["gamma"]["detail"]["closure_conclusion"]["safe_evidence_fingerprints"]["outcome"] == "gamma-outcome-fp"
+    assert projects["gamma"]["detail"]["closure_conclusion"]["queued_replay"] == false
+    assert projects["gamma"]["detail"]["closure_conclusion"]["pending_execution"] == false
+    assert projects["gamma"]["detail"]["closure_conclusion"]["pending_retry"] == false
+    assert projects["gamma"]["detail"]["closure_conclusion"]["legacy_takeover"] == false
     assert projects["gamma"]["detail"]["closure_chain"]["closeout_reference_status_counts"]["current"] == 1
     assert projects["gamma"]["detail"]["closure_chain"]["replay_decision_reference_status_counts"]["current"] == 1
     assert projects["gamma"]["detail"]["closure_chain"]["replay_request_audit_reference_status_counts"]["current"] == 1
@@ -200,6 +247,7 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert Enum.any?(projects["gamma"]["migration_readiness"]["required_operator_actions"], &(&1["code"] == "resolve_writeback_manual_attention"))
     assert Enum.any?(projects["gamma"]["activation_plan"]["required_acknowledgements"], &(&1["code"] == "resolve_writeback_manual_attention"))
     refute projects["alpha"]["detail"]["closure_chain"]["safe_evidence_fingerprints"]["outcome"] == "gamma-outcome-fp"
+    refute projects["alpha"]["detail"]["closure_conclusion"]["safe_evidence_fingerprints"]["outcome"] == "gamma-outcome-fp"
 
     safe_text = inspect(payload)
     refute safe_text =~ "ghp_secret"
