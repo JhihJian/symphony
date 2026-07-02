@@ -1932,6 +1932,14 @@ Runtime entrypoint:
   read-only organization/display layer over chain/conclusion safe snapshots; it is not full #171
   execution closure report, not an execution entrypoint, not an automatic retry/replay queue, not a
   durable execution queue, not one-click migration, and not legacy service takeover.
+- Implementations SHOULD keep a deterministic local dry-run fixture or equivalent harness for this
+  packet so reviewers can verify Presenter, `/api/v1/state`, and Dashboard output from the same
+  safe fields. The fixture SHOULD cover multiple project/provider scopes, closed success,
+  closed-no-side-effect, retry consideration, manual/unknown attention, no-request/no-chain fallback,
+  and at least one abnormal state such as stale/conflict/malformed/unsupported. The harness MUST
+  remain safe-summary-only and MUST NOT call provider, dispatch, worker starter, writeback, systemd,
+  workspace hook, config mutation, or legacy service operations. The Symphony repository baseline
+  is documented in [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md).
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry

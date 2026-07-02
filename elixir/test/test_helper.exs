@@ -1,4 +1,5 @@
 ExUnit.start()
 Code.require_file("support/snapshot_support.exs", __DIR__)
 Code.require_file("support/test_support.exs", __DIR__)
+Code.require_file("support/hub_cutover_closure_report_packet_dry_run_fixture.exs", __DIR__)
 Code.require_file("support/e2e_support.exs", __DIR__)
