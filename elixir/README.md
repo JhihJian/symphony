@@ -715,6 +715,17 @@ legacy takeover。Live Dashboard 现在会展示这个 Runtime/API 已有的只�
 evidence/fingerprint 与只读边界信号；它不新增执行入口，不是完整 #171 operator-facing closure report，
 不重新聚合底层 request/permit/authorization/guard/outcome evidence，不创建或消费 authorization，
 也不调用 provider、dispatch、worker、writeback、systemd 或配置路径。
+`SymphonyElixir.Hub.CutoverClosureReportPacket` 是 closure chain/conclusion safe snapshot 之上的库级
+只读组织层。它可以从已有 `hub_cutover_closure_chain`、`hub_cutover_closure_conclusion` 或同形测试
+fixture 构建设备级和项目级 report packet，输出 report version、generated_at、read-only boundary
+flags、report status、operator conclusion、severity/attention、summary code、required action codes、
+blocked-by、closure chain counts/reference counts、recent reason/action code、project provider scope 和
+safe evidence fingerprint。packet 的 device rollup 继续保守：任一 project open/stale/conflict/malformed/
+unsupported 时不显示 fully closed；`closed_no_side_effect` 不显示 operation success；`open_retryable`
+不显示自动 retry、queued replay、pending retry 或执行中；`no_chain` / `no_request` 不显示 pending
+execution、migration queued 或 legacy takeover。这个模块只消费脱敏 safe fields，不重新聚合 raw
+cutover evidence，不调用 provider、dispatch、worker starter、writeback、systemd 或 config mutation
+路径；Runtime/API/DeviceObservability/Presenter/Dashboard 接入留给后续小切片。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env

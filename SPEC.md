@@ -1895,6 +1895,27 @@ Runtime entrypoint:
   只要任一 project 仍 open、stale、conflicting、malformed 或 unsupported，device rollup MUST 保守处理，
   不能显示为 fully closed。`closed_no_side_effect` MUST NOT 被报告为 operation success；
   `open_retryable` MUST NOT 被报告为 automatic retry、queued replay 或 pending execution。
+- Hub-compatible implementations MAY 在 closure chain 与 closure conclusion safe snapshot 之上增加
+  library-level closure report safe packet/read model。该 packet SHOULD 只消费已有
+  `hub_cutover_closure_chain`、`hub_cutover_closure_conclusion` 或等价 safe fixture，MUST NOT 重新聚合
+  raw request、permit、authorization、guard、outcome、closeout、replay decision 或 replay request audit
+  evidence。它 SHOULD 输出 device-level 和 per-project stable safe summary，包括 report version、
+  generated_at、read-only boundary flags、report status、operator conclusion、severity/attention、
+  summary code、required action codes、blocked-by entries、closure-chain status/counts、retained
+  reference status counts、recent reason/action codes、safe provider scope 和 safe evidence
+  fingerprint。不同 project 的 provider scope、evidence reference、required action code 和 blocked-by
+  entries MUST NOT 串项。Device rollup MUST remain conservative: 任一 project 为 `open_retryable`、
+  `open_manual_attention`、`stale`、`conflict`、`malformed` 或 `unsupported` 时，packet MUST NOT report
+  fully closed；`closed_no_side_effect` MUST mean no-side-effect closure only, not operation success；
+  `open_retryable` MUST require explicit follow-up consideration and MUST NOT imply automatic retry、
+  queued replay、pending retry 或 running execution；`no_chain` / `no_request` MUST NOT imply pending
+  execution、migration queued、legacy takeover 或 retry queue。该 packet MUST remain sanitized and
+  read-only: it MUST NOT output provider tokens、Authorization/cookie、raw provider payload、full
+  prompt/transcript、full comment/PR body、local private paths、raw config、raw systemd output 或
+  exception stack traces, and MUST NOT create/consume authorization, call provider/dispatch/worker
+  starter/writeback/systemd/config-mutation paths, auto retry/replay, or take over legacy services.
+  Runtime/API/Dashboard exposure of this packet is a later integration slice, not required by this
+  baseline.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
