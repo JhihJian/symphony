@@ -1968,6 +1968,13 @@ Runtime entrypoint:
   This is a decision artifact only: it MUST distinguish code coverage, test coverage, and
   documentation/decision coverage, and MUST NOT treat a documented legacy or raw escape hatch as a
   runtime-governed Hub provider exit.
+- Repository maintainers MAY keep a short #74 closure decision packet after coverage audit,
+  provider exit residual decision, and restart/replay fixture evidence are available. The Symphony
+  repository packet is documented in
+  [`docs/hub-mode-issue-74-closure-decision-packet.md`](docs/hub-mode-issue-74-closure-decision-packet.md);
+  it is an owner-decision artifact only and MUST NOT imply automatic issue closure, provider
+  migration, durable queue, automatic retry/replay, one-click migration, legacy service takeover, or
+  new runtime/API/Dashboard behavior.
 - `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
   `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
   `ready_for_hub_management` decision is evidence for an operator to consider changing registry
