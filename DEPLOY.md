@@ -263,6 +263,10 @@ tests：`hub_runtime_ledger_test.exs` 和 `hub_device_observability_test.exs`。
 unit、环境变量或迁移步骤；该 fixture 只证明脱敏 runtime ledger facts 在模拟重启后可由 replay、
 DeviceObservability 和 `/api/v1/state` 一致解释，不会调用 provider、dispatch、worker starter、
 writeback、systemd、workspace hook 或配置修改路径，也不是 durable execution queue 或自动 retry/replay。
+#74 closure decision packet 见
+[`docs/hub-mode-issue-74-closure-decision-packet.md`](docs/hub-mode-issue-74-closure-decision-packet.md)；
+部署侧只把它作为 Owner 关闭决策证据索引，不新增服务、unit、systemd 操作、provider 调用、worker
+starter、writeback、workspace hook、配置变更或 legacy service takeover。
 Hub activation preflight 是这个迁移边界上的保护层：当某个项目被显式标为 `hub_managed` 并准备走
 Hub 的 poll、dispatch、real worker starter 或 real writeback 路径时，Hub 会先读取安全的项目快照
 和注入的 host/service probe 摘要，检查是否仍有同名 legacy service、legacy-owned provider scope、

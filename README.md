@@ -368,6 +368,10 @@ candidate 和 non-runtime provider access 路径分开列清，只作为 #199 re
 `elixir/test/support/hub_runtime_ledger_restart_replay_fixture.exs` 以及
 `hub_runtime_ledger_test.exs`、`hub_device_observability_test.exs` 的 targeted tests；它只证明现有
 safe fields 在模拟重启后可被一致解释，不新增 durable execution queue、自动 retry/replay 或迁移能力。
+#74 closure decision packet 见
+[`docs/hub-mode-issue-74-closure-decision-packet.md`](docs/hub-mode-issue-74-closure-decision-packet.md)；
+它把 #199/#201/#203 的证据收束为 `closure_ready` 判断，供 Owner 后续评论或关闭 #74 使用，不新增
+Hub Runtime/API/Dashboard/provider/dispatch/worker/writeback/systemd/workspace hook/config 行为。
 `hub_cutover_readiness_permit` /
 `hub_device_observability.cutover_readiness_permit` adds the read-only execution readiness permit
 baseline after the gate, dry-run audit, and audit history/closeout summaries. For each explicitly

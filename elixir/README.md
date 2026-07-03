@@ -771,6 +771,10 @@ safe subset、legacy tracker direct path、raw `linear_graphql`、auto-update/�
 Dashboard/API safe summary 路径的 `hub_governed` / `legacy_direct_scoped_non_goal` /
 `unsupported_manual_attention` / `future_migration_candidate` / `non_runtime_provider_access`
 分类。该文档只补 #199 remaining gap 1 的 inventory / decision baseline，不新增 runtime provider I/O。
+#74 closure decision packet 见
+[`../docs/hub-mode-issue-74-closure-decision-packet.md`](../docs/hub-mode-issue-74-closure-decision-packet.md)；
+它把 #199/#201/#203 的结论收束为 `closure_ready`，供 Owner 后续评论或关闭 #74 使用，不新增 Elixir
+runtime/API/Dashboard/provider/dispatch/worker/writeback 行为。
 The Live Dashboard renders the same Hub device overview and project detail table when this Hub
 summary exists; legacy snapshots without Hub fields keep the existing single-runtime Dashboard.
 All of these summaries omit provider tokens, API keys, authorization/cookie values, secret env
