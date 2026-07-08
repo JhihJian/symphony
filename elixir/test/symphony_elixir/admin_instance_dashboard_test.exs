@@ -180,6 +180,65 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
   end
 
+  defmodule NoUrlInstanceRegistry do
+    def list_instances(opts) do
+      send(owner(opts), {:no_url_list_instances, opts})
+
+      {:ok,
+       [
+         %{
+           name: "project-no-url",
+           service: "symphony@project-no-url.service",
+           status: "stopped",
+           systemd: %{active: "inactive", enabled: "disabled", sub: "dead", failed: false},
+           port: nil,
+           dashboard_url: nil,
+           api_url: nil,
+           tracker: %{kind: "github", scope: "acme/project-no-url", required_labels: []},
+           counts: %{},
+           health: %{status: "unknown", summary: "state API not configured", error: nil},
+           workspace_root: "/runtime/project-no-url/workspaces",
+           logs_root: "/runtime/project-no-url/logs",
+           config_path: "/config/project-no-url/WORKFLOW.md",
+           tracker_config_path: "/config/project-no-url/TRACKER.yaml",
+           env_path: "/config/project-no-url/env",
+           runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
+           strategy: "manual_restart"
+         },
+         %{
+           name: "project c/with space",
+           service: "symphony@project-c.service",
+           status: "stopped",
+           systemd: %{active: "inactive", enabled: "disabled", sub: "dead", failed: false},
+           port: 20_100,
+           dashboard_url: "http://127.0.0.1:20100/",
+           api_url: "http://127.0.0.1:20100/api/v1/state",
+           tracker: %{kind: "github", scope: "acme/project-c", required_labels: []},
+           counts: %{},
+           health: %{status: "unknown", summary: "state API unknown", error: nil},
+           workspace_root: "/runtime/project-c/workspaces",
+           logs_root: "/runtime/project-c/logs",
+           config_path: "/config/project-c/WORKFLOW.md",
+           tracker_config_path: "/config/project-c/TRACKER.yaml",
+           env_path: "/config/project-c/env",
+           runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
+           strategy: "manual_restart"
+         }
+       ]}
+    end
+
+    def update_timer_status(opts), do: FakeInstanceRegistry.update_timer_status(opts)
+    def start_instance(name, opts), do: FakeInstanceRegistry.start_instance(name, opts)
+    def stop_instance(name, opts), do: FakeInstanceRegistry.stop_instance(name, opts)
+    def restart_instance(name, opts), do: FakeInstanceRegistry.restart_instance(name, opts)
+    def enable_instance(name, opts), do: FakeInstanceRegistry.enable_instance(name, opts)
+    def disable_instance(name, opts), do: FakeInstanceRegistry.disable_instance(name, opts)
+    def create_instance(params, opts), do: FakeInstanceRegistry.create_instance(params, opts)
+    def latest_logs(name, opts), do: FakeInstanceRegistry.latest_logs(name, opts)
+
+    defp owner(opts), do: Keyword.fetch!(opts, :owner)
+  end
+
   defmodule FakeAutoUpdate do
     @moduledoc false
 
@@ -354,6 +413,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     assert duration_us < 500_000
     assert html =~ "实例状态加载中，写操作已临时锁定"
+    assert html =~ "通常 10 秒内完成，慢实例会单独标记为不可达或未知"
     assert html =~ "自动更新与 timer 独立加载"
     assert html =~ "实例总览：加载中"
     assert html =~ "自动更新：加载中"
@@ -364,9 +424,19 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     html = render_async(view, 1_000)
 
-    assert html =~ "实例总览暂不可用"
+    assert html =~ "实例总览未确认，写操作锁定"
+    assert html =~ "实例总览加载失败"
     assert html =~ "超过 25ms 未返回"
     assert html =~ "GitHub main 自动更新"
+    refute html =~ "本机管理员 · 操作可用"
+
+    {:ok, document} = Floki.parse_document(html)
+
+    assert document |> Floki.find(~s(button[phx-click="auto_update"][disabled])) |> length() == 2
+    assert document |> Floki.find(~s(button[phx-click="update_timer"][disabled])) |> length() == 3
+    assert document |> Floki.find(~s(button[aria-controls="create-instance-form"][disabled])) |> length() == 1
+    assert document |> Floki.find(~s(form.instance-form button[type="submit"][disabled])) |> length() == 1
+    assert document |> Floki.find(~s(button[aria-describedby="admin-write-action-note"][disabled])) |> length() >= 6
   end
 
   test "admin instances API runs lifecycle actions and returns readable errors" do
@@ -574,7 +644,6 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     assert html =~ "Symphony 实例管理"
     assert html =~ "实例管理工作台"
-    assert html =~ "当前实例运行"
     assert html =~ "当前访问：本机管理员"
     assert html =~ "流程配置"
     assert html =~ "集中观察"
@@ -589,6 +658,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "1/2 实例不可达或状态未知"
     assert html =~ "Dashboard 暂不可用"
     assert html =~ "API 暂不可用"
+    assert html =~ "实例未运行或状态不可达，入口暂不可用。"
     assert html =~ "instance-card-grid"
     assert html =~ "instance-identity"
     assert html =~ "health-panel"
@@ -606,7 +676,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "platform/group/repo"
     assert html =~ "运行中 2"
     assert html =~ "重试中 1"
-    assert html =~ "阻塞 1"
+    assert html =~ "未取到快照 / Issue 数未知"
     assert html =~ "http://127.0.0.1:20001/"
     assert html =~ "端口 20001"
     assert html =~ "http://127.0.0.1:20002/"
@@ -655,6 +725,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert document |> Floki.find(~s(a[href="http://127.0.0.1:20001/api/v1/state"])) |> length() == 1
     assert document |> Floki.find(~s(a[href="http://127.0.0.1:20002/"])) |> length() == 0
     assert document |> Floki.find(~s(a[href="http://127.0.0.1:20002/api/v1/state"])) |> length() == 0
+    assert document |> Floki.find(~s(.disabled-link[role="link"][aria-disabled="true"][aria-describedby])) |> length() >= 2
+    assert document |> Floki.find(~s(small#instance-entry-dashboard-reason-project-b)) |> length() == 1
+    assert_order(html, "健康摘要", "Issue 压力")
 
     assert_order(html, "实例总览", "GitHub main 自动更新")
     assert_order(html, "GitHub main 自动更新", "新增实例")
@@ -708,6 +781,14 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert_receive {:not_found_list_instances, _opts}
     assert html =~ "legacy-project"
     assert html =~ "systemd unit 未安装或 template 已归档"
+    assert html =~ "未取到快照 / Issue 数未知"
+
+    [legacy_card] = document |> Floki.find(~s(article.instance-card))
+    legacy_card_text = Floki.text(legacy_card)
+
+    refute legacy_card_text =~ "运行中 0"
+    refute legacy_card_text =~ "重试中 0"
+    refute legacy_card_text =~ "阻塞 0"
 
     assert document
            |> Floki.find(~s(button[phx-click="lifecycle"][phx-value-name="legacy-project"][disabled]))
@@ -722,6 +803,45 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
              ~s(button[phx-click="lifecycle"][phx-value-name="legacy-project"][phx-value-action="start"]),
              "aria-describedby"
            ) == ["instance-actions-note-legacy-project"]
+  end
+
+  test "admin dashboard keeps missing endpoints quiet and sanitizes disabled reason ids" do
+    use_no_url_registry!()
+
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
+    {:ok, document} = Floki.parse_document(html)
+
+    assert_receive {:no_url_list_instances, _opts}
+    assert html =~ "project-no-url"
+    assert html =~ "project c/with space"
+    assert html =~ "未配置端口"
+    assert html =~ "未取到快照 / Issue 数未知"
+
+    no_url_card =
+      document
+      |> Floki.find(~s(article.instance-card))
+      |> Enum.find(fn card -> card |> Floki.text() |> String.contains?("project-no-url") end)
+
+    assert no_url_card
+    no_url_card_text = Floki.text(no_url_card)
+
+    refute no_url_card_text =~ "Dashboard 暂不可用"
+    refute no_url_card_text =~ "API 暂不可用"
+    refute no_url_card_text =~ "实例未配置 Dashboard 入口。"
+    assert no_url_card_text =~ "未配置端口"
+
+    assert document
+           |> Floki.find(~s(small#instance-entry-dashboard-reason-project-c-with-space))
+           |> length() == 1
+
+    assert document
+           |> Floki.find(~s(small#instance-entry-api-reason-project-c-with-space))
+           |> length() == 1
+
+    assert document
+           |> Floki.find(~s(button[phx-click="lifecycle"][phx-value-name="project c/with space"][disabled]))
+           |> length() == 2
   end
 
   test "admin dashboard new instance button reveals the create form" do
@@ -973,6 +1093,14 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
   defp use_not_found_registry! do
     endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
     endpoint_config = Keyword.put(endpoint_config, :instance_registry, NotFoundInstanceRegistry)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])
+  end
+
+  defp use_no_url_registry! do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+    endpoint_config = Keyword.put(endpoint_config, :instance_registry, NoUrlInstanceRegistry)
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])

@@ -56,13 +56,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">
-              Symphony 可观测性
+              Symphony Hub 可观测性
             </p>
             <h1 class="hero-title">
-              运维仪表盘
+              Hub 运行总览
             </h1>
             <p class="hero-copy">
-              展示当前状态、重试压力、Token 用量，以及活跃 Symphony 运行时的编排健康状况。
+              汇总 Hub 设备、实例会话、重试压力和 Token 消耗，先确认当前运行结论，再进入项目明细和诊断证据。
             </p>
           </div>
 
@@ -109,7 +109,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">当前需要关注的工作</h2>
-              <p class="section-copy">先看正在处理、等待人工输入或即将重试的工作；Hub 内部诊断放在后面。</p>
+              <p class="section-copy">先看正在处理、Hub 活跃尝试、等待人工输入或即将重试的工作；消耗与 Hub 内部诊断放在后面。</p>
             </div>
           </div>
 
@@ -219,44 +219,29 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">运行中</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">当前运行时中的活跃 Issue 会话。</p>
-          </article>
+        <section class="section-card runtime-cost-panel">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">运行消耗</h2>
+              <p class="section-copy">只保留 Token 与运行时长等消耗类辅助指标；当前状态结论以上方关注区为准。</p>
+            </div>
+          </div>
 
-          <article :if={hub_device?(@payload)} class="metric-card">
-            <p class="metric-label">Hub 活跃尝试</p>
-            <p class="metric-value numeric"><%= hub_active_attempt_count(@payload) %></p>
-            <p class="metric-detail">Hub worker 生命周期中仍未完全收敛的活跃尝试。</p>
-          </article>
+          <div class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label">Token 总数</p>
+              <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+              <p class="metric-detail numeric">
+                输入 <%= format_int(@payload.codex_totals.input_tokens) %> / 输出 <%= format_int(@payload.codex_totals.output_tokens) %>
+              </p>
+            </article>
 
-          <article class="metric-card">
-            <p class="metric-label">重试中</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">等待下一个重试窗口的 Issue。</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">已阻塞</p>
-            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
-            <p class="metric-detail">因等待操作员输入或批准而暂停的 Issue。</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Token 总数</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              输入 <%= format_int(@payload.codex_totals.input_tokens) %> / 输出 <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">运行时长</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
-          </article>
+            <article class="metric-card">
+              <p class="metric-label">运行时长</p>
+              <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
+              <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
+            </article>
+          </div>
         </section>
 
         <.context_panel runtime_context={@runtime_context} />
@@ -1306,16 +1291,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_project_next_action_boundary(project) do
-    project
-    |> hub_project_next_action_code()
-    |> hub_operator_action_boundary()
+    hub_operator_action_boundary(hub_project_next_action_code(project), project)
   end
 
   defp hub_project_next_action_code(project) do
-    if hub_project_writeback_manual_attention?(project) do
-      "resolve_writeback_manual_attention"
-    else
-      hub_project_required_next_action(project)
+    cond do
+      hub_project_writeback_manual_attention?(project) ->
+        "resolve_writeback_manual_attention"
+
+      hub_project_workspace_lease_count(project) > 0 ->
+        "release_workspace_or_capacity"
+
+      hub_project_active_attempt_count(project) + hub_project_lifecycle_running_count(project) > 0 ->
+        "inspect_hub_active_attempt"
+
+      true ->
+        hub_project_required_next_action(project)
     end
   end
 
@@ -1345,6 +1336,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_operator_action_text("resolve_writeback_manual_attention"), do: "处理 writeback 人工关注"
   defp hub_operator_action_text("resolve_manual_attention"), do: "处理人工关注并关闭阻塞"
   defp hub_operator_action_text("release_workspace_or_capacity"), do: "检查并释放 workspace / 容量占用"
+  defp hub_operator_action_text("inspect_hub_active_attempt"), do: "核对 Hub 活跃尝试"
   defp hub_operator_action_text("confirm_hub_executor_modes"), do: "确认 Hub 执行器模式"
   defp hub_operator_action_text("record_cutover_replay_request_audit"), do: "记录 cutover replay request 审计"
   defp hub_operator_action_text("request_explicit_retry_consideration"), do: "人工确认是否重试"
@@ -1359,20 +1351,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_operator_action_text(code) when is_binary(code) and code != "", do: "检查 " <> code
   defp hub_operator_action_text(_code), do: "继续观察"
 
-  defp hub_operator_action_boundary("release_workspace_or_capacity") do
-    "入口：展开 Hub 项目明细查看 workspace lease；释放需实例管理或命令行。"
+  defp hub_operator_action_boundary("release_workspace_or_capacity", project) do
+    "#{hub_project_display_name(project)}当前 #{hub_project_attention_counts(project)}；证据入口：Hub 项目明细。需要本机管理员到实例管理或命令行释放 workspace / 容量占用。"
   end
 
-  defp hub_operator_action_boundary("resolve_writeback_manual_attention") do
-    "入口：展开 Hub 项目明细确认 writeback 证据；当前页只读。"
+  defp hub_operator_action_boundary("inspect_hub_active_attempt", project) do
+    "#{hub_project_display_name(project)}当前 #{hub_project_attention_counts(project)}；证据入口：Hub 项目明细。需要本机管理员到实例管理或命令行确认执行器是否仍在运行、是否需要释放租约。"
   end
 
-  defp hub_operator_action_boundary("resolve_manual_attention") do
-    "入口：展开 Hub 项目明细确认阻塞证据；当前页只读。"
+  defp hub_operator_action_boundary("resolve_writeback_manual_attention", project) do
+    "#{hub_project_display_name(project)}：证据入口：Hub 项目明细的 writeback 记录；当前页只读，需要本机管理员到实例管理或命令行处理。"
   end
 
-  defp hub_operator_action_boundary(_code) do
-    "入口：展开 Hub 项目明细查看证据；当前页只读。"
+  defp hub_operator_action_boundary("resolve_manual_attention", project) do
+    "#{hub_project_display_name(project)}：证据入口：Hub 项目明细的阻塞记录；当前页只读，需要本机管理员到实例管理或命令行处理。"
+  end
+
+  defp hub_operator_action_boundary(_code, project) do
+    "#{hub_project_display_name(project)}：证据入口：Hub 项目明细；当前页只读，需要本机管理员到实例管理或命令行处理。"
   end
 
   defp hub_primary_attention_anchor(payload) do
@@ -1396,6 +1392,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
       "lifecycle #{hub_project_lifecycle_running_count(project)}"
     ]
     |> Enum.join(" · ")
+  end
+
+  defp hub_project_attention_counts(project) do
+    "attempt #{hub_project_active_attempt_count(project)}、workspace lease #{hub_project_workspace_lease_count(project)}、lifecycle #{hub_project_lifecycle_running_count(project)}"
+  end
+
+  defp hub_project_display_name(project) do
+    project_id =
+      project
+      |> Map.get(:project_id, "unknown")
+      |> to_string()
+
+    case Map.get(project, :name) do
+      name when is_binary(name) and name != "" and name != project_id -> "#{name}（#{project_id}）"
+      _name -> project_id
+    end
   end
 
   defp hub_project_anchor(project) do

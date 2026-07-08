@@ -1355,22 +1355,25 @@ The observability UI now runs on a minimal Phoenix stack:
 
 All LiveView pages share a compact workspace navigation bar with three operator paths:
 
-- `当前实例运行` for the active process dashboard at `/`
+- `Hub 运行总览` for the current process and Hub device dashboard at `/`
 - `流程配置` for the read-only workflow/tracker configuration view at `/workflow`
 - `实例管理` for the local operator management plane at `/admin/instances`
 
 The navigation bar also shows whether the browser session is a loopback `本机管理员` session or a
 `远程只读` session, so operators can tell whether visible controls are executable or only a preview.
 
-The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
-it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
-detail links. In Hub mode the first operator section prioritizes the current work queue and a
-compact Hub project focus list, so active attempts, workspace leases, manual attention, and the
-next project-level action are visible before lower-level Hub diagnostics. Hub project next actions
-are rendered as operator-readable action text on their own row, with a second line that names the
-evidence entry point and the read-only boundary. Hub project focus rows point to the expandable Hub
-project detail entry instead of jumping into content that is closed by default；点击后会自动展开
-Hub 项目明细并聚焦目标 project 行。When the normal running-session
+The dashboard at `/` is the Hub 运行总览 for the current Symphony process:
+it shows the local orchestrator snapshot, current attention items, Hub active attempts, retry/blocking
+pressure, token totals, and issue detail links. Its first operator section is the source of truth for
+current running/Hub/blocking/retry attention; cost-only metrics such as Token 总数 and 运行时长 are
+moved into a separate 运行消耗 panel so they do not duplicate the attention summary. In Hub mode the
+first operator section prioritizes the current work queue and a compact Hub project focus list, so
+active attempts, workspace leases, manual attention, and the next project-level action are visible
+before lower-level Hub diagnostics. Hub project next actions are rendered as operator-readable action
+text on their own row, with a second line that names the project, the attempt/workspace
+lease/lifecycle counts, the Hub 项目明细 evidence entry point, and the read-only boundary. Hub project
+focus rows point to the expandable Hub project detail entry instead of jumping into content that is
+closed by default；点击后会自动展开 Hub 项目明细并聚焦目标 project 行。When the normal running-session
 count is zero but Hub attempts are still active, the first-screen link points to the relevant Hub
 project instead of the empty running-session section. The page header also labels the current access
 role, whether the first snapshot is loaded, and that the dashboard is a read-only observation surface. The context panel remains
@@ -1419,17 +1422,20 @@ so operators can see which part is still being probed. Stopped, failed, slow, or
 instances are rendered as per-instance health states and do not block the rest of the overview. The
 fleet summary puts the unreachable/unknown instance count first and labels running, retrying, and
 blocked counts as reachable-instance totals, so missing state snapshots are not mistaken for zero
-issue risk. Dashboard/API links are clickable only when the instance is running and
-reachable; stopped, failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled
-entries with the URL still visible for inspection. The update timer buttons are also gated by
-current state, so an already enabled/active timer does not present “enable” as an available action.
+issue risk. Individual unreachable/unknown cards show Issue 压力 as unknown instead of rendering
+`0/0/0`. Dashboard/API links are clickable only when the instance is running and reachable; stopped,
+failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled entries with a
+visible reason and the URL still available for inspection, while missing URLs stay quiet and only
+show the missing-port/entry hint. The update timer buttons are also gated by current state, so an
+already enabled/active timer does not present “enable” as an available action.
 管理页顶部会把当前控制台和被管理 project 实例端口范围分开说明，避免把 project 实例的
 `stopped` 或不可达误解成 `/admin/instances` 当前控制台停止。被管理实例不可达或未知时，
 update-timer 的启用、禁用、手动触发确认文案会先说明该风险，再让 operator 确认是否继续。
 While the instance overview is still loading, create, auto-update, and update-timer write actions
-are disabled and linked to a visible loading reason; disabled buttons use neutral styling rather
-than retaining primary or danger colors. Remote read-only sessions cannot open the create-instance
-form because submission would still be rejected server-side.
+are disabled and linked to a visible loading reason; if the instance overview fails before any
+snapshot has loaded, those write actions remain locked until the overview is restored. Disabled
+buttons use neutral styling rather than retaining primary or danger colors. Remote read-only sessions
+cannot open the create-instance form because submission would still be rejected server-side.
 The page can create GitHub-backed instances by delegating to
 `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing env files and
 listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and recent-log

@@ -932,15 +932,16 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Symphony 可观测性"
-    assert html =~ "运维仪表盘"
+    assert html =~ "Symphony Hub 可观测性"
+    assert html =~ "Hub 运行总览"
     assert html =~ "当前上下文"
-    assert html =~ "当前实例运行"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "进行中"
+    assert html =~ "运行消耗"
     assert html =~ "运行时长"
     assert html =~ "页面连接"
     assert html =~ ~s(class="status-stack" role="status" aria-live="polite")
@@ -955,6 +956,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(data-copy-label="MT-HTTP")
     refute html =~ "onclick=\"navigator.clipboard"
     assert html =~ "Codex 更新"
+    refute html =~ "当前实例运行"
+    refute html =~ "运维仪表盘"
     refute html =~ "Operations Dashboard"
     refute html =~ "Copy ID"
     refute html =~ "<span class=\"state-badge state-badge-active\">\n                        In Progress\n                      </span>"
@@ -1113,7 +1116,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "running <strong class=\"numeric\">1</strong>"
     assert html =~ "retrying <strong class=\"numeric\">1</strong>"
     assert html =~ "blocked <strong class=\"numeric\">1</strong>"
-    assert html =~ "当前实例运行"
+    assert html =~ "Hub 运行总览"
     refute html =~ "ghp_secret_token"
     refute html =~ "api_key"
 

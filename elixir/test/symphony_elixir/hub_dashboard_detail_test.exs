@@ -55,6 +55,9 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "当前访问：本机管理员"
     assert html =~ "首次快照已加载"
     assert html =~ "只读观测"
+    assert html =~ "Hub 运行总览"
+    refute html =~ "当前实例运行"
+    refute html =~ "运维仪表盘"
     assert html =~ "当前需要关注的工作"
     assert html =~ "Hub 活跃尝试"
     assert html =~ "pending start 0 · workspace lease 1"
@@ -64,9 +67,15 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "attempt 1 · lease 1 · lifecycle 1"
     assert html =~ ~s(href="#hub-project-alpha")
     assert html =~ "Hub 项目焦点"
+    assert html =~ "运行消耗"
+    assert dashboard_metric_grid_labels(html) == ["Token 总数", "运行时长"]
+    assert html =~ "下一步：检查并释放 workspace / 容量占用"
+    assert html =~ "Alpha（alpha）当前 attempt 1、workspace lease 1、lifecycle 1；证据入口：Hub 项目明细。需要本机管理员到实例管理或命令行释放 workspace / 容量占用。"
     assert html =~ "下一步：处理 writeback 人工关注"
-    assert html =~ "入口：展开 Hub 项目明细确认 writeback 证据；当前页只读。"
-    assert html =~ "入口：展开 Hub 项目明细查看证据；当前页只读。"
+    assert html =~ "Gamma（gamma）：证据入口：Hub 项目明细的 writeback 记录；当前页只读，需要本机管理员到实例管理或命令行处理。"
+    refute html =~ "入口：展开 Hub 项目明细查看 workspace lease；释放需实例管理或命令行。"
+    refute html =~ "入口：展开 Hub 项目明细确认 writeback 证据；当前页只读。"
+    refute html =~ "入口：展开 Hub 项目明细查看证据；当前页只读。"
     assert html =~ ~s(href="#hub-project-details")
     assert html =~ ~s(data-open-details="hub-project-details")
     assert html =~ ~s(data-focus-target="hub-project-alpha")
@@ -552,6 +561,13 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
       nil -> flunk("expected dashboard panel #{label}")
       panel -> html_text(panel)
     end
+  end
+
+  defp dashboard_metric_grid_labels(html) do
+    html
+    |> Floki.parse_document!()
+    |> Floki.find(".runtime-cost-panel .metric-card .metric-label")
+    |> Enum.map(&html_text/1)
   end
 
   defp project_row(html, project_id) do

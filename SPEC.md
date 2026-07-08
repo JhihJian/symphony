@@ -3171,6 +3171,9 @@ Enablement (extension):
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
 - The first operator view SHOULD distinguish read-only observation from executable management
   actions and SHOULD make the current access role and snapshot freshness visible.
+- When a dashboard has both attention/risk metrics and cost metrics, the first operator view SHOULD
+  avoid presenting duplicate status summaries; cost-only metrics such as token totals and runtime
+  duration SHOULD be visually separated from the current attention summary.
 - When Hub project details or device diagnostics are large, the dashboard SHOULD keep compact
   operator focus rows ahead of high-detail diagnostic matrices and MAY place those matrices behind
   expandable sections.
@@ -3393,13 +3396,20 @@ If implemented:
 - Fleet-level issue counts SHOULD identify whether they are computed from all known instances or
   only from instances with reachable state snapshots. Unknown or unreachable instances MUST NOT be
   presented as zero-risk issue counts.
-- Dashboard/API entry links for instances SHOULD degrade to disabled text when the instance is not
-  running, is unreachable, or would point a remote browser at a loopback-only address.
+- Per-instance issue-pressure panels SHOULD treat missing or unreachable state snapshots as unknown
+  rather than rendering missing running/retrying/blocked counts as `0`.
+- Dashboard/API entry links for instances SHOULD degrade to disabled text with an operator-readable
+  reason when the instance is not running, is unreachable, or would point a remote browser at a
+  loopback-only address. If no URL is configured, the surface SHOULD avoid rendering a fake disabled
+  link and should use a missing-entry hint instead.
 - Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
   failures MUST be reported with operator-readable errors.
 - While instance aggregation is still loading and no previous overview is available, high-impact
   write actions such as create, update, lifecycle, and timer operations SHOULD be disabled or
   otherwise guarded with a visible reason.
+- If instance aggregation fails before any previous overview is available, high-impact write actions
+  SHOULD remain disabled until aggregation succeeds or an equivalent operator confirmation path is
+  provided.
 - Independent status sources such as instance aggregation, program auto-update state, and timer
   state SHOULD be allowed to report loading or unavailable states independently so one slow source
   does not hide already available operator context.

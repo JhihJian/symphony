@@ -261,7 +261,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
       <section :if={@instances_loading? && !@instances_loaded?} id="admin-write-action-note" class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
         <strong>实例状态加载中，写操作已临时锁定</strong>
-        <p>已读取页面配置；正在探测实例 systemd 和 `/api/v1/state`。自动更新与 timer 独立加载，慢实例会单独标记为不可达或未知。</p>
+        <p>已读取页面配置；正在探测实例 systemd 和 `/api/v1/state`。通常 10 秒内完成，慢实例会单独标记为不可达或未知。自动更新与 timer 独立加载。</p>
         <div class="admin-load-lanes" aria-label="管理页加载通道">
           <span class={admin_instances_lane_badge_class(@instances_loading?, @instances_error)}>
             实例总览：<%= admin_instances_lane_text(@instances_loading?, @instances_error) %>
@@ -275,8 +275,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </div>
       </section>
 
-      <section :if={@instances_error} class="notice-banner notice-banner-error" role="alert" aria-live="polite">
-        <strong>实例总览暂不可用</strong>
+      <section :if={@instances_error} id={if(!@instances_loaded?, do: "admin-write-action-note", else: nil)} class="notice-banner notice-banner-error" role="alert" aria-live="polite">
+        <strong><%= if @instances_loaded?, do: "实例总览暂不可用", else: "实例总览未确认，写操作锁定" %></strong>
         <p><%= @instances_error %></p>
       </section>
 
@@ -523,7 +523,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         <p class="panel-label">正在加载</p>
         <div class="detail-stack">
           <span>正在读取已登记实例、systemd 状态和各实例状态快照。</span>
-          <span class="muted">如果某个实例响应慢，只会标记该实例不可达，不会阻塞整个管理页。</span>
+          <span class="muted">通常 10 秒内完成，慢实例会单独标记为不可达或未知，不会阻塞整个管理页。</span>
         </div>
       </section>
 
@@ -556,15 +556,6 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                 </div>
               </section>
 
-              <section class="instance-panel pressure-panel">
-                <p class="panel-label">Issue 压力</p>
-                <div class="pressure-grid numeric">
-                  <span>运行中 <%= count(instance, :running) %></span>
-                  <span>重试中 <%= count(instance, :retrying) %></span>
-                  <span>阻塞 <%= count(instance, :blocked) %></span>
-                </div>
-              </section>
-
               <section class="instance-panel health-panel">
                 <p class="panel-label">健康摘要</p>
                 <div class="detail-stack">
@@ -572,6 +563,22 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   <span class="muted"><%= get_in(instance, [:systemd, :enabled]) || "unknown" %> / <%= get_in(instance, [:systemd, :sub]) || "unknown" %></span>
                   <span :if={get_in(instance, [:health, :error])} class="muted"><%= get_in(instance, [:health, :error]) %></span>
                 </div>
+              </section>
+
+              <section class="instance-panel pressure-panel">
+                <p class="panel-label">Issue 压力</p>
+                <%= if issue_pressure_known?(instance) do %>
+                  <div class="pressure-grid numeric">
+                    <span>运行中 <%= count(instance, :running) %></span>
+                    <span>重试中 <%= count(instance, :retrying) %></span>
+                    <span>阻塞 <%= count(instance, :blocked) %></span>
+                  </div>
+                <% else %>
+                  <div class="detail-stack">
+                    <span>未取到快照 / Issue 数未知</span>
+                    <span class="muted"><%= issue_pressure_unknown_reason(instance) %></span>
+                  </div>
+                <% end %>
               </section>
 
               <section class="instance-panel">
@@ -585,20 +592,30 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <section class="instance-panel">
                 <p class="panel-label">Dashboard / API</p>
                 <div class="detail-stack">
-                  <%= if instance_entry_link_enabled?(@local_admin?, instance, :dashboard) do %>
-                    <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
+                  <% dashboard_url = instance_entry_url(instance, :dashboard) %>
+                  <% dashboard_disabled_reason = instance_entry_disabled_reason(@local_admin?, instance, :dashboard) %>
+                  <%= if is_nil(dashboard_disabled_reason) and instance_entry_url_configured?(dashboard_url) do %>
+                    <a class="issue-link" href={dashboard_url}>Dashboard</a>
                   <% else %>
-                    <span :if={instance.dashboard_url} class="disabled-link" title={instance_entry_disabled_reason(@local_admin?, instance, :dashboard)}>Dashboard 暂不可用</span>
+                    <%= if instance_entry_url_configured?(dashboard_url) do %>
+                      <span class="disabled-link" role="link" aria-disabled="true" aria-describedby={instance_entry_reason_id(instance, :dashboard)} title={dashboard_disabled_reason}>Dashboard 暂不可用</span>
+                      <small id={instance_entry_reason_id(instance, :dashboard)} class="muted"><%= dashboard_disabled_reason %></small>
+                    <% end %>
                   <% end %>
 
-                  <%= if instance_entry_link_enabled?(@local_admin?, instance, :api) do %>
-                    <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
+                  <% api_url = instance_entry_url(instance, :api) %>
+                  <% api_disabled_reason = instance_entry_disabled_reason(@local_admin?, instance, :api) %>
+                  <%= if is_nil(api_disabled_reason) and instance_entry_url_configured?(api_url) do %>
+                    <a class="issue-link" href={api_url}>API</a>
                   <% else %>
-                    <span :if={instance.api_url} class="disabled-link" title={instance_entry_disabled_reason(@local_admin?, instance, :api)}>API 暂不可用</span>
+                    <%= if instance_entry_url_configured?(api_url) do %>
+                      <span class="disabled-link" role="link" aria-disabled="true" aria-describedby={instance_entry_reason_id(instance, :api)} title={api_disabled_reason}>API 暂不可用</span>
+                      <small id={instance_entry_reason_id(instance, :api)} class="muted"><%= api_disabled_reason %></small>
+                    <% end %>
                   <% end %>
 
                   <span class="muted">端口 <%= Map.get(instance, :port) || "未知" %></span>
-                  <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
+                  <span class="muted"><%= instance_entry_url_label(dashboard_url) %></span>
                 </div>
               </section>
 
@@ -1326,10 +1343,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   defp reachable_instance?(instance) do
-    health_status = get_in(instance, [:health, :status]) || get_in(instance, ["health", "status"])
     instance_status = Map.get(instance, :status) || Map.get(instance, "status")
 
-    health_status == "reachable" and instance_status not in [nil, "unknown"]
+    health_status(instance) == "reachable" and instance_status not in [nil, "unknown"]
   end
 
   defp reachable_metric_card_class(instances) do
@@ -1402,10 +1418,6 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     end
   end
 
-  defp instance_entry_link_enabled?(local_admin?, instance, kind) do
-    is_nil(instance_entry_disabled_reason(local_admin?, instance, kind))
-  end
-
   defp instance_entry_disabled_reason(local_admin?, instance, kind) do
     url = instance_entry_url(instance, kind)
 
@@ -1427,12 +1439,32 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp instance_entry_url(instance, :dashboard), do: Map.get(instance, :dashboard_url) || Map.get(instance, "dashboard_url")
   defp instance_entry_url(instance, :api), do: Map.get(instance, :api_url) || Map.get(instance, "api_url")
 
+  defp instance_entry_url_configured?(url), do: is_binary(url) and url != ""
+
+  defp instance_entry_url_label(url) when is_binary(url) and url != "", do: url
+  defp instance_entry_url_label(_url), do: "未配置端口"
+
   defp instance_entry_label(:dashboard), do: "Dashboard"
   defp instance_entry_label(:api), do: "API"
 
+  defp instance_entry_reason_id(instance, kind) do
+    instance_name = Map.get(instance, :name) || Map.get(instance, "name") || "unknown"
+    "instance-entry-#{kind}-reason-#{safe_html_id_fragment(instance_name)}"
+  end
+
+  defp safe_html_id_fragment(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[^A-Za-z0-9_-]+/, "-")
+    |> String.trim("-")
+    |> case do
+      "" -> "unknown"
+      safe -> safe
+    end
+  end
+
   defp instance_dashboard_endpoint_available?(instance) do
-    health_status = get_in(instance, [:health, :status]) || get_in(instance, ["health", "status"])
-    instance_running?(instance) and health_status == "reachable"
+    instance_running?(instance) and health_status(instance) == "reachable"
   end
 
   defp local_loopback_url?(url) when is_binary(url) do
@@ -1443,8 +1475,34 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp local_loopback_url?(_url), do: false
 
   defp count(instance, key) do
-    counts = Map.get(instance, :counts, %{})
+    counts = Map.get(instance, :counts) || Map.get(instance, "counts") || %{}
     Map.get(counts, key, Map.get(counts, to_string(key), 0))
+  end
+
+  defp issue_pressure_known?(instance) do
+    health_status(instance) == "reachable" and issue_counts_available?(instance)
+  end
+
+  defp issue_counts_available?(instance) do
+    counts = Map.get(instance, :counts) || Map.get(instance, "counts")
+
+    is_map(counts) and
+      Enum.all?([:running, :retrying, :blocked], fn key ->
+        Map.has_key?(counts, key) or Map.has_key?(counts, to_string(key))
+      end)
+  end
+
+  defp issue_pressure_unknown_reason(instance) do
+    case health_status(instance) do
+      "reachable" -> "状态快照未包含完整 Issue 计数，暂不按 0 展示。"
+      "unknown" -> "健康状态未知，暂不按 0 展示。"
+      nil -> "健康状态未知，暂不按 0 展示。"
+      _status -> "健康状态不可达，暂不按 0 展示。"
+    end
+  end
+
+  defp health_status(instance) do
+    get_in(instance, [:health, :status]) || get_in(instance, ["health", "status"])
   end
 
   defp instance_badge_class("running"), do: "state-badge state-badge-active"
@@ -1529,7 +1587,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   defp admin_capability_badge_class(false, _instances_loading?, _instances_loaded?, _instances), do: "state-badge state-badge-warning"
 
-  defp admin_capability_badge_class(true, true, false, _instances), do: "state-badge state-badge-warning"
+  defp admin_capability_badge_class(true, _instances_loading?, false, _instances), do: "state-badge state-badge-warning"
 
   defp admin_capability_badge_class(true, _instances_loading?, true, instances) do
     if unavailable_instance_count(instances) > 0 do
@@ -1539,10 +1597,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     end
   end
 
-  defp admin_capability_badge_class(true, _instances_loading?, _instances_loaded?, _instances), do: "state-badge state-badge-active"
-
   defp admin_capability_text(false, _instances_loading?, _instances_loaded?, _instances), do: "只读预览"
   defp admin_capability_text(true, true, false, _instances), do: "本机管理员 · 先确认实例状态"
+  defp admin_capability_text(true, _instances_loading?, false, _instances), do: "本机管理员 · 写操作锁定"
 
   defp admin_capability_text(true, _instances_loading?, true, instances) do
     unavailable = unavailable_instance_count(instances)
@@ -1553,8 +1610,6 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       true -> "本机管理员 · 操作可用"
     end
   end
-
-  defp admin_capability_text(true, _instances_loading?, _instances_loaded?, _instances), do: "本机管理员 · 操作可用"
 
   defp admin_instances_lane_text(true, nil), do: "加载中"
   defp admin_instances_lane_text(_loading?, nil), do: "已返回"
@@ -1597,8 +1652,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   defp admin_write_actions_ready?(false, _instances_loading?, _instances_loaded?), do: false
-  defp admin_write_actions_ready?(true, true, false), do: false
-  defp admin_write_actions_ready?(true, _instances_loading?, _instances_loaded?), do: true
+  defp admin_write_actions_ready?(true, _instances_loading?, false), do: false
+  defp admin_write_actions_ready?(true, _instances_loading?, true), do: true
 
   defp admin_write_actions_ready?(socket) do
     admin_write_actions_ready?(
@@ -1623,10 +1678,14 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp admin_write_action_disabled_reason(false, _instances_loading?, _instances_loaded?), do: "管理操作只允许本机客户端访问"
 
   defp admin_write_action_disabled_reason(true, true, false) do
-    "实例总览仍在加载；先确认实例健康和运行压力后再执行写操作。"
+    "实例总览仍在加载；通常 10 秒内完成，先确认实例健康和运行压力后再执行写操作。"
   end
 
-  defp admin_write_action_disabled_reason(true, _instances_loading?, _instances_loaded?), do: nil
+  defp admin_write_action_disabled_reason(true, _instances_loading?, false) do
+    "实例总览未确认，写操作锁定。请先恢复实例总览加载后再执行写操作。"
+  end
+
+  defp admin_write_action_disabled_reason(true, _instances_loading?, true), do: nil
 
   defp admin_write_action_disabled_reason(socket) do
     admin_write_action_disabled_reason(

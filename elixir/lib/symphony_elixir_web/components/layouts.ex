@@ -76,7 +76,7 @@ defmodule SymphonyElixirWeb.Layouts do
 
       <div class="workspace-nav-links">
         <a class={nav_link_class(@active_nav, :dashboard)} href="/" aria-current={current_nav?(@active_nav, :dashboard) && "page"}>
-          当前实例运行
+          Hub 运行总览
         </a>
         <a class={nav_link_class(@active_nav, :workflow)} href="/workflow" aria-current={current_nav?(@active_nav, :workflow) && "page"}>
           流程配置
