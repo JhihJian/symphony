@@ -543,9 +543,12 @@ defmodule SymphonyElixir.StatusDashboard do
   defp dashboard_url do
     {host, port} =
       if Runtime.hub_mode?() do
-        {"127.0.0.1", Application.get_env(:symphony_elixir, :server_port_override)}
+        host = Application.get_env(:symphony_elixir, :server_host_override, "127.0.0.1")
+        port = Application.get_env(:symphony_elixir, :server_port_override)
+
+        {host, port}
       else
-        {Config.settings!().server.host, Config.server_port()}
+        {Config.server_host(), Config.server_port()}
       end
 
     dashboard_url(host, port, HttpServer.bound_port())

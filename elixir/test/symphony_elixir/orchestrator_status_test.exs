@@ -1427,9 +1427,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard renders dashboard url on its own line when server port is configured" do
+    previous_host_override = Application.get_env(:symphony_elixir, :server_host_override)
     previous_port_override = Application.get_env(:symphony_elixir, :server_port_override)
 
     on_exit(fn ->
+      if is_nil(previous_host_override) do
+        Application.delete_env(:symphony_elixir, :server_host_override)
+      else
+        Application.put_env(:symphony_elixir, :server_host_override, previous_host_override)
+      end
+
       if is_nil(previous_port_override) do
         Application.delete_env(:symphony_elixir, :server_port_override)
       else
@@ -1437,6 +1444,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
+    Application.put_env(:symphony_elixir, :server_host_override, "0.0.0.0")
     Application.put_env(:symphony_elixir, :server_port_override, 4000)
 
     snapshot_data =

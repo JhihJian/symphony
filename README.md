@@ -442,7 +442,7 @@ permit, authorization, consumption guard, and provider/runtime/writeback guardra
 automatically replays an external side effect or takes over the legacy service. No closeout reports
 `no_closeout`, not pending retry.
 The Elixir runtime now also has an explicit Hub entrypoint,
-`./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`, which loads the registry, builds a
+`./bin/symphony --hub-config /path/to/HUB.yaml --host 0.0.0.0 --port <port>`, which loads the registry, builds a
 poll plan, can execute one governed candidate-scan poll tick through the Hub provider request
 boundary, records poll attempt/result facts, builds a safe `hub_candidate_intake` summary, and
 exposes safe Hub fields through `/api/v1/state`, including `hub_dispatch_plan_application` and
@@ -457,7 +457,7 @@ writes the safe ack/failure back to the ledger. Lifecycle reconciliation is like
 controlled result source and remains safe-summary based. This entrypoint is opt-in only; the legacy
 `--tracker-config TRACKER.yaml WORKFLOW.md` startup path and per-project services stay unchanged.
 For a local activation dry run, use
-`./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --port <port>`
+`./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --hub-config /path/to/HUB.yaml --hub-activation-probe host-service --host 0.0.0.0 --port <port>`
 and inspect `hub_activation_preflight`,
 `hub_device_observability.migration_readiness`,
 `hub_device_observability.activation_plan`, `hub_cutover_gate`,
@@ -496,6 +496,10 @@ writeback/manual-attention items, confirming real provider/writeback/worker mode
 project ownership remain manual operator decisions. This command gathers evidence only and does not
 stop, disable, restart, delete, modify `HUB.yaml`, modify project config, or migrate
 `symphony@<project>.service`.
+For a long-running observability entrypoint, install `symphony-hub.service` with
+`scripts/install-hub-systemd-service.sh`. That sidecar keeps the Hub scheduler, real provider
+executors, real worker starter, and writeback disabled by default, and does not stop, disable, or
+restart existing `symphony@<project>.service` instances.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

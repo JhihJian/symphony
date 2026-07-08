@@ -110,6 +110,39 @@ defmodule SymphonyElixir.CLITest do
     assert expanded_path == Path.expand("tmp/custom-logs")
   end
 
+  test "accepts --host and passes the trimmed host to runtime deps" do
+    parent = self()
+
+    deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        set_server_host_override: fn host ->
+          send(parent, {:host, host})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--host", " 0.0.0.0 ", "WORKFLOW.md"], deps)
+    assert_received {:host, "0.0.0.0"}
+  end
+
+  test "rejects blank --host values" do
+    parent = self()
+
+    deps =
+      deps(%{
+        file_regular?: fn _path -> true end,
+        set_server_host_override: fn host ->
+          send(parent, {:host, host})
+          :ok
+        end
+      })
+
+    assert {:error, message} = CLI.evaluate([@ack_flag, "--host", " ", "WORKFLOW.md"], deps)
+    assert message =~ "Usage: symphony"
+    refute_received {:host, _host}
+  end
+
   test "accepts --tracker-config and passes an expanded tracker config path to runtime deps" do
     parent = self()
     workflow_path = "tmp/custom/WORKFLOW.md"
@@ -286,6 +319,31 @@ defmodule SymphonyElixir.CLITest do
     refute_received {:hub_activation_probe_set, _opts}
     refute_received {:workflow_set, _path}
     refute_received {:tracker_config_set, _path}
+  end
+
+  test "accepts --host and --port for hub mode observability" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end,
+        set_server_host_override: fn host ->
+          send(parent, {:host, host})
+          :ok
+        end,
+        set_server_port_override: fn port ->
+          send(parent, {:port, port})
+          :ok
+        end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--host", "0.0.0.0", "--port", "21000"], deps)
+    assert_received {:host, "0.0.0.0"}
+    assert_received {:port, 21_000}
   end
 
   test "accepts explicit hub scheduler opt-in only for hub mode" do
@@ -815,6 +873,7 @@ defmodule SymphonyElixir.CLITest do
         validate_hub_config: fn _path -> :ok end,
         set_hub_worker_starter: fn _starter -> :ok end,
         set_logs_root: fn _path -> :ok end,
+        set_server_host_override: fn _host -> :ok end,
         set_server_port_override: fn _port -> :ok end,
         ensure_all_started: fn -> {:ok, [:symphony_elixir]} end
       },

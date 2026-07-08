@@ -22,6 +22,7 @@ defmodule SymphonyElixir.CLI do
     hub_provider_executor: :string,
     hub_scheduler: :boolean,
     hub_worker_starter: :string,
+    host: :string,
     logs_root: :string,
     port: :integer,
     tracker_config: :string
@@ -46,6 +47,7 @@ defmodule SymphonyElixir.CLI do
           validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
           set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
+          set_server_host_override: (String.t() -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
           ensure_all_started: (-> ensure_started_result())
         }
@@ -79,6 +81,7 @@ defmodule SymphonyElixir.CLI do
     else
       with :ok <- require_guardrails_acknowledgement(opts),
            :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_host(opts, deps),
            :ok <- maybe_set_server_port(opts, deps) do
         run(Path.expand("WORKFLOW.md"), tracker_config_path(opts), deps)
       end
@@ -91,6 +94,7 @@ defmodule SymphonyElixir.CLI do
     else
       with :ok <- require_guardrails_acknowledgement(opts),
            :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_host(opts, deps),
            :ok <- maybe_set_server_port(opts, deps) do
         run(workflow_path, tracker_config_path(opts), deps)
       end
@@ -102,6 +106,7 @@ defmodule SymphonyElixir.CLI do
   defp run_hub(opts, deps) do
     with :ok <- require_guardrails_acknowledgement(opts),
          :ok <- maybe_set_logs_root(opts, deps),
+         :ok <- maybe_set_server_host(opts, deps),
          :ok <- maybe_set_server_port(opts, deps),
          :ok <- maybe_set_hub_scheduler(opts, deps),
          :ok <- maybe_set_hub_provider_executor(opts, deps),
@@ -147,7 +152,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
+    "Usage: symphony [--logs-root <path>] [--host <host>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--host <host>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -170,6 +175,7 @@ defmodule SymphonyElixir.CLI do
       validate_hub_config: &HubRuntime.validate_config/1,
       set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
       set_logs_root: &set_logs_root/1,
+      set_server_host_override: &set_server_host_override/1,
       set_server_port_override: &set_server_port_override/1,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
     }
@@ -249,6 +255,22 @@ defmodule SymphonyElixir.CLI do
           :ok = deps.set_server_port_override.(port)
         else
           {:error, usage_message()}
+        end
+    end
+  end
+
+  defp maybe_set_server_host(opts, deps) do
+    case Keyword.get_values(opts, :host) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> normalize_server_host()
+        |> case do
+          {:ok, host} -> deps.set_server_host_override.(host)
+          {:error, message} -> {:error, message}
         end
     end
   end
@@ -410,6 +432,11 @@ defmodule SymphonyElixir.CLI do
     :ok
   end
 
+  defp set_server_host_override(host) when is_binary(host) do
+    Application.put_env(:symphony_elixir, :server_host_override, host)
+    :ok
+  end
+
   defp hub_worker_starter_module(value) when is_binary(value) do
     case String.trim(value) do
       "" ->
@@ -504,6 +531,15 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp normalize_cli_path(_path, blank_message), do: {:error, blank_message}
+
+  defp normalize_server_host(host) when is_binary(host) do
+    case String.trim(host) do
+      "" -> {:error, usage_message()}
+      trimmed -> {:ok, trimmed}
+    end
+  end
+
+  defp normalize_server_host(_host), do: {:error, usage_message()}
 
   defp require_regular_file(deps, path, message_prefix) do
     if deps.file_regular?.(path), do: :ok, else: {:error, "#{message_prefix}: #{path}"}

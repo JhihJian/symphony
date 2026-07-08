@@ -1246,6 +1246,8 @@ Runtime entrypoint:
 
 - Implementations MAY provide an explicit Hub runtime entrypoint such as
   `--hub-config <path-to-HUB.yaml>`.
+- Implementations MAY provide a Dashboard/API bind override such as `--host <host>`; this override
+  applies to Hub mode because Hub mode does not have a single-project `server.host` source.
 - Hub runtime MUST be opt-in. The presence of `HUB.yaml` alone MUST NOT replace legacy
   single-project startup.
 - Legacy startup using `--tracker-config <path-to-TRACKER.yaml> <path-to-WORKFLOW.md>` MUST remain
@@ -4010,8 +4012,9 @@ Use the same validation profiles as Section 17:
 
 ### 18.2 RECOMMENDED Extensions (Not REQUIRED for Conformance)
 
-- HTTP server extension honors CLI `--port` over `server.port`, uses a safe default bind host, and
-  exposes the baseline endpoints/error semantics in Section 13.7 if shipped.
+- HTTP server extension honors CLI `--port` over `server.port`, honors CLI `--host` over
+  `server.host`, uses a safe default bind host, and exposes the baseline endpoints/error semantics
+  in Section 13.7 if shipped.
 - `linear_graphql` client-side tool extension exposes raw Linear GraphQL access through the
   app-server session using configured Symphony auth.
 - TODO: Persist retry queue and session metadata across process restarts.

@@ -318,27 +318,27 @@ bind the same port.
 Hub mode now has an explicit runtime entrypoint with a small poll tick execution boundary:
 
 ```bash
-./bin/symphony --hub-config /path/to/HUB.yaml --port 21000
+./bin/symphony --hub-config /path/to/HUB.yaml --host 0.0.0.0 --port 21000
 ```
 
 The scheduler loop is a separate explicit opt-in:
 
 ```bash
-./bin/symphony --hub-config /path/to/HUB.yaml --hub-scheduler --port 21000
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-scheduler --host 0.0.0.0 --port 21000
 ```
 
 The default Hub provider executor is still the safe skeleton. To let Hub candidate scans perform
 real provider reads through the governed Hub boundary, opt in explicitly:
 
 ```bash
-./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-candidate-scan --port 21000
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-candidate-scan --host 0.0.0.0 --port 21000
 ```
 
 To let Hub execute the first safe writeback subset through the same governed boundary, opt in
 explicitly:
 
 ```bash
-./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-writeback --port 21000
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-writeback --host 0.0.0.0 --port 21000
 ```
 
 `--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
@@ -347,6 +347,10 @@ present, and the legacy startup path remains:
 ```bash
 ./bin/symphony --tracker-config /path/to/TRACKER.yaml /path/to/WORKFLOW.md
 ```
+
+`--host` overrides the Dashboard/API bind address for both legacy and Hub startup paths. A Hub
+sidecar intended for LAN access should pass `--host 0.0.0.0`; the terminal dashboard URL is still
+normalized to a loopback URL for local copy/paste.
 
 In Hub mode the process loads `HUB.yaml`, keeps a safe registry snapshot, builds a poll coordination
 plan, and can execute one controlled candidate-scan tick when `/refresh` or
@@ -782,6 +786,23 @@ values, raw env/raw config, raw provider responses, raw systemd output, raw hook
 full prompts, full transcripts, provider body text, full comment/PR bodies, and exception stack
 traces.
 
+#### Hub sidecar systemd service
+
+For a long-running Hub observability entrypoint, install a separate sidecar instead of replacing
+existing `symphony@<project>.service` instances:
+
+```bash
+../scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
+The generated `symphony-hub.service` passes `--hub-activation-probe host-service` and keeps the Hub
+scheduler, real provider executors, real worker starter, and writeback disabled unless an operator
+starts a different explicit runtime. It is intended for Dashboard/API observability and activation
+preflight evidence only, not automatic legacy service takeover.
+
 #### Hub migration readiness dry-run runbook
 
 Use readiness for migration preparation only; it does not execute a migration.
@@ -798,6 +819,7 @@ Use readiness for migration preparation only; it does not execute a migration.
      --i-understand-that-this-will-be-running-without-the-usual-guardrails \
      --hub-config /path/to/HUB.yaml \
      --hub-activation-probe host-service \
+     --host 0.0.0.0 \
      --port 21000
    ```
 

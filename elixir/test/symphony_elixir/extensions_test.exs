@@ -1246,6 +1246,16 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
+    previous_host_override = Application.get_env(:symphony_elixir, :server_host_override)
+
+    on_exit(fn ->
+      if is_nil(previous_host_override) do
+        Application.delete_env(:symphony_elixir, :server_host_override)
+      else
+        Application.put_env(:symphony_elixir, :server_host_override, previous_host_override)
+      end
+    end)
+
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer
     assert spec.start == {HttpServer, :start_link, [[port: 0]]}
@@ -1264,11 +1274,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     }
 
     server_opts = [
-      host: "127.0.0.1",
       port: 0,
       orchestrator: orchestrator_name,
       snapshot_timeout_ms: 50
     ]
+
+    Application.put_env(:symphony_elixir, :server_host_override, "127.0.0.1")
 
     start_supervised!({StaticOrchestrator, name: orchestrator_name, snapshot: snapshot, refresh: refresh})
 

@@ -49,7 +49,7 @@ OPENAI_API_KEY="$OPENAI_API_KEY" /home/jhihjian/.local/bin/ocr llm test
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
 它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
 `symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
-当手动以 `--hub-config ... --port <port>` 启动 Hub runtime 时，`/api/v1/state` 会暴露
+当手动以 `--hub-config ... --host <host> --port <port>` 启动 Hub runtime 时，`/api/v1/state` 会暴露
 `hub_device_observability.overview` 和每个 project 的 `detail`。Overview 汇总 scheduler/tick
 等待或合并原因、project 状态计数、provider queue/backoff/circuit/recent failure、capacity/workspace、
 writeback/manual attention、activation preflight 和 lifecycle 状态；项目明细解释 identity/provider
@@ -281,7 +281,7 @@ systemd-template runtime/log/state 约定和本机 Dashboard/API 端口监听情
 配置不可读、端口探测不可用或单项目探测失败会让对应项目进入 unknown/manual attention，不会让
 Hub tick 崩溃，也不会影响其他项目。
 如果需要试运行 Hub runtime poll tick 骨架，可以手动执行
-`./bin/symphony --hub-config /path/to/HUB.yaml --port <port>`；该入口会加载注册表、生成 poll plan、
+`./bin/symphony --hub-config /path/to/HUB.yaml --host 0.0.0.0 --port <port>`；该入口会加载注册表、生成 poll plan、
 通过 Hub provider request 边界执行一轮可控的 candidate-scan tick、记录 poll attempt/result fact，
 并通过 `/api/v1/state` 暴露安全字段。若额外传入 `--hub-scheduler`，Hub runtime 会启用第一版
 显式 opt-in 的 Hub-owned tick loop baseline：启动后自动 tick，完成后根据 Hub poll plan、
@@ -296,6 +296,7 @@ provider backoff 和 runtime-ledger 未解决状态安排下一轮，并让手�
   --i-understand-that-this-will-be-running-without-the-usual-guardrails \
   --hub-config /path/to/HUB.yaml \
   --hub-activation-probe host-service \
+  --host 0.0.0.0 \
   --port 21000
 
 curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
@@ -345,6 +346,28 @@ service、provider scope、workspace/runtime/log/state/port owner、writeback、
 executor/writeback executor/worker starter 模式，并确认 cutover gate 对目标 operation 显示 allowed
 或 staged_ready，必须由 operator 手工执行。本片不提供一键迁移，
 也不会自动修改 `HUB.yaml`、项目配置、systemd unit 或 provider 状态。
+如果要把 Hub Dashboard/API 作为本机正式观测入口，先以 sidecar 方式安装独立服务，不直接替换已有
+`symphony@<project>.service`：
+
+```bash
+scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+
+systemctl --user status symphony-hub.service
+curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
+  hub_runtime,
+  device: .hub_device_observability.device,
+  projects: [.hub_device_observability.projects[].project_id]
+}'
+```
+
+该服务默认只传 `--hub-activation-probe host-service`，不会传 `--hub-scheduler`、
+`--hub-provider-executor real-*`、`--hub-worker-starter real`，因此不会自动 poll、dispatch、启动
+worker、writeback、停止/disable/restart legacy service，也不会修改 `HUB.yaml` 或项目配置。
+生产切换到 `hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
+workspace/runtime/log/state 路径和 cutover gate。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
 边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在

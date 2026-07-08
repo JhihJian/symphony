@@ -96,7 +96,20 @@ defmodule SymphonyElixir.HttpServer do
   end
 
   defp server_host do
-    Config.settings!().server.host
+    case Application.get_env(:symphony_elixir, :server_host_override) do
+      host when is_binary(host) ->
+        case String.trim(host) do
+          "" -> fallback_server_host()
+          trimmed -> trimmed
+        end
+
+      _ ->
+        fallback_server_host()
+    end
+  end
+
+  defp fallback_server_host do
+    if Runtime.hub_mode?(), do: "127.0.0.1", else: Config.server_host()
   end
 
   defp secret_key_base do
