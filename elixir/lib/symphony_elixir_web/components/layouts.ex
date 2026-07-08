@@ -17,6 +17,8 @@ defmodule SymphonyElixirWeb.Layouts do
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="csrf-token" content={@csrf_token} />
         <title>Symphony 可观测性</title>
+        <script defer src="/vendor/mermaid/mermaid.min.js"></script>
+        <script defer src="/dashboard.js"></script>
         <script defer src="/vendor/phoenix_html/phoenix_html.js"></script>
         <script defer src="/vendor/phoenix/phoenix.js"></script>
         <script defer src="/vendor/phoenix_live_view/phoenix_live_view.js"></script>
@@ -29,7 +31,8 @@ defmodule SymphonyElixirWeb.Layouts do
             if (!window.Phoenix || !window.LiveView) return;
 
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: window.SymphonyDashboardHooks || {}
             });
 
             liveSocket.connect();

@@ -49,7 +49,8 @@ Legacy `WORKFLOW.md` tracker front matter is rejected at runtime; migrate to the
 `WORKFLOW.md` plus `TRACKER.yaml` layout before starting the service.
 
 When the Elixir observability server is enabled, `/workflow` provides a read-only workflow-stage
-visualization. It renders the current `WORKFLOW.md` stages and transitions, summarizes
+visualization. It renders the current `WORKFLOW.md` stages as a Mermaid-powered clickable graph
+with outcome-labelled directed edges, shows the selected stage details below the graph, summarizes
 `TRACKER.yaml` stage-state coverage without exposing credentials, and overlays available runtime
 stage counts from the local orchestrator snapshot.
 

@@ -825,6 +825,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     html = html_response(get(build_conn(), "/"), 200)
     assert html =~ "/dashboard.css"
+    assert html =~ "/dashboard.js"
+    assert html =~ "/vendor/mermaid/mermaid.min.js"
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
@@ -836,6 +838,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+
+    dashboard_js = response(get(build_conn(), "/dashboard.js"), 200)
+    assert dashboard_js =~ "WorkflowMermaid"
+    assert dashboard_js =~ ".render(renderId, definition)"
+
+    mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
+    assert mermaid_js =~ "globalThis[\"mermaid\"]"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -982,24 +991,35 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, _view, html} = live(build_conn(), "/workflow")
+    {:ok, view, html} = live(build_conn(), "/workflow")
 
     assert html =~ "阶段流向图"
     assert html =~ "Stage Graph"
+    assert html =~ "workflow-mermaid"
+    assert html =~ "phx-hook=\"WorkflowMermaid\""
+    assert html =~ "flowchart LR"
+    assert html =~ "[&quot;ready&quot;]"
+    assert html =~ "[&quot;working&quot;]"
     assert html =~ "ready"
     assert html =~ "working"
     assert html =~ "started"
+    assert html =~ "当前 Stage"
+    assert html =~ "Pick up new work."
     assert html =~ "Missing Outcome"
     assert html =~ "protocol_blocked"
     assert html =~ "Tracker 映射"
     assert html =~ "github"
     assert html =~ "In Progress"
-    assert html =~ "run <strong class=\"numeric\">1</strong>"
-    assert html =~ "retry <strong class=\"numeric\">1</strong>"
+    assert html =~ "running <strong class=\"numeric\">1</strong>"
+    assert html =~ "retrying <strong class=\"numeric\">1</strong>"
     assert html =~ "blocked <strong class=\"numeric\">1</strong>"
     assert html =~ "单实例 Dashboard"
     refute html =~ "ghp_secret_token"
     refute html =~ "api_key"
+
+    assert view
+           |> element("[data-stage-target=\"working\"]")
+           |> render_click() =~ "Implement the issue."
   end
 
   test "workflow dashboard shows configuration errors without crashing" do
@@ -1141,6 +1161,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
     assert dashboard_css.body =~ ":root {"
+
+    dashboard_js = Req.get!("http://127.0.0.1:#{port}/dashboard.js")
+    assert dashboard_js.status == 200
+    assert dashboard_js.body =~ "WorkflowMermaid"
+
+    mermaid_js = Req.get!("http://127.0.0.1:#{port}/vendor/mermaid/mermaid.min.js")
+    assert mermaid_js.status == 200
+    assert mermaid_js.body =~ "globalThis[\"mermaid\"]"
 
     phoenix_js = Req.get!("http://127.0.0.1:#{port}/vendor/phoenix/phoenix.js")
     assert phoenix_js.status == 200
