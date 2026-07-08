@@ -50,10 +50,50 @@ defmodule SymphonyElixirWeb.Layouts do
 
   @spec app(map()) :: Phoenix.LiveView.Rendered.t()
   def app(assigns) do
+    assigns =
+      assigns
+      |> assign_new(:active_nav, fn -> :dashboard end)
+      |> assign_new(:access_role, fn -> nil end)
+
     ~H"""
     <main class="app-shell">
+      <.workspace_nav active_nav={@active_nav} access_role={@access_role} />
       {@inner_content}
     </main>
     """
   end
+
+  defp workspace_nav(assigns) do
+    ~H"""
+    <nav class="workspace-nav" aria-label="Symphony 工作台导航">
+      <a class="workspace-brand" href="/">
+        <span class="workspace-brand-mark" aria-hidden="true">S</span>
+        <span>
+          <strong>Symphony</strong>
+          <small>Agent orchestration</small>
+        </span>
+      </a>
+
+      <div class="workspace-nav-links">
+        <a class={nav_link_class(@active_nav, :dashboard)} href="/" aria-current={current_nav?(@active_nav, :dashboard) && "page"}>
+          当前实例运行
+        </a>
+        <a class={nav_link_class(@active_nav, :workflow)} href="/workflow" aria-current={current_nav?(@active_nav, :workflow) && "page"}>
+          流程配置
+        </a>
+        <a class={nav_link_class(@active_nav, :instances)} href="/admin/instances" aria-current={current_nav?(@active_nav, :instances) && "page"}>
+          实例管理
+        </a>
+      </div>
+
+      <span :if={@access_role} class="workspace-role-badge"><%= @access_role %></span>
+    </nav>
+    """
+  end
+
+  defp nav_link_class(active_nav, nav) do
+    if current_nav?(active_nav, nav), do: "workspace-nav-link workspace-nav-link-active", else: "workspace-nav-link"
+  end
+
+  defp current_nav?(active_nav, nav), do: to_string(active_nav) == to_string(nav)
 end

@@ -83,11 +83,24 @@
       })
       .catch(function (error) {
         output.classList.remove("workflow-mermaid-loading");
-        output.innerHTML =
-          "<div class=\"error-card workflow-mermaid-error\"><h2 class=\"error-title\">Workflow 图渲染失败</h2><p class=\"error-copy\">" +
-          String(error && error.message ? error.message : error) +
-          "</p></div>";
+        renderWorkflowMermaidError(output, error);
       });
+  }
+
+  function renderWorkflowMermaidError(output, error) {
+    var card = document.createElement("div");
+    var title = document.createElement("h2");
+    var copy = document.createElement("p");
+
+    card.className = "error-card workflow-mermaid-error";
+    title.className = "error-title";
+    title.textContent = "Workflow 图渲染失败";
+    copy.className = "error-copy";
+    copy.textContent = String(error && error.message ? error.message : error);
+
+    card.appendChild(title);
+    card.appendChild(copy);
+    output.replaceChildren(card);
   }
 
   function attachRenderedNodeHandlers(output, stageMap, pushStage) {
@@ -171,6 +184,44 @@
     window.setTimeout(renderAllWorkflowMermaid, 1000);
     watchWorkflowMermaid();
   }
+
+  function resetCopyButton(button, delay) {
+    clearTimeout(button.__copyTimer);
+    button.__copyTimer = window.setTimeout(function () {
+      button.textContent = button.getAttribute("data-label") || "复制 ID";
+    }, delay);
+  }
+
+  function setCopyButtonState(button, text, delay) {
+    button.textContent = text;
+    resetCopyButton(button, delay);
+  }
+
+  function copyTextFromButton(button) {
+    var value = button.getAttribute("data-copy") || "";
+
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      setCopyButtonState(button, "复制失败", 1600);
+      return;
+    }
+
+    navigator.clipboard
+      .writeText(value)
+      .then(function () {
+        setCopyButtonState(button, "已复制", 1200);
+      })
+      .catch(function () {
+        setCopyButtonState(button, "复制失败", 1600);
+      });
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest(".copy-button[data-copy]");
+    if (!button) return;
+
+    event.preventDefault();
+    copyTextFromButton(button);
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", startWorkflowMermaidRendering);

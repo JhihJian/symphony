@@ -5,14 +5,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.{TrackerConfig, Workflow}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    payload = load_payload()
+
     socket =
       socket
-      |> assign(:payload, load_payload())
+      |> assign(:active_nav, :dashboard)
+      |> assign(:access_role, access_role(session))
+      |> assign(:payload, payload)
+      |> assign(:runtime_context, runtime_context(payload))
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -31,9 +37,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_info(:observability_updated, socket) do
+    payload = load_payload()
+
     {:noreply,
      socket
-     |> assign(:payload, load_payload())
+     |> assign(:payload, payload)
+     |> assign(:runtime_context, runtime_context(payload))
      |> assign(:now, DateTime.utc_now())}
   end
 
@@ -56,7 +65,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
-            <a class="status-badge" href="/workflow">Workflow 图</a>
+            <span class="status-badge">当前进程</span>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               实时
@@ -68,6 +77,35 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
+
+      <section class="section-card context-card">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title">当前上下文</h2>
+            <p class="section-copy">确认当前观察对象、配置来源和可追溯入口。</p>
+          </div>
+        </div>
+        <div class="context-grid">
+          <section class="context-item">
+            <p class="panel-label">运行面</p>
+            <strong><%= @runtime_context.scope %></strong>
+            <span class="muted"><%= @runtime_context.source %></span>
+          </section>
+          <section class="context-item">
+            <p class="panel-label">Workflow</p>
+            <span class="mono event-meta" title={@runtime_context.workflow_path}><%= @runtime_context.workflow_path %></span>
+          </section>
+          <section class="context-item">
+            <p class="panel-label">Tracker</p>
+            <span class="mono event-meta" title={@runtime_context.tracker_path}><%= @runtime_context.tracker_path %></span>
+          </section>
+          <section class="context-item">
+            <p class="panel-label">快照 / API</p>
+            <span class="mono event-meta"><%= @runtime_context.generated_at %></span>
+            <a class="issue-link" href="/api/v1/state">/api/v1/state</a>
+          </section>
+        </div>
+      </section>
 
       <%= if @payload[:error] do %>
         <section class="error-card">
@@ -693,10 +731,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <%= if entry.session_id do %>
                           <button
                             type="button"
-                            class="subtle-button"
+                            class="subtle-button copy-button"
                             data-label="复制 ID"
                             data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = '已复制'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                           >
                             复制 ID
                           </button>
@@ -745,7 +782,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">暂无阻塞会话。</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
+              <table class="data-table data-table-blocked">
                 <thead>
                   <tr>
                     <th>Issue</th>
@@ -782,10 +819,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <%= if entry.session_id do %>
                         <button
                           type="button"
-                          class="subtle-button"
+                          class="subtle-button copy-button"
                           data-label="复制 ID"
                           data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = '已复制'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
                         >
                           复制 ID
                         </button>
@@ -887,6 +923,46 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
+
+  defp runtime_context(payload) do
+    workflow_path = safe_config_path(fn -> Workflow.workflow_file_path() end)
+
+    tracker_path =
+      safe_config_path(fn ->
+        case TrackerConfig.tracker_file_path() do
+          path when is_binary(path) -> path
+          _path -> TrackerConfig.default_tracker_file_path(workflow_path)
+        end
+      end)
+
+    %{
+      scope: if(hub_device?(payload), do: "Hub 设备运行态", else: "单实例运行态"),
+      source: if(Map.get(payload, :error), do: "快照暂不可用", else: "Orchestrator snapshot"),
+      workflow_path: workflow_path,
+      tracker_path: tracker_path,
+      generated_at: Map.get(payload, :generated_at, "暂无")
+    }
+  end
+
+  defp safe_config_path(fun) do
+    case fun.() do
+      path when is_binary(path) and path != "" -> path
+      _path -> "未配置"
+    end
+  rescue
+    _error -> "未配置"
+  end
+
+  defp access_role(session) do
+    if local_admin_session?(Map.get(session, "admin_client_ip") || Map.get(session, :admin_client_ip)) do
+      "本机管理员"
+    else
+      "远程只读"
+    end
+  end
+
+  defp local_admin_session?(ip) when ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1"], do: true
+  defp local_admin_session?(_ip), do: false
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0

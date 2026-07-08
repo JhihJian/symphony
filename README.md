@@ -58,7 +58,10 @@ When the Elixir observability server is enabled, `/workflow` provides a read-onl
 visualization. It renders the current `WORKFLOW.md` stages as a Mermaid-powered clickable graph
 with outcome-labelled directed edges, shows the selected stage details below the graph, summarizes
 `TRACKER.yaml` stage-state coverage without exposing credentials, and overlays available runtime
-stage counts from the local orchestrator snapshot.
+stage counts from the local orchestrator snapshot. The LiveView UI now presents `/`, `/workflow`,
+and `/admin/instances` as a single operator workspace with explicit current-instance, workflow
+configuration, and instance-management entry points; management controls distinguish loopback
+administrator sessions from remote read-only sessions.
 
 The Elixir implementation also includes the first Hub mode model baseline for the #74 direction.
 `HUB.yaml` can register multiple projects, each pointing at its own `WORKFLOW.md` and optional
