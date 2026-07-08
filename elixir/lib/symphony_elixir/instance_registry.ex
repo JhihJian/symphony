@@ -14,7 +14,7 @@ defmodule SymphonyElixir.InstanceRegistry do
   @env_var_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @repo_part_pattern ~r/\A[A-Za-z0-9_.-]+\z/
   @default_state_timeout_ms 1_500
-  @default_instance_load_timeout_ms 2_500
+  @default_instance_load_timeout_ms 8_000
   @default_instance_load_concurrency 8
   @default_port_start 20_000
   @max_port 65_535

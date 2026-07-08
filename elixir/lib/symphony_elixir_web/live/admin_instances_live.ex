@@ -7,7 +7,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   alias SymphonyElixirWeb.Endpoint
 
-  @admin_instances_timeout_ms 3_000
+  @admin_instances_timeout_ms 10_000
 
   @impl true
   def mount(_params, session, socket) do
