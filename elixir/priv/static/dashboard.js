@@ -75,7 +75,9 @@
         }
 
         attachRenderedNodeHandlers(output, parseStageMap(element), function (stageId) {
-          element.__workflowPushStage(stageId);
+          if (typeof element.__workflowPushStage === "function") {
+            element.__workflowPushStage(stageId);
+          }
         });
       })
       .catch(function (error) {
@@ -135,6 +137,18 @@
         }
       });
     });
+  }
+
+  function renderAllWorkflowMermaid() {
+    document.querySelectorAll(".workflow-mermaid[data-mermaid-signature]").forEach(function (element) {
+      renderWorkflowMermaid(element);
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", renderAllWorkflowMermaid);
+  } else {
+    renderAllWorkflowMermaid();
   }
 
   window.SymphonyDashboardHooks = Object.assign(window.SymphonyDashboardHooks || {}, {

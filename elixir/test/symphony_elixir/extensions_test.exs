@@ -878,6 +878,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_js = response(get(build_conn(), "/dashboard.js"), 200)
     assert dashboard_js =~ "WorkflowMermaid"
+    assert dashboard_js =~ "renderAllWorkflowMermaid"
+    assert dashboard_js =~ "DOMContentLoaded"
     assert dashboard_js =~ ".render(renderId, definition)"
 
     mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
@@ -1237,6 +1239,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     dashboard_js = Req.get!("http://127.0.0.1:#{port}/dashboard.js")
     assert dashboard_js.status == 200
     assert dashboard_js.body =~ "WorkflowMermaid"
+    assert dashboard_js.body =~ "renderAllWorkflowMermaid"
 
     mermaid_js = Req.get!("http://127.0.0.1:#{port}/vendor/mermaid/mermaid.min.js")
     assert mermaid_js.status == 200
