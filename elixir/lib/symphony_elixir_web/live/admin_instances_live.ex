@@ -72,9 +72,12 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   def handle_event("auto_update", %{"action" => action}, socket) do
     {message, auto_update} =
       guarded_auto_update(socket, fn ->
-        case run_auto_update_action(action) do
-          {:ok, snapshot} -> {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
-          {:error, snapshot} -> {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
+        case safe_auto_update_action(action) do
+          {:ok, snapshot} ->
+            {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
+
+          {:error, snapshot} ->
+            {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
         end
       end)
 
@@ -639,6 +642,16 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp run_auto_update_action("update"), do: auto_update_module().update_now(auto_update_opts())
   defp run_auto_update_action(_action), do: {:error, %{last_check: %{error: "Unsupported auto update action"}}}
 
+  defp safe_auto_update_action(action) do
+    run_auto_update_action(action)
+  rescue
+    error ->
+      {:error, auto_update_unavailable_snapshot(error)}
+  catch
+    :exit, reason ->
+      {:error, auto_update_unavailable_snapshot(reason)}
+  end
+
   defp run_update_timer_action("enable"), do: registry().enable_update_timer(registry_opts())
   defp run_update_timer_action("disable"), do: registry().disable_update_timer(registry_opts())
   defp run_update_timer_action("trigger"), do: registry().trigger_update_service(registry_opts())
@@ -671,19 +684,29 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     auto_update_module().snapshot(auto_update_opts())
   rescue
     error ->
-      %{
-        repo: "unknown",
-        branch: "main",
-        source_root: nil,
-        poll_interval_ms: 0,
-        current_sha: nil,
-        remote_sha: nil,
-        pending_update?: false,
-        next_check_at: nil,
-        last_check: %{status: "unavailable", error: Exception.message(error), rate_limit: %{}, etag: nil},
-        last_update: %{status: "idle", instance_results: []}
-      }
+      auto_update_unavailable_snapshot(error)
+  catch
+    :exit, reason ->
+      auto_update_unavailable_snapshot(reason)
   end
+
+  defp auto_update_unavailable_snapshot(reason) do
+    %{
+      repo: "unknown",
+      branch: "main",
+      source_root: nil,
+      poll_interval_ms: 0,
+      current_sha: nil,
+      remote_sha: nil,
+      pending_update?: false,
+      next_check_at: nil,
+      last_check: %{status: "unavailable", error: auto_update_unavailable_error(reason), rate_limit: %{}, etag: nil},
+      last_update: %{status: "idle", instance_results: []}
+    }
+  end
+
+  defp auto_update_unavailable_error(%{__exception__: true} = error), do: Exception.message(error)
+  defp auto_update_unavailable_error(reason), do: "auto_update_unavailable: #{inspect(reason)}"
 
   defp auto_update_module do
     Endpoint.config(:auto_update) || SymphonyElixir.AutoUpdate
