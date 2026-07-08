@@ -145,10 +145,36 @@
     });
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", renderAllWorkflowMermaid);
-  } else {
+  var renderAllQueued = false;
+
+  function queueRenderAllWorkflowMermaid() {
+    if (renderAllQueued) return;
+
+    renderAllQueued = true;
+    window.setTimeout(function () {
+      renderAllQueued = false;
+      renderAllWorkflowMermaid();
+    }, 0);
+  }
+
+  function watchWorkflowMermaid() {
+    if (!window.MutationObserver || !document.body) return;
+
+    var observer = new window.MutationObserver(queueRenderAllWorkflowMermaid);
+    observer.observe(document.body, {childList: true, subtree: true});
+  }
+
+  function startWorkflowMermaidRendering() {
     renderAllWorkflowMermaid();
+    window.setTimeout(renderAllWorkflowMermaid, 250);
+    window.setTimeout(renderAllWorkflowMermaid, 1000);
+    watchWorkflowMermaid();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startWorkflowMermaidRendering);
+  } else {
+    startWorkflowMermaidRendering();
   }
 
   window.SymphonyDashboardHooks = Object.assign(window.SymphonyDashboardHooks || {}, {
