@@ -354,7 +354,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     assert duration_us < 500_000
     assert html =~ "正在加载实例总览"
-    assert html =~ "慢实例不会阻塞首屏"
+    assert html =~ "写操作会先锁定"
+    {:ok, document} = Floki.parse_document(html)
+    assert document |> Floki.find(~s(button[aria-describedby="admin-write-action-note"][disabled])) |> length() >= 6
     assert_receive {:slow_list_instances, _opts}
 
     html = render_async(view, 1_000)

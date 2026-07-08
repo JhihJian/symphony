@@ -80,6 +80,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <span class="status-badge-dot"></span>
               连接断开
             </span>
+            <span class="status-badge">
+              当前访问：<%= @access_role %>
+            </span>
+            <span class={if Map.get(@payload, :error), do: "state-badge state-badge-warning", else: "state-badge state-badge-active"}>
+              <%= if Map.get(@payload, :error), do: "快照暂不可用", else: "首次快照已加载" %>
+            </span>
+            <span class="status-badge">
+              只读观测
+            </span>
           </div>
         </div>
       </header>
@@ -188,7 +197,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
                 <span class="muted event-meta"><%= hub_poll_text(project.detail.poll_eligibility) %></span>
                 <span class="muted event-meta"><%= hub_active_attempt_project_summary(project) %></span>
-                <span class="muted event-meta">下一步：<%= hub_project_next_action(project) %></span>
+                <span class="hub-project-next-action">下一步：<%= hub_project_next_action(project) %></span>
               </a>
             </div>
           <% end %>
@@ -549,28 +558,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </details>
           </section>
 
-          <section class="section-card hub-project-details" id="hub-project-details">
-            <div class="section-header">
-              <div>
-                <h2 class="section-title">Hub 项目明细</h2>
-                <p class="section-copy">每个 Hub project 的 ownership、preflight、poll、dispatch、start、lifecycle 和 writeback 当前状态。</p>
-              </div>
-            </div>
+          <details class="hub-diagnostic-disclosure hub-project-details-disclosure" id="hub-project-details">
+            <summary>
+              <span>Hub 项目明细</span>
+              <small>高级诊断：ownership、preflight、poll、dispatch、start、lifecycle 和 writeback。</small>
+            </summary>
 
-            <div class="table-wrap">
-              <table class="data-table hub-project-table">
-                <thead>
-                  <tr>
-                    <th>Project</th>
-                    <th>状态</th>
-                    <th>Poll / Preflight</th>
-                    <th>Dispatch / Start</th>
-                    <th>Lifecycle / Writeback</th>
-                    <th>需要处理</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={project <- @payload.hub_device_observability.projects} id={hub_project_anchor(project)}>
+            <section class="section-card hub-project-details">
+              <div class="section-header">
+                <div>
+                  <h2 class="section-title">Hub 项目明细</h2>
+                  <p class="section-copy">每个 Hub project 的 ownership、preflight、poll、dispatch、start、lifecycle 和 writeback 当前状态。</p>
+                </div>
+              </div>
+
+              <div class="table-wrap">
+                <table class="data-table hub-project-table">
+                  <thead>
+                    <tr>
+                      <th>Project</th>
+                      <th>状态</th>
+                      <th>Poll / Preflight</th>
+                      <th>Dispatch / Start</th>
+                      <th>Lifecycle / Writeback</th>
+                      <th>需要处理</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={project <- @payload.hub_device_observability.projects} id={hub_project_anchor(project)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= project.project_id %></span>
@@ -791,11 +806,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </details>
         <% end %>
 
         <section :if={@payload.rate_limits} class="section-card">
@@ -818,7 +834,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <%= if @payload.running == [] do %>
-            <p class="empty-state">暂无活跃会话。</p>
+            <p class="empty-state">暂无活跃会话。若 Hub 项目焦点仍有活跃尝试，请优先查看上方项目焦点；否则继续观察快照刷新。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table data-table-running">
@@ -916,7 +932,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <%= if @payload.blocked == [] do %>
-            <p class="empty-state">暂无阻塞会话。</p>
+            <p class="empty-state">暂无阻塞会话。当前没有等待人工输入或批准的 Issue；继续观察 Hub 项目焦点和重试队列即可。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table data-table-blocked">
@@ -1010,7 +1026,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <%= if @payload.retrying == [] do %>
-            <p class="empty-state">当前没有处于退避等待的 Issue。</p>
+            <p class="empty-state">当前没有处于退避等待的 Issue。无需处理重试窗口；如有风险，优先查看阻塞会话或 Hub 项目焦点。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table" style="min-width: 680px;">

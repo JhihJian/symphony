@@ -1367,19 +1367,25 @@ it shows the local orchestrator snapshot, running/retrying/blocked issues, token
 detail links. In Hub mode the first operator section prioritizes the current work queue and a
 compact Hub project focus list, so active attempts, workspace leases, manual attention, and the
 next project-level action are visible before lower-level Hub diagnostics. Hub project next actions
-are rendered as operator-readable action text, and when the normal running-session count is zero but
-Hub attempts are still active, the first-screen link points to the relevant Hub project instead of
-the empty running-session section. The context panel remains
+are rendered as operator-readable action text on their own row, and when the normal running-session
+count is zero but Hub attempts are still active, the first-screen link points to the relevant Hub
+project instead of the empty running-session section. The page header also labels the current access
+role, whether the first snapshot is loaded, and that the dashboard is a read-only observation
+surface. The context panel remains
 available for traceability and summarizes whether the view is a single instance or Hub device
 runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path, the snapshot timestamp,
 and the `/api/v1/state` entry. Empty rate-limit snapshots are hidden, and the full Hub device
-diagnostic matrix is behind an expandable details section after the compact health overview.
+diagnostic matrix plus the full Hub project detail table are behind expandable high-detail sections
+after the compact health overview.
 
 The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
 the current `WORKFLOW.md` directly, renders a Mermaid stage graph with clickable nodes and
 outcome-labelled directed edges, marks `workflow.start_stage`, `workflow.terminal_stages`,
 blocked/protocol-blocked paths, and shows the selected stage plus
 `workflow.missing_outcome.max_retries`/`on_exhausted` separately from ordinary transitions.
+The first screen uses a compact status strip for the start stage, stage count, terminal count,
+runtime snapshot, and diagnostics. Warning/error diagnostics show the first actionable diagnostic
+summary next to the count instead of only a generic number.
 On desktop the stage graph and selected-stage inspector share the first workflow panel, so clicking
 a graph node updates visible stage details without forcing the operator below the graph. On narrow
 screens the page adds a text-first stage flow overview near the Mermaid graph so operators can read
@@ -1408,8 +1414,10 @@ for zero issue risk. Dashboard/API links are clickable only when the instance is
 reachable; stopped, failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled
 entries with the URL still visible for inspection. The update timer buttons are also gated by
 current state, so an already enabled/active timer does not present “enable” as an available action.
-Remote read-only sessions cannot open the create-instance form because submission would still be
-rejected server-side.
+While the instance overview is still loading, create, auto-update, and update-timer write actions
+are disabled and linked to a visible loading reason; disabled buttons use neutral styling rather
+than retaining primary or danger colors. Remote read-only sessions cannot open the create-instance
+form because submission would still be rejected server-side.
 The page can create GitHub-backed instances by delegating to
 `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing env files and
 listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and recent-log

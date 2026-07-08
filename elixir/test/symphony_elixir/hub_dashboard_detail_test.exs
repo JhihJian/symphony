@@ -52,6 +52,9 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
 
+    assert html =~ "当前访问：本机管理员"
+    assert html =~ "首次快照已加载"
+    assert html =~ "只读观测"
     assert html =~ "当前需要关注的工作"
     assert html =~ "Hub 活跃尝试"
     assert html =~ "pending start 0 · workspace lease 1"
@@ -75,6 +78,8 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
 
     assert html =~ "Hub 设备总览"
     assert html =~ "Hub 项目明细"
+    assert html =~ "hub-project-details-disclosure"
+    assert html =~ "高级诊断：ownership"
     assert html =~ "Migration Readiness"
     assert html =~ "Activation Plan / Ack"
     assert html =~ "Cutover Audit"

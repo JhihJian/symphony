@@ -64,10 +64,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   def handle_event("toggle_create_form", _params, socket) do
-    if socket.assigns.local_admin? do
+    if admin_write_actions_ready?(socket) do
       {:noreply, assign(socket, :create_form_open?, !socket.assigns.create_form_open?)}
     else
-      {:noreply, assign(socket, :notice, "管理操作只允许本机客户端访问")}
+      {:noreply, assign(socket, :notice, admin_write_action_disabled_reason(socket))}
     end
   end
 
@@ -75,23 +75,24 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     form = normalize_form(params)
 
     {message, form, create_form_open?, create_errors, refresh?} =
-      cond do
-        !socket.assigns.local_admin? ->
-          {"管理操作只允许本机客户端访问", form, true, %{}, true}
+      case admin_write_action_disabled_reason(socket) do
+        nil ->
+          if map_size(create_form_errors(form)) > 0 do
+            {"请先修正新建实例表单中标记的字段。", form, true, create_form_errors(form), false}
+          else
+            guarded_create(socket, params, fn ->
+              case registry().create_instance(params, registry_opts()) do
+                {:ok, %{instance: instance}} ->
+                  {"已创建实例 #{instance.name}", default_create_form(), false, %{}, true}
 
-        map_size(create_form_errors(form)) > 0 ->
-          {"请先修正新建实例表单中标记的字段。", form, true, create_form_errors(form), false}
+                {:error, %{message: message} = error} ->
+                  {message, form, true, create_errors_from_registry_error(error), true}
+              end
+            end)
+          end
 
-        true ->
-          guarded_create(socket, params, fn ->
-            case registry().create_instance(params, registry_opts()) do
-              {:ok, %{instance: instance}} ->
-                {"已创建实例 #{instance.name}", default_create_form(), false, %{}, true}
-
-              {:error, %{message: message} = error} ->
-                {message, form, true, create_errors_from_registry_error(error), true}
-            end
-          end)
+        reason ->
+          {reason, form, true, %{}, false}
       end
 
     socket =
@@ -129,30 +130,43 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   def handle_event("auto_update", %{"action" => action}, socket) do
     {message, auto_update} =
-      guarded_auto_update(socket, fn ->
-        case safe_auto_update_action(action) do
-          {:ok, snapshot} ->
-            {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
+      if reason =
+           auto_update_action_disabled_reason(
+             socket.assigns.local_admin?,
+             socket.assigns.auto_update,
+             action,
+             socket.assigns.instances_loading?,
+             socket.assigns.instances_loaded?
+           ) do
+        {reason, socket.assigns.auto_update}
+      else
+        guarded_auto_update(socket, fn ->
+          case safe_auto_update_action(action) do
+            {:ok, snapshot} ->
+              {"自动更新操作完成：#{auto_update_status(action, snapshot)}", snapshot}
 
-          {:error, snapshot} ->
-            {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
-        end
-      end)
+            {:error, snapshot} ->
+              {"自动更新操作失败：#{auto_update_error(snapshot)}", snapshot}
+          end
+        end)
+      end
 
     {:noreply, refresh_admin_state(socket, message, auto_update)}
   end
 
   def handle_event("update_timer", %{"action" => action}, socket) do
     message =
-      cond do
-        !socket.assigns.local_admin? ->
-          "管理操作只允许本机客户端访问"
-
-        reason = update_timer_action_disabled_reason(socket.assigns.update_timer, action) ->
-          reason
-
-        true ->
-          action_message(run_update_timer_action(action), action)
+      if reason =
+           update_timer_action_disabled_reason(
+             socket.assigns.local_admin?,
+             socket.assigns.update_timer,
+             action,
+             socket.assigns.instances_loading?,
+             socket.assigns.instances_loaded?
+           ) do
+        reason
+      else
+        action_message(run_update_timer_action(action), action)
       end
 
     {:noreply, refresh_admin_state(socket, message)}
@@ -188,8 +202,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <span class="status-badge">
               当前访问：<%= @access_role %>
             </span>
-            <span class={if @local_admin?, do: "state-badge state-badge-active", else: "state-badge state-badge-warning"}>
-              <%= if @local_admin?, do: "可执行管理操作", else: "只读预览" %>
+            <span class={admin_capability_badge_class(@local_admin?, @instances_loading?, @instances_loaded?, @instances)}>
+              <%= admin_capability_text(@local_admin?, @instances_loading?, @instances_loaded?, @instances) %>
             </span>
             <a :if={@local_admin?} class="status-badge" href="/api/v1/admin/instances">JSON API</a>
             <span :if={!@local_admin?} class="status-badge status-badge-disabled">JSON API 仅本机</span>
@@ -211,9 +225,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </section>
       <% end %>
 
-      <section :if={@instances_loading? && !@instances_loaded?} class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
+      <section :if={@instances_loading? && !@instances_loaded?} id="admin-write-action-note" class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
         <strong>正在加载实例总览</strong>
-        <p>页面已可操作；实例 systemd 状态和 `/api/v1/state` 快照会在后台加载，慢实例不会阻塞首屏。</p>
+        <p>页面快照已可读；实例 systemd 状态和 `/api/v1/state` 快照仍在后台加载。创建、更新和 timer 等写操作会先锁定，等实例风险判断完成后再执行。</p>
       </section>
 
       <section :if={@instances_error} class="notice-banner notice-banner-error" role="alert" aria-live="polite">
@@ -275,11 +289,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="auto_update"
               phx-value-action="check"
-              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "check")}
-              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "check"))}
-              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "check")}
+              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "check", @instances_loading?, @instances_loaded?)}
+              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "check", @instances_loading?, @instances_loaded?))}
+              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "check", @instances_loading?, @instances_loaded?)}
               aria-label="立即检查 GitHub main 自动更新"
-              title={auto_update_action_title(@local_admin?, @auto_update, "check")}
+              title={auto_update_action_title(@local_admin?, @auto_update, "check", @instances_loading?, @instances_loaded?)}
               phx-disable-with="检查中..."
             >立即检查</button>
             <button
@@ -287,19 +301,19 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-primary"
               phx-click="auto_update"
               phx-value-action="update"
-              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "update")}
-              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "update"))}
-              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "update")}
+              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "update", @instances_loading?, @instances_loaded?)}
+              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "update", @instances_loading?, @instances_loaded?))}
+              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "update", @instances_loading?, @instances_loaded?)}
               aria-label="执行 GitHub main 自动更新"
-              title={auto_update_action_title(@local_admin?, @auto_update, "update")}
+              title={auto_update_action_title(@local_admin?, @auto_update, "update", @instances_loading?, @instances_loaded?)}
               phx-confirm="确认执行 GitHub main 更新？此操作会按各实例更新策略执行，部分实例可能被重启。"
               phx-disable-with="更新中..."
             >执行更新</button>
           </div>
         </div>
 
-        <p :if={auto_update_action_notice(@local_admin?, @auto_update)} id="auto-update-action-note" class="lifecycle-action-note">
-          <%= auto_update_action_notice(@local_admin?, @auto_update) %>
+        <p :if={auto_update_action_notice(@local_admin?, @auto_update, @instances_loading?, @instances_loaded?)} id="auto-update-action-note" class="lifecycle-action-note">
+          <%= auto_update_action_notice(@local_admin?, @auto_update, @instances_loading?, @instances_loaded?) %>
         </p>
 
         <%= if auto_update_state(@auto_update) == :unavailable do %>
@@ -397,14 +411,14 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "enable")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "enable"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "enable")} aria-label="启用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "enable")} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "disable")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "disable"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "disable")} aria-label="禁用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "disable")} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "trigger")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "trigger"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "trigger")} aria-label="手动触发 symphony-update.service" title={update_timer_action_title(@local_admin?, @update_timer, "trigger")} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-label="启用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-label="禁用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-label="手动触发 symphony-update.service" title={update_timer_action_title(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
           </div>
         </div>
 
-        <p :if={update_timer_action_notice(@local_admin?, @update_timer)} id="update-timer-action-note" class="lifecycle-action-note">
-          <%= update_timer_action_notice(@local_admin?, @update_timer) %>
+        <p :if={update_timer_action_notice(@local_admin?, @update_timer, @instances_loading?, @instances_loaded?)} id="update-timer-action-note" class="lifecycle-action-note">
+          <%= update_timer_action_notice(@local_admin?, @update_timer, @instances_loading?, @instances_loaded?) %>
         </p>
 
         <div class="instance-meta-grid timer-grid">
@@ -660,10 +674,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             type="button"
             phx-click="toggle_create_form"
             phx-disable-with="切换中..."
-            disabled={!@local_admin?}
-            aria-disabled={aria_disabled(@local_admin?)}
-            aria-describedby={admin_disabled_reason_id(@local_admin?)}
-            title={admin_disabled_title(@local_admin?)}
+            disabled={!admin_write_actions_ready?(@local_admin?, @instances_loading?, @instances_loaded?)}
+            aria-disabled={aria_disabled(admin_write_actions_ready?(@local_admin?, @instances_loading?, @instances_loaded?))}
+            aria-describedby={admin_write_action_reason_id(@local_admin?, @instances_loading?, @instances_loaded?)}
+            title={admin_write_action_title(@local_admin?, @instances_loading?, @instances_loaded?)}
             aria-expanded={if(@create_form_open?, do: "true", else: "false")}
             aria-controls="create-instance-form"
           ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
@@ -815,11 +829,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           <button
             class="lifecycle-button lifecycle-button-primary"
             type="submit"
-            disabled={!@local_admin?}
-            aria-disabled={aria_disabled(@local_admin?)}
-            aria-describedby={admin_disabled_reason_id(@local_admin?)}
+            disabled={!admin_write_actions_ready?(@local_admin?, @instances_loading?, @instances_loaded?)}
+            aria-disabled={aria_disabled(admin_write_actions_ready?(@local_admin?, @instances_loading?, @instances_loaded?))}
+            aria-describedby={admin_write_action_reason_id(@local_admin?, @instances_loading?, @instances_loaded?)}
             aria-label="创建新的 Symphony 实例"
-            title={admin_disabled_title(@local_admin?)}
+            title={admin_write_action_title(@local_admin?, @instances_loading?, @instances_loaded?)}
             phx-confirm={create_instance_confirm(@create_form)}
             phx-disable-with="创建中..."
           >创建实例</button>
@@ -1361,29 +1375,107 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     enabled in ["disabled", "masked"]
   end
 
-  defp update_timer_action_enabled?(false, _snapshot, _action), do: false
+  defp admin_capability_badge_class(false, _instances_loading?, _instances_loaded?, _instances), do: "state-badge state-badge-warning"
 
-  defp update_timer_action_enabled?(true, snapshot, action) do
-    is_nil(update_timer_action_disabled_reason(snapshot, action))
+  defp admin_capability_badge_class(true, true, false, _instances), do: "state-badge state-badge-warning"
+
+  defp admin_capability_badge_class(true, _instances_loading?, true, instances) do
+    if unavailable_instance_count(instances) > 0 do
+      "state-badge state-badge-warning"
+    else
+      "state-badge state-badge-active"
+    end
   end
 
-  defp update_timer_action_describedby(false, _snapshot, _action), do: "admin-readonly-reason"
+  defp admin_capability_badge_class(true, _instances_loading?, _instances_loaded?, _instances), do: "state-badge state-badge-active"
 
-  defp update_timer_action_describedby(true, snapshot, action) do
-    if update_timer_action_disabled_reason(snapshot, action), do: "update-timer-action-note", else: nil
-  end
+  defp admin_capability_text(false, _instances_loading?, _instances_loaded?, _instances), do: "只读预览"
+  defp admin_capability_text(true, true, false, _instances), do: "本机管理员 · 先确认实例状态"
 
-  defp update_timer_action_title(false, _snapshot, _action), do: "管理操作只允许本机客户端访问"
-  defp update_timer_action_title(true, snapshot, action), do: update_timer_action_disabled_reason(snapshot, action)
+  defp admin_capability_text(true, _instances_loading?, true, instances) do
+    unavailable = unavailable_instance_count(instances)
 
-  defp update_timer_action_notice(false, _snapshot), do: "管理操作只允许本机客户端访问。"
-
-  defp update_timer_action_notice(true, snapshot) do
-    Enum.find_value(["enable", "disable", "trigger"], &update_timer_action_disabled_reason(snapshot, &1))
-  end
-
-  defp update_timer_action_disabled_reason(snapshot, action) do
     cond do
+      instances == [] -> "本机管理员 · 可新建实例"
+      unavailable > 0 -> "本机管理员 · 部分操作受限"
+      true -> "本机管理员 · 操作可用"
+    end
+  end
+
+  defp admin_capability_text(true, _instances_loading?, _instances_loaded?, _instances), do: "本机管理员 · 操作可用"
+
+  defp admin_write_actions_ready?(false, _instances_loading?, _instances_loaded?), do: false
+  defp admin_write_actions_ready?(true, true, false), do: false
+  defp admin_write_actions_ready?(true, _instances_loading?, _instances_loaded?), do: true
+
+  defp admin_write_actions_ready?(socket) do
+    admin_write_actions_ready?(
+      socket.assigns.local_admin?,
+      socket.assigns.instances_loading?,
+      socket.assigns.instances_loaded?
+    )
+  end
+
+  defp admin_write_action_reason_id(local_admin?, instances_loading?, instances_loaded?) do
+    case admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?) do
+      nil -> nil
+      "管理操作只允许本机客户端访问" -> "admin-readonly-reason"
+      _reason -> "admin-write-action-note"
+    end
+  end
+
+  defp admin_write_action_title(local_admin?, instances_loading?, instances_loaded?) do
+    admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?)
+  end
+
+  defp admin_write_action_disabled_reason(false, _instances_loading?, _instances_loaded?), do: "管理操作只允许本机客户端访问"
+
+  defp admin_write_action_disabled_reason(true, true, false) do
+    "实例总览仍在加载；先确认实例健康和运行压力后再执行写操作。"
+  end
+
+  defp admin_write_action_disabled_reason(true, _instances_loading?, _instances_loaded?), do: nil
+
+  defp admin_write_action_disabled_reason(socket) do
+    admin_write_action_disabled_reason(
+      socket.assigns.local_admin?,
+      socket.assigns.instances_loading?,
+      socket.assigns.instances_loaded?
+    )
+  end
+
+  defp update_timer_action_enabled?(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    is_nil(update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?))
+  end
+
+  defp update_timer_action_describedby(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    cond do
+      admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?) ->
+        admin_write_action_reason_id(local_admin?, instances_loading?, instances_loaded?)
+
+      update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?) ->
+        "update-timer-action-note"
+
+      true ->
+        nil
+    end
+  end
+
+  defp update_timer_action_title(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?)
+  end
+
+  defp update_timer_action_notice(local_admin?, snapshot, instances_loading?, instances_loaded?) do
+    Enum.find_value(["enable", "disable", "trigger"], fn action ->
+      update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?)
+    end)
+  end
+
+  defp update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    cond do
+      admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?) ->
+        admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?)
+
       update_timer_loading?(snapshot) ->
         "自动更新 timer 状态仍在加载。"
 
@@ -1413,44 +1505,46 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp update_timer_active?(snapshot), do: Map.get(snapshot, :active) == "active"
   defp update_timer_disabled?(snapshot), do: Map.get(snapshot, :enabled) in ["disabled", "masked"]
 
-  defp auto_update_action_enabled?(false, _snapshot, _action), do: false
-
-  defp auto_update_action_enabled?(true, snapshot, action) do
-    is_nil(auto_update_action_disabled_reason(snapshot, action))
+  defp auto_update_action_enabled?(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    is_nil(auto_update_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?))
   end
 
-  defp auto_update_action_describedby(false, _snapshot, _action), do: "admin-readonly-reason"
+  defp auto_update_action_describedby(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    cond do
+      admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?) ->
+        admin_write_action_reason_id(local_admin?, instances_loading?, instances_loaded?)
 
-  defp auto_update_action_describedby(true, snapshot, action) do
-    if auto_update_action_disabled_reason(snapshot, action), do: "auto-update-action-note", else: nil
+      auto_update_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?) ->
+        "auto-update-action-note"
+
+      true ->
+        nil
+    end
   end
 
-  defp auto_update_action_title(false, _snapshot, _action), do: "管理操作只允许本机客户端访问"
-  defp auto_update_action_title(true, snapshot, action), do: auto_update_action_disabled_reason(snapshot, action)
-
-  defp auto_update_action_notice(false, _snapshot), do: "管理操作只允许本机客户端访问。"
-
-  defp auto_update_action_notice(true, snapshot) do
-    auto_update_action_disabled_reason(snapshot, "update")
+  defp auto_update_action_title(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    auto_update_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?)
   end
 
-  defp auto_update_action_disabled_reason(snapshot, action) do
-    case {auto_update_state(snapshot), action} do
-      {:loading, _action} -> "自动更新状态仍在加载。"
-      {:unavailable, _action} -> "自动更新进程不可用，需先恢复自动更新服务。"
-      {:up_to_date, "update"} -> "GitHub main 当前没有可执行更新。"
-      {_state, _action} -> nil
+  defp auto_update_action_notice(local_admin?, snapshot, instances_loading?, instances_loaded?) do
+    auto_update_action_disabled_reason(local_admin?, snapshot, "update", instances_loading?, instances_loaded?)
+  end
+
+  defp auto_update_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
+    if reason = admin_write_action_disabled_reason(local_admin?, instances_loading?, instances_loaded?) do
+      reason
+    else
+      case {auto_update_state(snapshot), action} do
+        {:loading, _action} -> "自动更新状态仍在加载。"
+        {:unavailable, _action} -> "自动更新进程不可用，需先恢复自动更新服务。"
+        {:up_to_date, "update"} -> "GitHub main 当前没有可执行更新。"
+        {_state, _action} -> nil
+      end
     end
   end
 
   defp aria_disabled(true), do: "false"
   defp aria_disabled(false), do: "true"
-
-  defp admin_disabled_reason_id(true), do: nil
-  defp admin_disabled_reason_id(false), do: "admin-readonly-reason"
-
-  defp admin_disabled_title(true), do: nil
-  defp admin_disabled_title(false), do: "管理操作只允许本机客户端访问"
 
   defp strategy_description("idle_restart"), do: "空闲时自动更新并重启"
   defp strategy_description("defer_until_idle"), do: "运行中延后，空闲后重启"

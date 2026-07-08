@@ -3169,6 +3169,11 @@ Enablement (extension):
 - Host a human-readable dashboard at `/`.
 - The returned document SHOULD depict the current state of the system (for example active sessions,
   retry delays, token consumption, runtime totals, recent events, and health/error indicators).
+- The first operator view SHOULD distinguish read-only observation from executable management
+  actions and SHOULD make the current access role and snapshot freshness visible.
+- When Hub project details or device diagnostics are large, the dashboard SHOULD keep compact
+  operator focus rows ahead of high-detail diagnostic matrices and MAY place those matrices behind
+  expandable sections.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
@@ -3190,8 +3195,9 @@ If provided:
   outcomes, missing terminal stages, non-terminal stages without transitions, stages unreachable
   from `workflow.start_stage`, and terminal stages not reachable from normal or missing-outcome
   paths.
-- The first workflow summary view SHOULD surface the count of warning/error diagnostics and link to
-  the full diagnostics list, so operator attention items are visible before the detailed stage list.
+- The first workflow summary view SHOULD surface the count of warning/error diagnostics, include the
+  first actionable diagnostic summary when available, and link to the full diagnostics list, so
+  operator attention items are visible before the detailed stage list.
 - When `TRACKER.yaml` is available, the page SHOULD summarize tracker kind, stage-to-provider-state
   mapping, and whether every workflow stage has a provider-visible state mapping.
 - The page MUST NOT render raw credential values, including `api_key`, token, env secret, password,
@@ -3371,6 +3377,9 @@ If implemented:
   running, is unreachable, or would point a remote browser at a loopback-only address.
 - Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
   failures MUST be reported with operator-readable errors.
+- While instance aggregation is still loading and no previous overview is available, high-impact
+  write actions such as create, update, lifecycle, and timer operations SHOULD be disabled or
+  otherwise guarded with a visible reason.
 - Timer and lifecycle controls SHOULD be disabled with an operator-readable reason when the current
   state makes the requested action a no-op, for example enabling an already enabled timer.
 - The management surface MAY coordinate deployment updates for the Symphony program itself. If it

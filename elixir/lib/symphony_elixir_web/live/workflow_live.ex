@@ -38,13 +38,13 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell workflow-dashboard">
-      <header class="hero-card">
+      <header class="hero-card workflow-command-hero">
         <div class="hero-grid">
           <div>
             <p class="eyebrow">Workflow 配置</p>
-            <h1 class="hero-title">只读流程配置</h1>
+            <h1 class="hero-title">流程配置检查</h1>
             <p class="hero-copy">
-              只读展示当前 WORKFLOW.md workflow-stage 定义、TRACKER.yaml 映射诊断和运行态 stage 分布。
+              先确认入口阶段、运行快照和配置提醒，再查看阶段流向图与当前阶段详情。
             </p>
           </div>
 
@@ -83,36 +83,36 @@ defmodule SymphonyElixirWeb.WorkflowLive do
 
         <.diagnostics_panel diagnostics={@projection.diagnostics} />
       <% else %>
-        <section class="metric-grid workflow-summary-grid">
-          <article class="metric-card">
-            <p class="metric-label">Start Stage</p>
-            <p class="metric-value metric-value-stage mono"><%= @projection.workflow.start_stage %></p>
-            <p class="metric-detail">新 issue 从该 workflow stage 开始。</p>
+        <section class="workflow-status-strip" aria-label="Workflow 配置摘要">
+          <article class="workflow-status-chip">
+            <p class="metric-label">入口阶段</p>
+            <p class="workflow-chip-value mono"><%= @projection.workflow.start_stage %></p>
+            <p class="metric-detail">新 issue 从这里开始。</p>
           </article>
 
-          <article class="metric-card">
-            <p class="metric-label">Stages</p>
-            <p class="metric-value numeric"><%= @projection.workflow.stage_count %></p>
-            <p class="metric-detail">包含 <%= @projection.workflow.transition_count %> 条普通 transition。</p>
+          <article class="workflow-status-chip">
+            <p class="metric-label">阶段数量</p>
+            <p class="workflow-chip-value numeric"><%= @projection.workflow.stage_count %></p>
+            <p class="metric-detail">包含 <%= @projection.workflow.transition_count %> 条普通流转。</p>
           </article>
 
-          <article class="metric-card">
-            <p class="metric-label">Terminal</p>
-            <p class="metric-value numeric"><%= length(@projection.workflow.terminal_stages) %></p>
+          <article class="workflow-status-chip">
+            <p class="metric-label">结束阶段</p>
+            <p class="workflow-chip-value numeric"><%= length(@projection.workflow.terminal_stages) %></p>
             <p class="metric-detail mono"><%= Enum.join(@projection.workflow.terminal_stages, ", ") %></p>
           </article>
 
-          <article class="metric-card">
-            <p class="metric-label">Snapshot</p>
-            <p class="metric-value metric-value-stage"><%= if @projection.runtime.available?, do: "可用", else: "不可用" %></p>
+          <article class="workflow-status-chip">
+            <p class="metric-label">运行快照</p>
+            <p class="workflow-chip-value"><%= if @projection.runtime.available?, do: "可用", else: "不可用" %></p>
             <p class="metric-detail">
-              <%= if @projection.runtime.available?, do: "已叠加运行态 stage 分布。", else: @projection.runtime.error.message %>
+              <%= if @projection.runtime.available?, do: "已叠加运行态阶段分布。", else: @projection.runtime.error.message %>
             </p>
           </article>
 
-          <article class={workflow_diagnostic_metric_class(@projection.diagnostics)}>
+          <article class={workflow_diagnostic_chip_class(@projection.diagnostics)}>
             <p class="metric-label">诊断提醒</p>
-            <p class="metric-value numeric"><%= workflow_problem_diagnostic_count(@projection.diagnostics) %></p>
+            <p class="workflow-chip-value numeric"><%= workflow_problem_diagnostic_count(@projection.diagnostics) %></p>
             <p class="metric-detail">
               <a class="issue-link" href="#workflow-diagnostics"><%= workflow_diagnostic_summary_text(@projection.diagnostics) %></a>
             </p>
@@ -124,7 +124,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             <div class="section-header">
               <div>
                 <h2 class="section-title">阶段流向图</h2>
-                <p class="section-copy">节点是 workflow stage，箭头是 outcome -> target stage；选中节点会在下方展示详情。</p>
+                <p class="section-copy">节点是阶段，箭头是结果到目标阶段；选中节点会在右侧展示当前阶段详情。</p>
               </div>
             </div>
 
@@ -157,8 +157,8 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             <section class="section-card">
               <div class="section-header">
                 <div>
-                  <h2 class="section-title">缺失 outcome 处理</h2>
-                  <p class="section-copy">该路径由协议缺失或无效 outcome 触发，不属于普通业务 transition。</p>
+                  <h2 class="section-title">缺失结果处理</h2>
+                  <p class="section-copy">该路径由协议缺失或无效结果触发，不属于普通业务流转。</p>
                 </div>
               </div>
               <div class={missing_outcome_class(@projection.missing_outcome)}>
@@ -178,7 +178,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
               <div class="section-header">
                 <div>
                   <h2 class="section-title">Tracker 映射</h2>
-                  <p class="section-copy">以 provider-neutral stage 为主，provider state 仅作外部可见状态摘要。</p>
+                  <p class="section-copy">以内部阶段为主，外部 provider state 只作为可见状态摘要。</p>
                 </div>
               </div>
 
@@ -522,23 +522,33 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     end
   end
 
-  defp workflow_diagnostic_metric_class(diagnostics) do
+  defp workflow_diagnostic_chip_class(diagnostics) do
     if workflow_problem_diagnostic_count(diagnostics) > 0 do
-      "metric-card metric-card-warning"
+      "workflow-status-chip workflow-status-chip-warning"
     else
-      "metric-card"
+      "workflow-status-chip"
     end
   end
 
   defp workflow_diagnostic_summary_text(diagnostics) do
-    case workflow_problem_diagnostic_count(diagnostics) do
-      0 -> "没有阻断项或 warning"
-      count -> "查看 #{count} 条配置提醒"
+    count = workflow_problem_diagnostic_count(diagnostics)
+
+    case workflow_primary_problem_diagnostic(diagnostics) do
+      nil -> "没有阻断项或 warning"
+      diagnostic -> "查看 #{count} 条配置提醒：#{diagnostic_brief(diagnostic)}"
     end
   end
 
   defp workflow_problem_diagnostic_count(diagnostics) when is_list(diagnostics) do
     Enum.count(diagnostics, fn diagnostic -> diagnostic.severity in [:error, :warning] end)
+  end
+
+  defp workflow_primary_problem_diagnostic(diagnostics) when is_list(diagnostics) do
+    Enum.find(diagnostics, fn diagnostic -> diagnostic.severity in [:error, :warning] end)
+  end
+
+  defp diagnostic_brief(%{code: code, message: message}) do
+    "#{code} - #{message}"
   end
 
   defp diagnostic_operator_guidance(%{code: :unreachable_stage}) do

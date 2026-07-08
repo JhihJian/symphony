@@ -1070,11 +1070,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/workflow")
 
+    assert html =~ "流程配置检查"
+    assert html =~ "入口阶段"
     assert html =~ "阶段流向图"
     assert html =~ "当前访问：本机管理员"
     assert html =~ "诊断提醒"
     assert html =~ "配置有提醒"
-    assert html =~ "查看"
+    assert html =~ "查看 1 条配置提醒："
+    assert html =~ "unreachable_stage"
     assert html =~ ~s(href="#workflow-diagnostics")
     assert html =~ ~s(id="workflow-diagnostics")
     assert html =~ "workflow-mermaid"
@@ -1091,7 +1094,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "started"
     assert html =~ "当前阶段"
     assert html =~ "Pick up new work."
-    assert html =~ "缺失 outcome 处理"
+    assert html =~ "缺失结果处理"
     assert html =~ "protocol_blocked"
     assert html =~ ~s(href="#stage-protocol_blocked")
     assert html =~ ~s(id="stage-protocol_blocked")
@@ -1243,7 +1246,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "远程只读"
     assert html =~ "当前访问：远程只读"
-    assert html =~ "只读流程配置"
+    assert html =~ "流程配置检查"
+    assert html =~ "只读"
     assert html =~ "配置"
   end
 
