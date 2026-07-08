@@ -1352,6 +1352,9 @@ Runtime entrypoint:
   unresolved start intents, workspace lease conflicts, retry/backoff, and project/global capacity.
   This precheck MUST NOT start agents, create workspaces or leases, mutate provider state, or replace
   the final dispatch transaction.
+- When candidate intake derives a default `workspace_path`, it MUST use the same sanitized issue
+  identifier convention as the real Workspace creation boundary so the runtime-ledger lease path and
+  the worker-created directory do not diverge.
 - A Hub dispatch planning boundary MAY consume candidate intake summaries and produce safe
   dispatch-plan or pending start-intent summaries for eligible candidates. Planning records SHOULD
   include stable `project_id`, provider scope, IssueRef-derived issue key, candidate/poll/intake

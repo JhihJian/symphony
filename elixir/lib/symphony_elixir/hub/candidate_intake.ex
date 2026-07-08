@@ -713,16 +713,19 @@ defmodule SymphonyElixir.Hub.CandidateIntake do
 
   defp workspace_slug(issue_ref, issue_key) do
     slug_source =
-      issue_ref.provider_local_id ||
-        issue_ref.identifier ||
+      issue_ref.identifier ||
+        issue_ref.provider_local_id ||
         issue_ref.provider_issue_id ||
         issue_key
 
-    slug =
-      slug_source
-      |> String.replace(~r/[^A-Za-z0-9._-]+/, "-")
-      |> String.trim("-")
-      |> String.slice(0, 80)
+    slug_source =
+      if blank?(slug_source) do
+        "issue"
+      else
+        slug_source
+      end
+
+    slug = String.replace(slug_source, ~r/[^a-zA-Z0-9._-]/, "_")
 
     if slug == "", do: String.slice(stable_id("issue", issue_key), 0, 24), else: slug
   end

@@ -51,7 +51,7 @@ defmodule SymphonyElixir.HubCandidateIntakeTest do
     assert candidate.issue_key == "alpha:github:jhihjian/symphony:gid://github/issue/123"
     assert candidate.issue_ref.provider_local_id == "123"
     assert candidate.issue_ref.identifier == "jhihjian/symphony#123"
-    assert candidate.workspace_path == "/workspaces/alpha/123"
+    assert candidate.workspace_path == "/workspaces/alpha/jhihjian_symphony_123"
     assert candidate.source_poll.request_id == "provider-request-1"
     assert candidate.source_poll.poll_attempt_id == "poll-attempt-1"
     assert candidate.dispatch_evaluation.status == "ready_for_dispatch_evaluation"
