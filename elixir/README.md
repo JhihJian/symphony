@@ -350,11 +350,16 @@ the current `WORKFLOW.md` directly, renders a Mermaid stage graph with clickable
 outcome-labelled directed edges, marks `workflow.start_stage`, `workflow.terminal_stages`,
 blocked/protocol-blocked paths, and shows the selected stage plus
 `workflow.missing_outcome.max_retries`/`on_exhausted` separately from ordinary transitions.
-It also previews each stage prompt, lists outcome targets, reports semantic warnings such as
+The stage graph is laid out as the full-width primary area on desktop. On narrow screens the page
+adds a text-first stage flow overview near the Mermaid graph so operators can read each stage,
+runtime count, and `outcome -> target` transition without horizontal scrolling or zooming.
+Selected-stage details, missing-outcome handling, and tracker stage-state mapping sit below it. It
+also previews each stage prompt, lists outcome targets, reports semantic warnings such as
 unreachable stages or non-terminal stages without transitions, and summarizes `TRACKER.yaml`
-stage-state coverage. Tracker provider details are limited to non-secret hints such as kind,
-owner/repo/project number or label prefix; token, `api_key`, env secret, and credential fields are
-not rendered. When an orchestrator snapshot is available, the page overlays running/retrying/blocked
+stage-state coverage. Tracker provider details are
+limited to non-secret hints such as kind, owner/repo/project number or label prefix; token,
+`api_key`, env secret, and credential fields are not rendered. When an orchestrator snapshot is
+available, the page overlays running/retrying/blocked
 issue counts by `current_stage`; if the snapshot is unavailable, the static workflow graph and
 configuration diagnostics still render.
 

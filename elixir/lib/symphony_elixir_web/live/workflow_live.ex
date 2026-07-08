@@ -91,14 +91,12 @@ defmodule SymphonyElixirWeb.WorkflowLive do
           </article>
         </section>
 
-        <.diagnostics_panel diagnostics={@projection.diagnostics} />
-
         <section class="workflow-layout">
           <article class="section-card workflow-graph-card">
             <div class="section-header">
               <div>
-                <h2 class="section-title">Stage Graph</h2>
-                <p class="section-copy">节点是 workflow stage，箭头是 outcome -> target stage；选中节点会在右侧展示详情。</p>
+                <h2 class="section-title">阶段流向图</h2>
+                <p class="section-copy">节点是 workflow stage，箭头是 outcome -> target stage；选中节点会在下方展示详情。</p>
               </div>
             </div>
 
@@ -117,23 +115,29 @@ defmodule SymphonyElixirWeb.WorkflowLive do
                 <p class="empty-state">正在渲染 Workflow 图...</p>
               </div>
             </div>
+
+            <.workflow_mobile_flow_list stages={mobile_flow_stages(@projection)} />
           </article>
 
-          <aside class="workflow-side-stack workflow-detail-strip">
+          <div class="workflow-detail-strip">
             <.selected_stage_panel stage={selected_stage(@projection, @selected_stage_id)} />
 
             <section class="section-card">
               <div class="section-header">
                 <div>
-                  <h2 class="section-title">Missing Outcome</h2>
+                  <h2 class="section-title">缺失 outcome 处理</h2>
                   <p class="section-copy">该路径由协议缺失或无效 outcome 触发，不属于普通业务 transition。</p>
                 </div>
               </div>
               <div class={missing_outcome_class(@projection.missing_outcome)}>
-                <span class="mono">max_retries=<%= @projection.missing_outcome.max_retries %></span>
-                <span class="workflow-edge-arrow">→</span>
-                <a href={"#stage-#{@projection.missing_outcome.on_exhausted}"} class="mono">
-                  <%= @projection.missing_outcome.on_exhausted %>
+                <div class="workflow-route-token">
+                  <span class="workflow-route-label">max retries</span>
+                  <span class="mono"><%= @projection.missing_outcome.max_retries %></span>
+                </div>
+                <span class="workflow-edge-arrow" aria-hidden="true">→</span>
+                <a href={"#stage-#{@projection.missing_outcome.on_exhausted}"} class="workflow-route-token">
+                  <span class="workflow-route-label">on exhausted</span>
+                  <span class="mono"><%= @projection.missing_outcome.on_exhausted %></span>
                 </a>
               </div>
             </section>
@@ -155,25 +159,19 @@ defmodule SymphonyElixirWeb.WorkflowLive do
                   </span>
                 </div>
 
-                <div class="table-wrap">
-                  <table class="data-table workflow-mapping-table">
-                    <thead>
-                      <tr>
-                        <th>Stage</th>
-                        <th>Provider State</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={mapping <- @projection.tracker.mappings}>
-                        <td class="mono"><%= mapping.stage %></td>
-                        <td>
-                          <span class={if mapping.mapped?, do: "state-badge", else: "state-badge state-badge-warning"}>
-                            <%= mapping.provider_state || "未映射" %>
-                          </span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
+                <div class="workflow-mapping-list" aria-label="Tracker stage-state mapping">
+                  <article :for={mapping <- @projection.tracker.mappings} class="workflow-mapping-row">
+                    <div class="workflow-mapping-stage">
+                      <span class="mapping-label">Stage</span>
+                      <strong class="mono"><%= mapping.stage %></strong>
+                    </div>
+                    <div class="workflow-mapping-state">
+                      <span class="mapping-label">Provider State</span>
+                      <span class={if mapping.mapped?, do: "state-badge", else: "state-badge state-badge-warning"}>
+                        <%= mapping.provider_state || "未映射" %>
+                      </span>
+                    </div>
+                  </article>
                 </div>
 
                 <pre :if={map_size(@projection.tracker.provider_hint) > 0} class="code-panel tracker-hint"><%= pretty_value(@projection.tracker.provider_hint) %></pre>
@@ -181,8 +179,10 @@ defmodule SymphonyElixirWeb.WorkflowLive do
                 <p class="empty-state">TRACKER.yaml 不可用，无法展示 stage-state 映射。</p>
               <% end %>
             </section>
-          </aside>
+          </div>
         </section>
+
+        <.diagnostics_panel diagnostics={@projection.diagnostics} />
 
         <section class="section-card">
           <div class="section-header">
@@ -222,9 +222,15 @@ defmodule SymphonyElixirWeb.WorkflowLive do
 
               <div class="transition-detail-list">
                 <div :for={transition <- stage.transitions} class="transition-detail-row">
-                  <span class="mono"><%= transition.outcome %></span>
-                  <span>→</span>
-                  <span class="mono"><%= transition.to %></span>
+                  <div class="workflow-route-token">
+                    <span class="workflow-route-label">outcome</span>
+                    <span class="mono"><%= transition.outcome %></span>
+                  </div>
+                  <span class="workflow-edge-arrow" aria-hidden="true">→</span>
+                  <div class="workflow-route-token">
+                    <span class="workflow-route-label">target</span>
+                    <span class="mono"><%= transition.to %></span>
+                  </div>
                   <span class={if transition.known_outcome?, do: "state-badge state-badge-muted", else: "state-badge state-badge-warning"}>
                     <%= if transition.known_outcome?, do: "known outcome", else: "unknown outcome" %>
                   </span>
@@ -264,6 +270,49 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     """
   end
 
+  attr(:stages, :list, required: true)
+
+  defp workflow_mobile_flow_list(assigns) do
+    ~H"""
+    <div class="workflow-mobile-flow-list" aria-label="手机端 workflow stage 流向概览">
+      <article :for={stage <- @stages} class="workflow-mobile-stage-card">
+        <div class="workflow-mobile-stage-header">
+          <div class="workflow-mobile-stage-title">
+            <span class="mapping-label">Stage</span>
+            <strong class="mono"><%= stage.id %></strong>
+          </div>
+          <div class="workflow-node-badges">
+            <span :if={stage.start?} class="state-badge state-badge-active">start</span>
+            <span :if={stage.terminal?} class="state-badge state-badge-terminal">terminal</span>
+            <span :if={!stage.reachable?} class="state-badge state-badge-warning">unreachable</span>
+          </div>
+        </div>
+
+        <div class="stage-detail-meta workflow-mobile-runtime">
+          <span>running <strong class="numeric"><%= stage.runtime.running %></strong></span>
+          <span>retrying <strong class="numeric"><%= stage.runtime.retrying %></strong></span>
+          <span>blocked <strong class="numeric"><%= stage.runtime.blocked %></strong></span>
+        </div>
+
+        <div class="transition-detail-list workflow-mobile-transitions">
+          <div :for={transition <- stage.transitions} class="workflow-edge workflow-mobile-transition">
+            <div class="workflow-route-token">
+              <span class="workflow-route-label">outcome</span>
+              <span class="mono"><%= transition.outcome %></span>
+            </div>
+            <span class="workflow-edge-arrow" aria-hidden="true">→</span>
+            <div class="workflow-route-token">
+              <span class="workflow-route-label">target</span>
+              <span class="mono"><%= transition.to %></span>
+            </div>
+          </div>
+          <p :if={stage.transitions == []} class="empty-state workflow-empty-edge">无 outcome transition。</p>
+        </div>
+      </article>
+    </div>
+    """
+  end
+
   attr(:stage, :map, required: true)
 
   defp selected_stage_panel(assigns) do
@@ -271,7 +320,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     <section class="section-card selected-stage-panel" id="selected-stage-panel">
       <div class="section-header">
         <div>
-          <h2 class="section-title">当前 Stage</h2>
+          <h2 class="section-title">当前阶段</h2>
           <p class="section-copy mono"><%= @stage.id %></p>
         </div>
         <div class="workflow-node-badges">
@@ -309,9 +358,15 @@ defmodule SymphonyElixirWeb.WorkflowLive do
           phx-click="select_stage"
           phx-value-stage={transition.to}
         >
-          <span class="mono"><%= transition.outcome %></span>
-          <span>→</span>
-          <span class="mono"><%= transition.to %></span>
+          <div class="workflow-route-token">
+            <span class="workflow-route-label">outcome</span>
+            <span class="mono"><%= transition.outcome %></span>
+          </div>
+          <span class="workflow-edge-arrow" aria-hidden="true">→</span>
+          <div class="workflow-route-token">
+            <span class="workflow-route-label">target</span>
+            <span class="mono"><%= transition.to %></span>
+          </div>
         </button>
         <p :if={@stage.transitions == []} class="empty-state">无 outcome transition。</p>
       </div>
@@ -393,6 +448,12 @@ defmodule SymphonyElixirWeb.WorkflowLive do
       Enum.find(stages, &(&1.id == default_selected_stage_id(projection)))
   end
 
+  defp mobile_flow_stages(%{stages: stages, workflow: %{start_stage: start_stage}}) do
+    Enum.sort_by(stages, &{if(&1.id == start_stage, do: 0, else: 1), &1.id})
+  end
+
+  defp mobile_flow_stages(%{stages: stages}), do: stages
+
   defp workflow_mermaid(projection, selected_stage_id) do
     stages = Map.get(projection, :stages, [])
 
@@ -446,7 +507,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     node_id = Map.fetch!(node_ids, stage.id)
 
     [
-      ~s(  #{node_id}["#{mermaid_text(stage.id)}"]),
+      ~s(  #{node_id}["#{mermaid_node_label(stage.id)}"]),
       "  class #{node_id} #{Enum.join(mermaid_node_classes(stage, selected_stage_id), ",")};"
     ]
   end
@@ -497,6 +558,12 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     |> String.replace(~r/[\r\n\t]+/, " ")
     |> String.replace(~r/[|"<>]/, " ")
     |> String.trim()
+  end
+
+  defp mermaid_node_label(value) do
+    value
+    |> mermaid_text()
+    |> String.replace("_", "\\n")
   end
 
   defp mermaid_signature(definition) do

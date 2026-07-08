@@ -994,18 +994,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/workflow")
 
     assert html =~ "阶段流向图"
-    assert html =~ "Stage Graph"
     assert html =~ "workflow-mermaid"
+    assert html =~ "workflow-mobile-flow-list"
+    assert html =~ "手机端 workflow stage 流向概览"
     assert html =~ "phx-hook=\"WorkflowMermaid\""
     assert html =~ "flowchart LR"
     assert html =~ "[&quot;ready&quot;]"
     assert html =~ "[&quot;working&quot;]"
+    assert html =~ "[&quot;protocol\\nblocked&quot;]"
     assert html =~ "ready"
     assert html =~ "working"
     assert html =~ "started"
-    assert html =~ "当前 Stage"
+    assert html =~ "当前阶段"
     assert html =~ "Pick up new work."
-    assert html =~ "Missing Outcome"
+    assert html =~ "缺失 outcome 处理"
     assert html =~ "protocol_blocked"
     assert html =~ "Tracker 映射"
     assert html =~ "github"
@@ -1020,6 +1022,51 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert view
            |> element("[data-stage-target=\"working\"]")
            |> render_click() =~ "Implement the issue."
+  end
+
+  test "workflow dashboard wraps long snake case stage labels in the Mermaid graph" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_stages: %{
+        "ready" => %{"prompt" => "Pick up new work.", "transitions" => %{"started" => "in_progress"}},
+        "in_progress" => %{
+          "prompt" => "Implement the issue.",
+          "transitions" => %{"review" => "human_review", "blocked" => "protocol_blocked"}
+        },
+        "human_review" => %{"prompt" => "Review required.", "transitions" => %{"completed" => "done"}},
+        "done" => %{"prompt" => "Finished.", "transitions" => %{}},
+        "blocked" => %{"prompt" => "Human blocked.", "transitions" => %{}},
+        "protocol_blocked" => %{"prompt" => "Protocol blocked.", "transitions" => %{}}
+      },
+      workflow_outcomes: ["started", "review", "completed", "blocked"],
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Ready"},
+        "in_progress" => %{"state" => "In Progress"},
+        "human_review" => %{"state" => "Human Review"},
+        "done" => %{"state" => "Done", "terminal" => true},
+        "blocked" => %{"state" => "Blocked", "terminal" => true},
+        "protocol_blocked" => %{"state" => "Protocol Blocked", "terminal" => true}
+      }
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowDashboardWrappedLabelsOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "[&quot;in\\nprogress&quot;]"
+    assert html =~ "[&quot;human\\nreview&quot;]"
+    assert html =~ "[&quot;protocol\\nblocked&quot;]"
+    assert html =~ "protocol_blocked"
   end
 
   test "workflow dashboard shows configuration errors without crashing" do

@@ -13,15 +13,16 @@
       flowchart: {
         curve: "basis",
         htmlLabels: false,
-        nodeSpacing: 62,
-        rankSpacing: 110,
-        padding: 18
+        nodeSpacing: 88,
+        rankSpacing: 130,
+        padding: 22
       },
       themeVariables: {
         primaryColor: "#ffffff",
         primaryTextColor: "#202123",
         primaryBorderColor: "#d9d9e3",
         lineColor: "#7c8597",
+        fontSize: "16px",
         fontFamily: "Sohne, SF Pro Text, Helvetica Neue, Segoe UI, sans-serif"
       }
     });
