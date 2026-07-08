@@ -931,6 +931,7 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 - 管理面可以请求 `start`、`stop`、`restart`，失败时 API 返回可读错误；issue 派发、重试、reconciliation 和 workspace 隔离仍由对应实例内部 `Orchestrator` 负责。
 - 只有 loopback 本机客户端可以执行创建实例、自动更新、systemd lifecycle、timer 和日志读取操作；局域网或其他远程浏览器只能看到只读总览，相关按钮会禁用，管理 JSON API 链接不作为可点击入口展示，并且后端仍会拒绝执行。
 - `stop`、`restart`、`disable`、执行 GitHub main 更新、手动触发 update service 等高影响操作在 LiveView 页面中需要二次确认，确认文案会带上目标 service 或操作。
+- 管理页按钮还会按当前状态降级：自动更新不可用或没有可执行更新时不会把“执行更新”表现为可用；legacy unit 已归档或 `not-found` 时实例 lifecycle/log 操作会禁用并显示原因。新建实例表单会在调用安装脚本前显示字段级错误和错误摘要，避免无效输入直接进入 systemd/install 流程。
 
 管理 API 示例：
 

@@ -140,6 +140,46 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
   end
 
+  defmodule NotFoundInstanceRegistry do
+    def list_instances(opts) do
+      send(owner(opts), {:not_found_list_instances, opts})
+
+      {:ok,
+       [
+         %{
+           name: "legacy-project",
+           service: "symphony@legacy-project.service",
+           status: "stopped",
+           systemd: %{active: "inactive", enabled: "not-found", sub: "dead", failed: false},
+           port: 20_010,
+           dashboard_url: "http://127.0.0.1:20010/",
+           api_url: "http://127.0.0.1:20010/api/v1/state",
+           tracker: %{kind: "github", scope: "acme/legacy-project", required_labels: []},
+           counts: %{running: 0, retrying: 0, blocked: 0},
+           health: %{status: "unreachable", summary: "state API unreachable; service stopped", error: ":econnrefused"},
+           workspace_root: "/runtime/legacy-project/workspaces",
+           logs_root: "/runtime/legacy-project/logs",
+           config_path: "/config/legacy-project/WORKFLOW.md",
+           tracker_config_path: "/config/legacy-project/TRACKER.yaml",
+           env_path: "/config/legacy-project/env",
+           runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
+           strategy: "idle_restart"
+         }
+       ]}
+    end
+
+    def update_timer_status(opts), do: FakeInstanceRegistry.update_timer_status(opts)
+    def start_instance(name, opts), do: FakeInstanceRegistry.start_instance(name, opts)
+    def stop_instance(name, opts), do: FakeInstanceRegistry.stop_instance(name, opts)
+    def restart_instance(name, opts), do: FakeInstanceRegistry.restart_instance(name, opts)
+    def enable_instance(name, opts), do: FakeInstanceRegistry.enable_instance(name, opts)
+    def disable_instance(name, opts), do: FakeInstanceRegistry.disable_instance(name, opts)
+    def create_instance(params, opts), do: FakeInstanceRegistry.create_instance(params, opts)
+    def latest_logs(name, opts), do: FakeInstanceRegistry.latest_logs(name, opts)
+
+    defp owner(opts), do: Keyword.fetch!(opts, :owner)
+  end
+
   defmodule FakeAutoUpdate do
     @moduledoc false
 
@@ -421,6 +461,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert document |> Floki.find(~s(button[phx-click="auto_update"][disabled])) |> length() == 2
     assert document |> Floki.find(~s(button[phx-click="lifecycle"][disabled])) |> length() == 10
     assert document |> Floki.find(~s(button[phx-click="logs"][disabled])) |> length() == 2
+    assert document |> Floki.find(~s(button[aria-describedby="admin-readonly-reason"][disabled])) |> length() >= 14
+
+    assert Floki.attribute(document, ~s(button[phx-click="auto_update"][phx-value-action="update"]), "title") == [
+             "管理操作只允许本机客户端访问"
+           ]
   end
 
   test "admin dashboard server-side guards still block remote LiveView events" do
@@ -485,15 +530,28 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
     assert html =~ "GitHub main 自动更新"
     assert html =~ "unavailable"
-    assert html =~ "auto_update_unavailable"
+    assert html =~ "当前 Hub 模式未启用自动更新进程"
     assert html =~ "自动更新状态不可用"
     assert html =~ "无法判断/不可用"
     assert html =~ "页面和实例管理仍可用"
     refute html =~ "已是最新"
+    refute html =~ "GenServer"
+
+    {:ok, document} = Floki.parse_document(html)
+
+    assert document
+           |> Floki.find(~s(button[phx-click="auto_update"][phx-value-action="update"][disabled]))
+           |> length() == 1
+
+    assert Floki.attribute(
+             document,
+             ~s(button[phx-click="auto_update"][phx-value-action="update"]),
+             "aria-describedby"
+           ) == ["auto-update-action-note"]
 
     status_payload = json_response(get(build_conn(), "/api/v1/admin/auto-update"), 503)
     assert status_payload["last_check"]["status"] == "unavailable"
-    assert status_payload["last_check"]["error"] =~ "auto_update_unavailable"
+    assert status_payload["last_check"]["error"] =~ "当前 Hub 模式未启用自动更新进程"
 
     check_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/check", %{}), 503)
     assert check_payload["last_check"]["status"] == "unavailable"
@@ -617,6 +675,32 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            |> length() == 1
   end
 
+  test "admin dashboard disables instance actions that do not match current service state" do
+    use_not_found_registry!()
+
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
+    {:ok, document} = Floki.parse_document(html)
+
+    assert_receive {:not_found_list_instances, _opts}
+    assert html =~ "legacy-project"
+    assert html =~ "systemd unit 未安装或 template 已归档"
+
+    assert document
+           |> Floki.find(~s(button[phx-click="lifecycle"][phx-value-name="legacy-project"][disabled]))
+           |> length() == 5
+
+    assert document
+           |> Floki.find(~s(button[phx-click="logs"][phx-value-name="legacy-project"][disabled]))
+           |> length() == 1
+
+    assert Floki.attribute(
+             document,
+             ~s(button[phx-click="lifecycle"][phx-value-name="legacy-project"][phx-value-action="start"]),
+             "aria-describedby"
+           ) == ["instance-actions-note-legacy-project"]
+  end
+
   test "admin dashboard new instance button reveals the create form" do
     {:ok, view, html} = live(build_conn(), "/admin/instances")
     {:ok, document} = Floki.parse_document(html)
@@ -682,6 +766,50 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert_receive {:latest_logs, "project-a", _opts}
     assert html =~ "GITHUB_TOKEN=[REDACTED]"
     refute html =~ "ghp_secret"
+  end
+
+  test "admin dashboard shows field-level create form errors before calling install flow" do
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+
+    view
+    |> element("button", "新建实例")
+    |> render_click()
+
+    html =
+      view
+      |> form("form.instance-form",
+        instance: %{
+          project: "bad project!",
+          tracker_kind: "github",
+          owner: "bad/owner",
+          repo: "bad repo",
+          project_number: "zero",
+          token: "",
+          token_env: "1BAD",
+          port: "70000",
+          update_strategy: "idle_restart",
+          max_agents: "0",
+          start: "true"
+        }
+      )
+      |> render_submit()
+
+    {:ok, document} = Floki.parse_document(html)
+
+    assert html =~ "新建实例表单需要修正"
+    assert html =~ "请先修正新建实例表单中标记的字段。"
+    assert html =~ "Project 必填"
+    assert html =~ "Owner 必填"
+    assert html =~ "Repo 必填"
+    assert html =~ "Project Number 必须是正整数"
+    assert html =~ "Port 必须留空或填写"
+    assert html =~ "Max Agents 必须是正整数"
+    assert html =~ "Token Env 必须是合法环境变量名"
+
+    assert Floki.attribute(document, ~s(input#create-field-project), "aria-invalid") == ["true"]
+    assert Floki.attribute(document, ~s(input#create-field-port), "aria-describedby") == ["create-field-port-hint create-field-port-error"]
+    assert document |> Floki.find(~s(#create-form-errors[role="alert"])) |> length() == 1
+    refute_receive {:create_instance, _params, _opts}
   end
 
   test "admin dashboard create form submits explicit option toggles" do
@@ -777,10 +905,15 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".form-section"
     assert css =~ ".form-option"
     assert css =~ ".form-submit-strip"
+    assert css =~ ".field-error"
+    assert css =~ ".form-error-summary"
+    assert css =~ ".lifecycle-action-note"
     assert css =~ ".lifecycle-button-danger"
     assert css =~ ".workspace-nav"
     assert css =~ ".notice-banner"
     assert css =~ ".operator-attention-card"
+    assert css =~ ".phx-client-error .status-badge-offline"
+    assert css =~ ".sr-only"
     assert css =~ ".phx-click-loading"
     assert css =~ "@media (prefers-reduced-motion: reduce)"
     assert css =~ "@media (max-width: 720px)"
@@ -793,6 +926,14 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
       endpoint_config
       |> Keyword.put(:instance_registry, SlowInstanceRegistry)
       |> Keyword.put(:admin_instances_timeout_ms, timeout_ms)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])
+  end
+
+  defp use_not_found_registry! do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+    endpoint_config = Keyword.put(endpoint_config, :instance_registry, NotFoundInstanceRegistry)
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])

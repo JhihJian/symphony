@@ -269,6 +269,18 @@ code {
   min-width: 0;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .hero-card,
 .section-card,
 .metric-card,
@@ -389,11 +401,20 @@ code {
   display: none;
 }
 
-[data-phx-main].phx-disconnected .status-badge-connecting {
+[data-phx-main].phx-disconnected .status-badge-connecting,
+[data-phx-main].phx-error .status-badge-connecting,
+[data-phx-main].phx-client-error .status-badge-connecting,
+[data-phx-main].phx-server-error .status-badge-connecting,
+[data-phx-main].phx-error .status-badge-live,
+[data-phx-main].phx-client-error .status-badge-live,
+[data-phx-main].phx-server-error .status-badge-live {
   display: none;
 }
 
-[data-phx-main].phx-disconnected .status-badge-offline {
+[data-phx-main].phx-disconnected .status-badge-offline,
+[data-phx-main].phx-error .status-badge-offline,
+[data-phx-main].phx-client-error .status-badge-offline,
+[data-phx-main].phx-server-error .status-badge-offline {
   display: inline-flex;
 }
 
@@ -936,6 +957,12 @@ code {
   border-color: rgba(16, 163, 127, 0.5);
 }
 
+.field input[aria-invalid="true"],
+.field select[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--line-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
 .field-hint {
   color: var(--muted);
   font-size: 0.78rem;
@@ -947,6 +974,31 @@ code {
 
 .field-warning {
   color: #8a5a00;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.form-error-summary {
+  margin: 0 0 0.85rem;
+}
+
+.form-error-summary ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.form-error-summary a {
+  color: inherit;
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .form-option-grid {
@@ -1067,6 +1119,14 @@ code {
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0 1rem 1rem;
+}
+
+.lifecycle-action-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .instance-loading-panel {

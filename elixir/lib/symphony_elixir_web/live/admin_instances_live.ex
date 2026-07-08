@@ -8,6 +8,20 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   alias SymphonyElixirWeb.Endpoint
 
   @admin_instances_timeout_ms 10_000
+  @create_safe_name_pattern ~r/\A[A-Za-z0-9_.-]+\z/
+  @create_env_var_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
+  @max_port 65_535
+  @update_strategies ["idle_restart", "defer_until_idle", "download_only", "manual_restart", "force_restart"]
+  @create_field_labels %{
+    "project" => "Project",
+    "owner" => "Owner",
+    "repo" => "Repo",
+    "project_number" => "Project Number",
+    "port" => "Port",
+    "update_strategy" => "更新策略",
+    "max_agents" => "Max Agents",
+    "token_env" => "Token Env"
+  }
 
   @impl true
   def mount(_params, session, socket) do
@@ -19,6 +33,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       |> assign(:access_role, if(local_admin?, do: "本机管理员", else: "远程只读"))
       |> assign(:local_admin?, local_admin?)
       |> assign(:create_form, default_create_form())
+      |> assign(:create_errors, %{})
       |> assign(:create_form_open?, false)
       |> assign(:logs, nil)
       |> assign(:instances, [])
@@ -53,19 +68,40 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   def handle_event("create_instance", %{"instance" => params}, socket) do
-    {message, form, create_form_open?} =
-      guarded_create(socket, params, fn ->
-        case registry().create_instance(params, registry_opts()) do
-          {:ok, %{instance: instance}} -> {"已创建实例 #{instance.name}", default_create_form(), false}
-          {:error, %{message: message}} -> {message, normalize_form(params), true}
-        end
-      end)
+    form = normalize_form(params)
+
+    {message, form, create_form_open?, create_errors, refresh?} =
+      cond do
+        !socket.assigns.local_admin? ->
+          {"管理操作只允许本机客户端访问", form, true, %{}, true}
+
+        map_size(create_form_errors(form)) > 0 ->
+          {"请先修正新建实例表单中标记的字段。", form, true, create_form_errors(form), false}
+
+        true ->
+          guarded_create(socket, params, fn ->
+            case registry().create_instance(params, registry_opts()) do
+              {:ok, %{instance: instance}} ->
+                {"已创建实例 #{instance.name}", default_create_form(), false, %{}, true}
+
+              {:error, %{message: message} = error} ->
+                {message, form, true, create_errors_from_registry_error(error), true}
+            end
+          end)
+      end
 
     socket =
       socket
       |> assign(:create_form, form)
       |> assign(:create_form_open?, create_form_open?)
-      |> refresh_admin_state(message)
+      |> assign(:create_errors, create_errors)
+
+    socket =
+      if refresh? do
+        refresh_admin_state(socket, message)
+      else
+        assign(socket, :notice, message)
+      end
 
     {:noreply, socket}
   end
@@ -139,7 +175,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       <% end %>
 
       <%= unless @local_admin? do %>
-        <section class="error-card">
+        <section class="error-card" id="admin-readonly-reason">
           <h2 class="error-title">管理操作已限制</h2>
           <p class="error-copy">实例创建、systemd 操作和日志读取只允许本机客户端访问。</p>
         </section>
@@ -199,7 +235,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="auto_update"
               phx-value-action="check"
-              disabled={!@local_admin?}
+              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "check")}
+              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "check"))}
+              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "check")}
+              aria-label="立即检查 GitHub main 自动更新"
+              title={auto_update_action_title(@local_admin?, @auto_update, "check")}
               phx-disable-with="检查中..."
             >立即检查</button>
             <button
@@ -207,15 +247,23 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-primary"
               phx-click="auto_update"
               phx-value-action="update"
-              disabled={!@local_admin?}
+              disabled={!auto_update_action_enabled?(@local_admin?, @auto_update, "update")}
+              aria-disabled={aria_disabled(auto_update_action_enabled?(@local_admin?, @auto_update, "update"))}
+              aria-describedby={auto_update_action_describedby(@local_admin?, @auto_update, "update")}
+              aria-label="执行 GitHub main 自动更新"
+              title={auto_update_action_title(@local_admin?, @auto_update, "update")}
               phx-confirm="确认执行 GitHub main 更新？此操作会按各实例更新策略执行，部分实例可能被重启。"
               phx-disable-with="更新中..."
             >执行更新</button>
           </div>
         </div>
 
+        <p :if={auto_update_action_notice(@local_admin?, @auto_update)} id="auto-update-action-note" class="lifecycle-action-note">
+          <%= auto_update_action_notice(@local_admin?, @auto_update) %>
+        </p>
+
         <%= if auto_update_state(@auto_update) == :unavailable do %>
-          <section class="instance-panel">
+          <section class="instance-panel" id="auto-update-unavailable-reason">
             <p class="panel-label">自动更新状态不可用</p>
             <div class="detail-stack">
               <span>无法判断 GitHub main 是否已有新版本。</span>
@@ -309,9 +357,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="启用 symphony-update.timer 自动更新定时器" title={admin_disabled_title(@local_admin?)} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="禁用 symphony-update.timer 自动更新定时器" title={admin_disabled_title(@local_admin?)} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="手动触发 symphony-update.service" title={admin_disabled_title(@local_admin?)} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
           </div>
         </div>
 
@@ -452,13 +500,20 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           </div>
 
           <footer class="instance-actions">
+            <p :if={instance_lifecycle_notice(instance)} id={instance_action_note_id(instance)} class="lifecycle-action-note">
+              <%= instance_lifecycle_notice(instance) %>
+            </p>
             <button
               type="button"
               class="lifecycle-button lifecycle-button-primary"
               phx-click="lifecycle"
               phx-value-action="start"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "start")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "start"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "start")}
+              aria-label={instance_action_label("启动", instance)}
+              title={instance_action_title(@local_admin?, instance, "start")}
               phx-confirm={"确认启动 #{instance.service}？此操作会改变用户 systemd 服务状态，并可能开始处理 Issue。"}
               phx-disable-with="启动中..."
             >启动</button>
@@ -468,7 +523,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               phx-click="lifecycle"
               phx-value-action="stop"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "stop")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "stop"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "stop")}
+              aria-label={instance_action_label("停止", instance)}
+              title={instance_action_title(@local_admin?, instance, "stop")}
               phx-confirm={"确认停止 #{instance.service}？停止后该实例不会继续派发或处理 Issue。"}
               phx-disable-with="停止中..."
             >停止</button>
@@ -478,7 +537,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               phx-click="lifecycle"
               phx-value-action="restart"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "restart")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "restart"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "restart")}
+              aria-label={instance_action_label("重启", instance)}
+              title={instance_action_title(@local_admin?, instance, "restart")}
               phx-confirm={"确认重启 #{instance.service}？重启期间当前实例会短暂不可用。"}
               phx-disable-with="重启中..."
             >重启</button>
@@ -488,7 +551,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               phx-click="lifecycle"
               phx-value-action="enable"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "enable")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "enable"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "enable")}
+              aria-label={instance_action_label("启用", instance)}
+              title={instance_action_title(@local_admin?, instance, "enable")}
               phx-confirm={"确认启用 #{instance.service}？此操作会改变用户 systemd 开机/登录自启动状态。"}
               phx-disable-with="启用中..."
             >启用</button>
@@ -498,7 +565,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               phx-click="lifecycle"
               phx-value-action="disable"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "disable")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "disable"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "disable")}
+              aria-label={instance_action_label("禁用", instance)}
+              title={instance_action_title(@local_admin?, instance, "disable")}
               phx-confirm={"确认禁用 #{instance.service}？禁用后该实例不会随用户 systemd 自动启动。"}
               phx-disable-with="禁用中..."
             >禁用</button>
@@ -507,7 +578,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="logs"
               phx-value-name={instance.name}
-              disabled={!@local_admin?}
+              disabled={!instance_action_enabled?(@local_admin?, instance, "logs")}
+              aria-disabled={aria_disabled(instance_action_enabled?(@local_admin?, instance, "logs"))}
+              aria-describedby={instance_action_describedby(@local_admin?, instance, "logs")}
+              aria-label={instance_action_label("读取最近日志", instance)}
+              title={instance_action_title(@local_admin?, instance, "logs")}
               phx-disable-with="读取中..."
             >最近日志</button>
           </footer>
@@ -534,10 +609,19 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             aria-expanded={if(@create_form_open?, do: "true", else: "false")}
             aria-controls="create-instance-form"
           ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
+          </div>
         </div>
-      </div>
 
-      <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?}>
+      <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?} novalidate>
+        <section :if={map_size(@create_errors) > 0} id="create-form-errors" class="notice-banner notice-banner-error form-error-summary" role="alert" aria-live="polite">
+          <strong>新建实例表单需要修正</strong>
+          <ul>
+            <li :for={{field, label, message} <- create_error_items(@create_errors)}>
+              <a href={"#create-field-#{field}"}><%= label %>：<%= message %></a>
+            </li>
+          </ul>
+        </section>
+
         <div class="create-form-layout">
           <section class="form-section form-section-main">
             <div class="form-section-header">
@@ -551,13 +635,14 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <div class="form-grid">
               <label class="field field-prominent">
                 <span>Project</span>
-                <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
-                <small class="field-hint">生成实例名、配置目录和 systemd unit 后缀。</small>
+                <input id="create-field-project" name="instance[project]" value={@create_form["project"]} placeholder="project-a" required aria-invalid={field_invalid(@create_errors, "project")} aria-describedby={field_describedby(@create_errors, "project", ["create-field-project-hint"])} />
+                <small id="create-field-project-hint" class="field-hint">生成实例名、配置目录和 systemd unit 后缀。</small>
+                <span :if={field_error(@create_errors, "project")} id="create-field-project-error" class="field-error"><%= field_error(@create_errors, "project") %></span>
               </label>
 
               <label class="field">
                 <span>Tracker</span>
-                <select name="instance[tracker_kind]">
+                <select id="create-field-tracker_kind" name="instance[tracker_kind]">
                   <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
                 </select>
                 <small class="field-hint">当前新增实例流程使用 GitHub Project。</small>
@@ -565,23 +650,27 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
               <label class="field">
                 <span>Owner</span>
-                <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
+                <input id="create-field-owner" name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required aria-invalid={field_invalid(@create_errors, "owner")} aria-describedby={field_describedby(@create_errors, "owner")} />
+                <span :if={field_error(@create_errors, "owner")} id="create-field-owner-error" class="field-error"><%= field_error(@create_errors, "owner") %></span>
               </label>
 
               <label class="field">
                 <span>Repo</span>
-                <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
+                <input id="create-field-repo" name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required aria-invalid={field_invalid(@create_errors, "repo")} aria-describedby={field_describedby(@create_errors, "repo")} />
+                <span :if={field_error(@create_errors, "repo")} id="create-field-repo-error" class="field-error"><%= field_error(@create_errors, "repo") %></span>
               </label>
 
               <label class="field">
                 <span>Project Number</span>
-                <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
+                <input id="create-field-project_number" name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required aria-invalid={field_invalid(@create_errors, "project_number")} aria-describedby={field_describedby(@create_errors, "project_number")} />
+                <span :if={field_error(@create_errors, "project_number")} id="create-field-project_number-error" class="field-error"><%= field_error(@create_errors, "project_number") %></span>
               </label>
 
               <label class="field">
                 <span>Port</span>
-                <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
-                <small class="field-hint">留空时由安装脚本分配可用端口。</small>
+                <input id="create-field-port" name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" aria-invalid={field_invalid(@create_errors, "port")} aria-describedby={field_describedby(@create_errors, "port", ["create-field-port-hint"])} />
+                <small id="create-field-port-hint" class="field-hint">留空时由安装脚本分配可用端口。</small>
+                <span :if={field_error(@create_errors, "port")} id="create-field-port-error" class="field-error"><%= field_error(@create_errors, "port") %></span>
               </label>
             </div>
           </section>
@@ -599,15 +688,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <div class="form-grid form-grid-single">
                 <label class="field">
                   <span>更新策略</span>
-                  <select name="instance[update_strategy]">
+                  <select id="create-field-update_strategy" name="instance[update_strategy]" aria-invalid={field_invalid(@create_errors, "update_strategy")} aria-describedby={field_describedby(@create_errors, "update_strategy", ["create-field-update_strategy-hint"])}>
                     <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy_label(strategy) %></option>
                   </select>
-                  <small class="field-hint field-warning">选择 force_restart 时会强制重启实例，仅适合明确需要抢修的场景。</small>
+                  <small id="create-field-update_strategy-hint" class="field-hint field-warning">选择 force_restart 时会强制重启实例，仅适合明确需要抢修的场景。</small>
+                  <span :if={field_error(@create_errors, "update_strategy")} id="create-field-update_strategy-error" class="field-error"><%= field_error(@create_errors, "update_strategy") %></span>
                 </label>
 
                 <label class="field">
                   <span>Max Agents</span>
-                  <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
+                  <input id="create-field-max_agents" name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" aria-invalid={field_invalid(@create_errors, "max_agents")} aria-describedby={field_describedby(@create_errors, "max_agents")} />
+                  <span :if={field_error(@create_errors, "max_agents")} id="create-field-max_agents-error" class="field-error"><%= field_error(@create_errors, "max_agents") %></span>
                 </label>
               </div>
 
@@ -643,14 +734,15 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <div class="form-grid form-grid-single">
                 <label class="field">
                   <span>Token</span>
-                  <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
+                  <input id="create-field-token" name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
                   <small class="field-hint">提交后不会回显 token。</small>
                 </label>
 
                 <label class="field">
                   <span>Token Env</span>
-                  <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
-                  <small class="field-hint">可指定服务环境变量名。</small>
+                  <input id="create-field-token_env" name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" aria-invalid={field_invalid(@create_errors, "token_env")} aria-describedby={field_describedby(@create_errors, "token_env", ["create-field-token_env-hint"])} />
+                  <small id="create-field-token_env-hint" class="field-hint">可指定服务环境变量名。</small>
+                  <span :if={field_error(@create_errors, "token_env")} id="create-field-token_env-error" class="field-error"><%= field_error(@create_errors, "token_env") %></span>
                 </label>
               </div>
             </section>
@@ -666,6 +758,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             class="lifecycle-button lifecycle-button-primary"
             type="submit"
             disabled={!@local_admin?}
+            aria-disabled={aria_disabled(@local_admin?)}
+            aria-describedby={admin_disabled_reason_id(@local_admin?)}
+            aria-label="创建新的 Symphony 实例"
+            title={admin_disabled_title(@local_admin?)}
             phx-confirm={create_instance_confirm(@create_form)}
             phx-disable-with="创建中..."
           >创建实例</button>
@@ -822,7 +918,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp guarded(_socket, _fun), do: "管理操作只允许本机客户端访问"
 
   defp guarded_create(%{assigns: %{local_admin?: true}}, _params, fun), do: fun.()
-  defp guarded_create(_socket, params, _fun), do: {"管理操作只允许本机客户端访问", normalize_form(params), true}
+  defp guarded_create(_socket, params, _fun), do: {"管理操作只允许本机客户端访问", normalize_form(params), true, %{}, true}
 
   defp guarded_logs(%{assigns: %{local_admin?: true}}, fun), do: fun.()
   defp guarded_logs(_socket, _fun), do: {"管理操作只允许本机客户端访问", nil}
@@ -863,8 +959,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     }
   end
 
-  defp auto_update_unavailable_error(%{__exception__: true} = error), do: Exception.message(error)
-  defp auto_update_unavailable_error(reason), do: "auto_update_unavailable: #{inspect(reason)}"
+  defp auto_update_unavailable_error(_reason), do: "当前 Hub 模式未启用自动更新进程，更新检查不可用。"
 
   defp auto_update_module do
     Endpoint.config(:auto_update) || SymphonyElixir.AutoUpdate
@@ -911,9 +1006,127 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     Map.merge(default_create_form(), Map.new(params, fn {key, value} -> {to_string(key), to_string(value)} end))
   end
 
-  defp update_strategies do
-    ["idle_restart", "defer_until_idle", "download_only", "manual_restart", "force_restart"]
+  defp create_form_errors(form) do
+    %{}
+    |> validate_safe_text_field(form, "project", "Project 必填，只能包含字母、数字、点、下划线和连字符。")
+    |> validate_safe_text_field(form, "owner", "Owner 必填，只能包含字母、数字、点、下划线和连字符。")
+    |> validate_safe_text_field(form, "repo", "Repo 必填，只能包含字母、数字、点、下划线和连字符。")
+    |> validate_positive_integer_field(form, "project_number", "Project Number 必须是正整数。")
+    |> validate_optional_port_field(form)
+    |> validate_update_strategy_field(form)
+    |> validate_positive_integer_field(form, "max_agents", "Max Agents 必须是正整数。")
+    |> validate_optional_env_field(form)
   end
+
+  defp validate_safe_text_field(errors, form, field, message) do
+    value = Map.get(form, field, "")
+
+    if Regex.match?(@create_safe_name_pattern, value) do
+      errors
+    else
+      Map.put(errors, field, message)
+    end
+  end
+
+  defp validate_positive_integer_field(errors, form, field, message) do
+    case Integer.parse(Map.get(form, field, "")) do
+      {integer, ""} when integer > 0 -> errors
+      _invalid -> Map.put(errors, field, message)
+    end
+  end
+
+  defp validate_optional_port_field(errors, form) do
+    case Map.get(form, "port", "") do
+      "" ->
+        errors
+
+      value ->
+        case Integer.parse(value) do
+          {port, ""} when port in 1..@max_port -> errors
+          _invalid -> Map.put(errors, "port", "Port 必须留空或填写 1 到 #{@max_port} 之间的整数。")
+        end
+    end
+  end
+
+  defp validate_update_strategy_field(errors, form) do
+    if Map.get(form, "update_strategy") in @update_strategies do
+      errors
+    else
+      Map.put(errors, "update_strategy", "更新策略必须来自页面提供的选项。")
+    end
+  end
+
+  defp validate_optional_env_field(errors, form) do
+    case Map.get(form, "token_env", "") do
+      "" ->
+        errors
+
+      value ->
+        if Regex.match?(@create_env_var_pattern, value) do
+          errors
+        else
+          Map.put(errors, "token_env", "Token Env 必须是合法环境变量名，例如 GITHUB_TOKEN。")
+        end
+    end
+  end
+
+  defp create_errors_from_registry_error(%{code: code, message: message}) do
+    case code do
+      "invalid_instance_name" -> %{"project" => message}
+      "instance_exists" -> %{"project" => message}
+      "invalid_owner" -> %{"owner" => message}
+      "invalid_repo" -> %{"repo" => message}
+      "invalid_project_number" -> %{"project_number" => message}
+      "invalid_port" -> %{"port" => message}
+      "port_in_use" -> %{"port" => message}
+      "port_unavailable" -> %{"port" => message}
+      "invalid_update_strategy" -> %{"update_strategy" => message}
+      "invalid_max_agents" -> %{"max_agents" => message}
+      "invalid_token_env" -> %{"token_env" => message}
+      "missing_token_env" -> %{"token_env" => message}
+      _other -> %{}
+    end
+  end
+
+  defp create_errors_from_registry_error(_error), do: %{}
+
+  defp create_error_items(errors) do
+    errors
+    |> Enum.map(fn {field, message} -> {field, Map.get(@create_field_labels, field, field), message} end)
+    |> Enum.sort_by(fn {field, _label, _message} -> field_order(field) end)
+  end
+
+  defp field_order("project"), do: 0
+  defp field_order("owner"), do: 1
+  defp field_order("repo"), do: 2
+  defp field_order("project_number"), do: 3
+  defp field_order("port"), do: 4
+  defp field_order("update_strategy"), do: 5
+  defp field_order("max_agents"), do: 6
+  defp field_order("token_env"), do: 7
+  defp field_order(_field), do: 99
+
+  defp field_error(errors, field), do: Map.get(errors, field)
+
+  defp field_invalid(errors, field) do
+    if field_error(errors, field), do: "true", else: "false"
+  end
+
+  defp field_describedby(errors, field, base_ids \\ []) do
+    ids =
+      if field_error(errors, field) do
+        base_ids ++ ["create-field-#{field}-error"]
+      else
+        base_ids
+      end
+
+    case Enum.reject(ids, &(&1 in [nil, ""])) do
+      [] -> nil
+      describedby -> Enum.join(describedby, " ")
+    end
+  end
+
+  defp update_strategies, do: @update_strategies
 
   defp strategy_label("force_restart"), do: "force_restart - 强制重启（危险）"
   defp strategy_label(strategy), do: strategy
@@ -974,6 +1187,120 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp instance_badge_class("failed"), do: "state-badge state-badge-blocked"
   defp instance_badge_class("stopped"), do: "state-badge state-badge-terminal"
   defp instance_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp instance_action_label(action, instance) do
+    service = Map.get(instance, :service) || Map.get(instance, "service") || Map.get(instance, :name) || Map.get(instance, "name")
+    "#{action} #{service}"
+  end
+
+  defp instance_action_enabled?(false, _instance, _action), do: false
+
+  defp instance_action_enabled?(true, instance, action) do
+    is_nil(instance_action_disabled_reason(instance, action))
+  end
+
+  defp instance_action_describedby(false, _instance, _action), do: "admin-readonly-reason"
+
+  defp instance_action_describedby(true, instance, action) do
+    if instance_action_disabled_reason(instance, action), do: instance_action_note_id(instance), else: nil
+  end
+
+  defp instance_action_title(false, _instance, _action), do: "管理操作只允许本机客户端访问"
+  defp instance_action_title(true, instance, action), do: instance_action_disabled_reason(instance, action)
+
+  defp instance_action_disabled_reason(instance, action) do
+    cond do
+      systemd_not_found?(instance) ->
+        "systemd unit 未安装或 template 已归档，需先恢复服务单元后再执行实例操作。"
+
+      action == "start" and instance_running?(instance) ->
+        "实例已在运行，无需再次启动。"
+
+      action == "stop" and not instance_running?(instance) ->
+        "实例当前未运行，无需停止。"
+
+      action == "enable" and systemd_enabled?(instance) ->
+        "systemd unit 已启用。"
+
+      action == "disable" and systemd_disabled?(instance) ->
+        "systemd unit 已禁用。"
+
+      true ->
+        nil
+    end
+  end
+
+  defp instance_lifecycle_notice(instance) do
+    if systemd_not_found?(instance), do: instance_action_disabled_reason(instance, "start"), else: nil
+  end
+
+  defp instance_action_note_id(instance) do
+    "instance-actions-note-#{Map.get(instance, :name) || Map.get(instance, "name") || "unknown"}"
+  end
+
+  defp instance_running?(instance) do
+    status = Map.get(instance, :status) || Map.get(instance, "status")
+    active = get_in(instance, [:systemd, :active]) || get_in(instance, ["systemd", "active"])
+    sub = get_in(instance, [:systemd, :sub]) || get_in(instance, ["systemd", "sub"])
+
+    status == "running" or active == "active" or sub == "running"
+  end
+
+  defp systemd_not_found?(instance) do
+    enabled = get_in(instance, [:systemd, :enabled]) || get_in(instance, ["systemd", "enabled"])
+    active = get_in(instance, [:systemd, :active]) || get_in(instance, ["systemd", "active"])
+
+    enabled == "not-found" or active == "not-found"
+  end
+
+  defp systemd_enabled?(instance) do
+    enabled = get_in(instance, [:systemd, :enabled]) || get_in(instance, ["systemd", "enabled"])
+    enabled == "enabled"
+  end
+
+  defp systemd_disabled?(instance) do
+    enabled = get_in(instance, [:systemd, :enabled]) || get_in(instance, ["systemd", "enabled"])
+    enabled in ["disabled", "masked"]
+  end
+
+  defp auto_update_action_enabled?(false, _snapshot, _action), do: false
+
+  defp auto_update_action_enabled?(true, snapshot, action) do
+    is_nil(auto_update_action_disabled_reason(snapshot, action))
+  end
+
+  defp auto_update_action_describedby(false, _snapshot, _action), do: "admin-readonly-reason"
+
+  defp auto_update_action_describedby(true, snapshot, action) do
+    if auto_update_action_disabled_reason(snapshot, action), do: "auto-update-action-note", else: nil
+  end
+
+  defp auto_update_action_title(false, _snapshot, _action), do: "管理操作只允许本机客户端访问"
+  defp auto_update_action_title(true, snapshot, action), do: auto_update_action_disabled_reason(snapshot, action)
+
+  defp auto_update_action_notice(false, _snapshot), do: "管理操作只允许本机客户端访问。"
+
+  defp auto_update_action_notice(true, snapshot) do
+    auto_update_action_disabled_reason(snapshot, "update")
+  end
+
+  defp auto_update_action_disabled_reason(snapshot, action) do
+    case {auto_update_state(snapshot), action} do
+      {:loading, _action} -> "自动更新状态仍在加载。"
+      {:unavailable, _action} -> "自动更新进程不可用，需先恢复自动更新服务。"
+      {:up_to_date, "update"} -> "GitHub main 当前没有可执行更新。"
+      {_state, _action} -> nil
+    end
+  end
+
+  defp aria_disabled(true), do: "false"
+  defp aria_disabled(false), do: "true"
+
+  defp admin_disabled_reason_id(true), do: nil
+  defp admin_disabled_reason_id(false), do: "admin-readonly-reason"
+
+  defp admin_disabled_title(true), do: nil
+  defp admin_disabled_title(false), do: "管理操作只允许本机客户端访问"
 
   defp strategy_description("idle_restart"), do: "空闲时自动更新并重启"
   defp strategy_description("defer_until_idle"), do: "运行中延后，空闲后重启"

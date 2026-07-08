@@ -197,7 +197,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
           </div>
 
           <div class="stage-detail-grid">
-            <article :for={stage <- @projection.stages} class="stage-detail-card">
+            <article :for={stage <- @projection.stages} id={"stage-#{stage.id}"} class="stage-detail-card">
               <div class="stage-detail-header">
                 <h3 class="stage-detail-title mono"><%= stage.id %></h3>
                 <div class="workflow-node-badges">

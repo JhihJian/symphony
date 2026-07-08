@@ -194,7 +194,16 @@
 
   function setCopyButtonState(button, text, delay) {
     button.textContent = text;
+    announceCopyButtonState(button, text);
     resetCopyButton(button, delay);
+  }
+
+  function announceCopyButtonState(button, text) {
+    var status = document.getElementById("copy-status");
+    if (!status) return;
+
+    var label = button.getAttribute("data-copy-label") || "当前 Issue";
+    status.textContent = label + "：" + text;
   }
 
   function copyTextFromButton(button) {

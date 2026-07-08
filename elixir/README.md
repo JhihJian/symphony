@@ -1413,7 +1413,12 @@ enabling systemd services, stop, restart, disable, manual update execution, and 
 triggering require a LiveView confirmation prompt that names the affected service or operation and
 states that systemd or automation state will change. Long-running actions use LiveView
 loading/disable feedback, and operation results render in a status or alert banner rather than as
-an unclassified text block.
+an unclassified text block. The page also disables actions that do not match the current state, such
+as GitHub main update execution while auto-update is unavailable or lifecycle operations for
+archived/not-found legacy units, and links each disabled control to a visible reason. Instance
+creation validation reports field-level errors with an error summary before the install script is
+called, so invalid project names, repo fields, ports, project numbers, max-agent counts, and token
+environment references can be corrected in place.
 
 The same management page shows `symphony-update.timer` state, including enabled/active status and
 the next run time, and can enable, disable, or manually trigger `symphony-update.service`.

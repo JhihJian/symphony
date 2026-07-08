@@ -50,6 +50,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <section class="dashboard-shell">
+      <div id="copy-status" class="sr-only" role="status" aria-live="polite"></div>
+
       <header class="hero-card">
         <div class="hero-grid">
           <div>
@@ -64,7 +66,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
           </div>
 
-          <div class="status-stack">
+          <div class="status-stack" role="status" aria-live="polite">
             <span class="status-badge">页面连接</span>
             <span class="status-badge status-badge-connecting">
               <span class="status-badge-dot"></span>
@@ -803,6 +805,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                             class="subtle-button copy-button"
                             data-label="复制 ID"
                             data-copy={entry.session_id}
+                            data-copy-label={copy_button_status_label(entry)}
+                            aria-label={copy_button_aria_label(entry)}
                           >
                             复制 ID
                           </button>
@@ -891,6 +895,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                           class="subtle-button copy-button"
                           data-label="复制 ID"
                           data-copy={entry.session_id}
+                          data-copy-label={copy_button_status_label(entry)}
+                          aria-label={copy_button_aria_label(entry)}
                         >
                           复制 ID
                         </button>
@@ -2553,6 +2559,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp stage_conflict_text(conflict), do: inspect(conflict, pretty: true)
+
+  defp copy_button_aria_label(entry) do
+    "复制 #{copy_button_status_label(entry)} 的会话 ID"
+  end
+
+  defp copy_button_status_label(%{issue_identifier: issue_identifier}) when is_binary(issue_identifier) and issue_identifier != "" do
+    issue_identifier
+  end
+
+  defp copy_button_status_label(%{issue_id: issue_id}) when is_binary(issue_id) and issue_id != "" do
+    issue_id
+  end
+
+  defp copy_button_status_label(_entry), do: "当前 Issue"
 
   defp recovery_artifact_path(%{artifact_dir: artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
   defp recovery_artifact_path(%{"artifact_dir" => artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
