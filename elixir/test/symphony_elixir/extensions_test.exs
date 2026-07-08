@@ -881,6 +881,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_js =~ "renderAllWorkflowMermaid"
     assert dashboard_js =~ "DOMContentLoaded"
     assert dashboard_js =~ "MutationObserver"
+    assert dashboard_js =~ "output.querySelector(\"svg\")"
     assert dashboard_js =~ ".render(renderId, definition)"
 
     mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
