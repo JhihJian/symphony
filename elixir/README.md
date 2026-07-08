@@ -1367,10 +1367,12 @@ it shows the local orchestrator snapshot, running/retrying/blocked issues, token
 detail links. In Hub mode the first operator section prioritizes the current work queue and a
 compact Hub project focus list, so active attempts, workspace leases, manual attention, and the
 next project-level action are visible before lower-level Hub diagnostics. Hub project next actions
-are rendered as operator-readable action text on their own row, and when the normal running-session
-count is zero but Hub attempts are still active, the first-screen link points to the relevant Hub
-project instead of the empty running-session section. The page header also labels the current access
-role, whether the first snapshot is loaded, and that the dashboard is a read-only observation
+are rendered as operator-readable action text on their own row, with a second line that names the
+evidence entry point and the read-only boundary. Hub project focus rows point to the expandable Hub
+project detail entry instead of jumping into content that is closed by default, and when the normal
+running-session count is zero but Hub attempts are still active, the first-screen link points to the
+relevant Hub project instead of the empty running-session section. The page header also labels the
+current access role, whether the first snapshot is loaded, and that the dashboard is a read-only observation
 surface. The context panel remains
 available for traceability and summarizes whether the view is a single instance or Hub device
 runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path, the snapshot timestamp,
@@ -1385,7 +1387,10 @@ blocked/protocol-blocked paths, and shows the selected stage plus
 `workflow.missing_outcome.max_retries`/`on_exhausted` separately from ordinary transitions.
 The first screen uses a compact status strip for the start stage, stage count, terminal count,
 runtime snapshot, and diagnostics. Warning/error diagnostics show the first actionable diagnostic
-summary next to the count instead of only a generic number.
+summary next to the count instead of only a generic number; common reachability warnings are shown
+as Chinese operator actions first, with raw diagnostic code and message still available in the
+diagnostics list. Mermaid graph nodes are clickable and keyboard-focusable, with a visible focus
+style for the rendered SVG node shape.
 On desktop the stage graph and selected-stage inspector share the first workflow panel, so clicking
 a graph node updates visible stage details without forcing the operator below the graph. On narrow
 screens the page adds a text-first stage flow overview near the Mermaid graph so operators can read
@@ -1406,11 +1411,13 @@ The multi-instance dashboard at `/admin/instances` is a thin operator management
 registered instances from `~/.config/symphony/projects` by default, checks each
 `symphony@<project>.service` via `systemctl --user`, and queries each reachable instance's
 `/api/v1/state`. The page renders its operator shell first, then loads the instance overview in a
-bounded background refresh so slow probes do not block the first screen. Stopped, failed, slow, or
-unreachable instances are rendered as per-instance health states and do not block the rest of the
-overview. The fleet summary also shows an
-unreachable/unknown instance count and a warning banner so missing state snapshots are not mistaken
-for zero issue risk. Dashboard/API links are clickable only when the instance is running and
+bounded background refresh so slow probes do not block the first screen. Instance aggregation,
+GitHub main auto-update status, and systemd timer status are displayed as separate loading lanes,
+so operators can see which part is still being probed. Stopped, failed, slow, or unreachable
+instances are rendered as per-instance health states and do not block the rest of the overview. The
+fleet summary puts the unreachable/unknown instance count first and labels running, retrying, and
+blocked counts as reachable-instance totals, so missing state snapshots are not mistaken for zero
+issue risk. Dashboard/API links are clickable only when the instance is running and
 reachable; stopped, failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled
 entries with the URL still visible for inspection. The update timer buttons are also gated by
 current state, so an already enabled/active timer does not present “enable” as an available action.

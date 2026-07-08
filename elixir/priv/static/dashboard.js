@@ -150,6 +150,14 @@
           pushStage(stageId);
         }
       });
+
+      node.addEventListener("focus", function () {
+        node.classList.add("workflow-mermaid-node-focused");
+      });
+
+      node.addEventListener("blur", function () {
+        node.classList.remove("workflow-mermaid-node-focused");
+      });
     });
   }
 

@@ -3174,6 +3174,9 @@ Enablement (extension):
 - When Hub project details or device diagnostics are large, the dashboard SHOULD keep compact
   operator focus rows ahead of high-detail diagnostic matrices and MAY place those matrices behind
   expandable sections.
+- Hub project focus rows SHOULD name both the next operator-readable action and the evidence entry
+  point or execution boundary, especially when the page is read-only or when the action requires a
+  different management surface or command-line operation.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
@@ -3198,6 +3201,9 @@ If provided:
 - The first workflow summary view SHOULD surface the count of warning/error diagnostics, include the
   first actionable diagnostic summary when available, and link to the full diagnostics list, so
   operator attention items are visible before the detailed stage list.
+- Diagnostic summaries intended for the first workflow view SHOULD be operator-readable before raw
+  diagnostic codes or English parser messages; raw codes and messages MAY remain available in the
+  detailed diagnostics list.
 - When `TRACKER.yaml` is available, the page SHOULD summarize tracker kind, stage-to-provider-state
   mapping, and whether every workflow stage has a provider-visible state mapping.
 - The page MUST NOT render raw credential values, including `api_key`, token, env secret, password,
@@ -3373,6 +3379,9 @@ If implemented:
   directories and MAY aggregate service-manager state plus each instance's observability API.
 - Stopped, failed, or unreachable instances MUST be represented as per-instance health states and
   MUST NOT prevent other instances from being shown.
+- Fleet-level issue counts SHOULD identify whether they are computed from all known instances or
+  only from instances with reachable state snapshots. Unknown or unreachable instances MUST NOT be
+  presented as zero-risk issue counts.
 - Dashboard/API entry links for instances SHOULD degrade to disabled text when the instance is not
   running, is unreachable, or would point a remote browser at a loopback-only address.
 - Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
@@ -3380,6 +3389,9 @@ If implemented:
 - While instance aggregation is still loading and no previous overview is available, high-impact
   write actions such as create, update, lifecycle, and timer operations SHOULD be disabled or
   otherwise guarded with a visible reason.
+- Independent status sources such as instance aggregation, program auto-update state, and timer
+  state SHOULD be allowed to report loading or unavailable states independently so one slow source
+  does not hide already available operator context.
 - Timer and lifecycle controls SHOULD be disabled with an operator-readable reason when the current
   state makes the requested action a no-op, for example enabling an already enabled timer.
 - The management surface MAY coordinate deployment updates for the Symphony program itself. If it

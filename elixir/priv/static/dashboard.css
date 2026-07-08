@@ -445,8 +445,16 @@ code {
   background: linear-gradient(90deg, #e08600, rgba(224, 134, 0, 0));
 }
 
+.metric-card-muted {
+  background: rgba(247, 247, 248, 0.68);
+}
+
+.metric-card-muted::before {
+  background: linear-gradient(90deg, rgba(110, 110, 128, 0.18), rgba(110, 110, 128, 0));
+}
+
 .fleet-summary {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
 }
 
 .metric-label {
@@ -579,6 +587,14 @@ code {
   font-weight: 650;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.hub-project-next-action small {
+  display: block;
+  margin-top: 0.16rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .hub-diagnostic-disclosure {
@@ -1275,6 +1291,13 @@ code {
   font-size: 0.92rem;
 }
 
+.admin-load-lanes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.2rem;
+}
+
 .notice-banner-success {
   border-color: rgba(16, 163, 127, 0.22);
   background: var(--accent-soft);
@@ -1537,7 +1560,11 @@ code {
 }
 
 .workflow-mermaid-output g[role="button"]:focus-visible rect,
-.workflow-mermaid-output g[role="button"]:focus-visible polygon {
+.workflow-mermaid-output g[role="button"]:focus-visible polygon,
+.workflow-mermaid-output g[role="button"]:focus-visible path,
+.workflow-mermaid-output .workflow-mermaid-node-focused rect,
+.workflow-mermaid-output .workflow-mermaid-node-focused polygon,
+.workflow-mermaid-output .workflow-mermaid-node-focused path {
   stroke: #007acc !important;
   stroke-width: 3px !important;
   filter: drop-shadow(0 0 0.35rem rgba(0, 122, 204, 0.28));
@@ -1566,7 +1593,11 @@ code {
 }
 
 .workflow-mermaid-node-clickable:hover rect,
-.workflow-mermaid-node-clickable:focus-visible rect {
+.workflow-mermaid-node-clickable:hover polygon,
+.workflow-mermaid-node-clickable:hover path,
+.workflow-mermaid-node-clickable:focus-visible rect,
+.workflow-mermaid-node-clickable:focus-visible polygon,
+.workflow-mermaid-node-clickable:focus-visible path {
   stroke: var(--accent) !important;
   stroke-width: 3px !important;
   filter: drop-shadow(0 12px 20px rgba(16, 163, 127, 0.18));
@@ -2010,7 +2041,21 @@ code {
   }
 
   .status-stack {
+    width: 100%;
+    max-width: 100%;
     justify-items: start;
+  }
+
+  .status-badge,
+  .state-badge {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .workflow-command-hero .status-stack {
+    max-width: 100%;
   }
 
   .metric-grid {

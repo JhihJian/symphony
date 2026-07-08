@@ -48,12 +48,32 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   @impl true
-  def handle_async(:admin_state, {:ok, admin_state}, socket) do
-    {:noreply, apply_admin_state(socket, admin_state)}
+  def handle_async(:instances_state, {:ok, {:ok, instances}}, socket) do
+    {:noreply, assign_instances(socket, instances)}
   end
 
-  def handle_async(:admin_state, {:exit, reason}, socket) do
+  def handle_async(:instances_state, {:ok, {:error, reason}}, socket) do
+    {:noreply, assign_instances_error(socket, "实例总览加载失败：#{format_registry_error(reason)}")}
+  end
+
+  def handle_async(:instances_state, {:exit, reason}, socket) do
     {:noreply, assign_instances_error(socket, "实例总览加载失败：#{inspect(reason)}")}
+  end
+
+  def handle_async(:auto_update_state, {:ok, auto_update}, socket) do
+    {:noreply, assign(socket, :auto_update, auto_update)}
+  end
+
+  def handle_async(:auto_update_state, {:exit, reason}, socket) do
+    {:noreply, assign(socket, :auto_update, auto_update_unavailable_snapshot(reason))}
+  end
+
+  def handle_async(:update_timer_state, {:ok, update_timer}, socket) do
+    {:noreply, assign(socket, :update_timer, update_timer)}
+  end
+
+  def handle_async(:update_timer_state, {:exit, reason}, socket) do
+    {:noreply, assign(socket, :update_timer, update_timer_unavailable_snapshot(reason))}
   end
 
   @impl true
@@ -226,8 +246,19 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       <% end %>
 
       <section :if={@instances_loading? && !@instances_loaded?} id="admin-write-action-note" class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
-        <strong>正在加载实例总览</strong>
-        <p>页面快照已可读；实例 systemd 状态和 `/api/v1/state` 快照仍在后台加载。创建、更新和 timer 等写操作会先锁定，等实例风险判断完成后再执行。</p>
+        <strong>实例状态加载中，写操作已临时锁定</strong>
+        <p>已读取页面配置；正在探测实例 systemd 和 `/api/v1/state`。自动更新与 timer 独立加载，慢实例会单独标记为不可达或未知。</p>
+        <div class="admin-load-lanes" aria-label="管理页加载通道">
+          <span class={admin_instances_lane_badge_class(@instances_loading?, @instances_error)}>
+            实例总览：<%= admin_instances_lane_text(@instances_loading?, @instances_error) %>
+          </span>
+          <span class={admin_auto_update_lane_badge_class(@auto_update)}>
+            自动更新：<%= admin_auto_update_lane_text(@auto_update) %>
+          </span>
+          <span class={admin_update_timer_lane_badge_class(@update_timer)}>
+            timer：<%= admin_update_timer_lane_text(@update_timer) %>
+          </span>
+        </div>
       </section>
 
       <section :if={@instances_error} class="notice-banner notice-banner-error" role="alert" aria-live="polite">
@@ -236,30 +267,30 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       </section>
 
       <section :if={@instances_loaded?} class="metric-grid fleet-summary">
-        <article class="metric-card">
-          <p class="metric-label">实例总数</p>
-          <p class="metric-value numeric"><%= length(@instances) %></p>
-          <p class="metric-detail">已在配置目录登记的 Symphony 实例。</p>
-        </article>
-        <article class="metric-card">
-          <p class="metric-label">运行中 Issue</p>
-          <p class="metric-value numeric"><%= total_count(@instances, :running) %></p>
-          <p class="metric-detail">来自各实例 `/api/v1/state` 的聚合值。</p>
-        </article>
-        <article class="metric-card">
-          <p class="metric-label">重试中 Issue</p>
-          <p class="metric-value numeric"><%= total_count(@instances, :retrying) %></p>
-          <p class="metric-detail">仅统计可返回状态快照的实例。</p>
-        </article>
-        <article class="metric-card">
-          <p class="metric-label">阻塞 Issue</p>
-          <p class="metric-value numeric"><%= total_count(@instances, :blocked) %></p>
-          <p class="metric-detail">等待操作员输入或批准的会话数。</p>
-        </article>
         <article class="metric-card metric-card-warning">
           <p class="metric-label">不可达/未知实例</p>
           <p class="metric-value numeric"><%= unavailable_instance_count(@instances) %></p>
           <p class="metric-detail">这些实例的 Issue 数可能未知，不应被解读为 0 风险。</p>
+        </article>
+        <article class="metric-card">
+          <p class="metric-label">实例总数</p>
+          <p class="metric-value numeric"><%= length(@instances) %></p>
+          <p class="metric-detail">已登记 <%= reachable_instance_count(@instances) %> 个可达实例。</p>
+        </article>
+        <article class={reachable_metric_card_class(@instances)}>
+          <p class="metric-label">可达实例中运行中</p>
+          <p class="metric-value numeric"><%= reachable_total_count(@instances, :running) %></p>
+          <p class="metric-detail">只统计已返回健康快照的实例。</p>
+        </article>
+        <article class={reachable_metric_card_class(@instances)}>
+          <p class="metric-label">可达实例中重试中</p>
+          <p class="metric-value numeric"><%= reachable_total_count(@instances, :retrying) %></p>
+          <p class="metric-detail">不可达实例不按 0 计入。</p>
+        </article>
+        <article class={reachable_metric_card_class(@instances)}>
+          <p class="metric-label">可达实例中阻塞</p>
+          <p class="metric-value numeric"><%= reachable_total_count(@instances, :blocked) %></p>
+          <p class="metric-detail">等待操作员输入或批准的会话数。</p>
         </article>
       </section>
 
@@ -852,35 +883,27 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       |> maybe_assign_auto_update(auto_update)
 
     if connected?(socket) do
-      start_async(socket, :admin_state, fn -> admin_state_snapshot(auto_update) end)
+      socket
+      |> start_async(:instances_state, fn -> list_instances_with_timeout() end)
+      |> maybe_start_auto_update_async(auto_update)
+      |> start_async(:update_timer_state, fn -> update_timer_snapshot() end)
     else
       socket
     end
   end
 
-  defp admin_state_snapshot(auto_update) do
-    %{
-      instances: list_instances_with_timeout(),
-      auto_update: auto_update || auto_update_snapshot(),
-      update_timer: update_timer_snapshot()
-    }
+  defp maybe_start_auto_update_async(socket, nil) do
+    start_async(socket, :auto_update_state, fn -> auto_update_snapshot() end)
   end
 
-  defp apply_admin_state(socket, %{instances: {:ok, instances}, auto_update: auto_update, update_timer: update_timer}) do
+  defp maybe_start_auto_update_async(socket, _auto_update), do: socket
+
+  defp assign_instances(socket, instances) do
     socket
     |> assign(:instances, instances)
     |> assign(:instances_loading?, false)
     |> assign(:instances_loaded?, true)
     |> assign(:instances_error, nil)
-    |> assign(:auto_update, auto_update)
-    |> assign(:update_timer, update_timer)
-  end
-
-  defp apply_admin_state(socket, %{instances: {:error, reason}, auto_update: auto_update, update_timer: update_timer}) do
-    socket
-    |> assign(:auto_update, auto_update)
-    |> assign(:update_timer, update_timer)
-    |> assign_instances_error("实例总览加载失败：#{format_registry_error(reason)}")
   end
 
   defp assign_instances_error(socket, message) do
@@ -1045,18 +1068,25 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     registry().update_timer_status(registry_opts())
   rescue
     error ->
-      %{
-        timer: "symphony-update.timer",
-        service: "symphony-update.service",
-        active: "unknown",
-        sub: nil,
-        enabled: "unknown",
-        next_run: nil,
-        last_trigger: nil,
-        service_active: "unknown",
-        service_sub: Exception.message(error)
-      }
+      update_timer_unavailable_snapshot(Exception.message(error))
   end
+
+  defp update_timer_unavailable_snapshot(reason) do
+    %{
+      timer: "symphony-update.timer",
+      service: "symphony-update.service",
+      active: "unknown",
+      sub: nil,
+      enabled: "unknown",
+      next_run: nil,
+      last_trigger: nil,
+      service_active: "unknown",
+      service_sub: readable_reason(reason)
+    }
+  end
+
+  defp readable_reason(reason) when is_binary(reason), do: reason
+  defp readable_reason(reason), do: inspect(reason)
 
   defp default_create_form do
     %{
@@ -1237,17 +1267,33 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp auto_update_status("update", snapshot), do: get_in(snapshot, [:last_update, :status]) || "unknown"
   defp auto_update_status(_action, snapshot), do: get_in(snapshot, [:last_update, :status]) || get_in(snapshot, [:last_check, :status]) || "unknown"
 
-  defp total_count(instances, key) do
-    Enum.reduce(instances, 0, fn instance, total -> total + count(instance, key) end)
+  defp reachable_total_count(instances, key) do
+    instances
+    |> Enum.filter(&reachable_instance?/1)
+    |> Enum.reduce(0, fn instance, total -> total + count(instance, key) end)
+  end
+
+  defp reachable_instance_count(instances) do
+    Enum.count(instances, &reachable_instance?/1)
   end
 
   defp unavailable_instance_count(instances) do
-    Enum.count(instances, fn instance ->
-      health_status = get_in(instance, [:health, :status])
-      instance_status = Map.get(instance, :status) || Map.get(instance, "status")
+    Enum.count(instances, &(not reachable_instance?(&1)))
+  end
 
-      health_status != "reachable" or instance_status in [nil, "unknown"]
-    end)
+  defp reachable_instance?(instance) do
+    health_status = get_in(instance, [:health, :status]) || get_in(instance, ["health", "status"])
+    instance_status = Map.get(instance, :status) || Map.get(instance, "status")
+
+    health_status == "reachable" and instance_status not in [nil, "unknown"]
+  end
+
+  defp reachable_metric_card_class(instances) do
+    if unavailable_instance_count(instances) > 0 do
+      "metric-card metric-card-muted"
+    else
+      "metric-card"
+    end
   end
 
   defp instance_entry_link_enabled?(local_admin?, instance, kind) do
@@ -1403,6 +1449,46 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   defp admin_capability_text(true, _instances_loading?, _instances_loaded?, _instances), do: "本机管理员 · 操作可用"
+
+  defp admin_instances_lane_text(true, nil), do: "加载中"
+  defp admin_instances_lane_text(_loading?, nil), do: "已返回"
+  defp admin_instances_lane_text(_loading?, _error), do: "失败"
+
+  defp admin_instances_lane_badge_class(true, nil), do: "state-badge state-badge-muted"
+  defp admin_instances_lane_badge_class(false, nil), do: "state-badge state-badge-active"
+  defp admin_instances_lane_badge_class(_loading?, _error), do: "state-badge state-badge-warning"
+
+  defp admin_auto_update_lane_text(snapshot) do
+    case auto_update_state(snapshot) do
+      :loading -> "加载中"
+      :unavailable -> "不可用"
+      _state -> "已返回"
+    end
+  end
+
+  defp admin_auto_update_lane_badge_class(snapshot) do
+    case auto_update_state(snapshot) do
+      :loading -> "state-badge state-badge-muted"
+      :unavailable -> "state-badge state-badge-warning"
+      _state -> "state-badge state-badge-active"
+    end
+  end
+
+  defp admin_update_timer_lane_text(snapshot) do
+    cond do
+      update_timer_loading?(snapshot) -> "加载中"
+      update_timer_unavailable?(snapshot) -> "不可用"
+      true -> "已返回"
+    end
+  end
+
+  defp admin_update_timer_lane_badge_class(snapshot) do
+    cond do
+      update_timer_loading?(snapshot) -> "state-badge state-badge-muted"
+      update_timer_unavailable?(snapshot) -> "state-badge state-badge-warning"
+      true -> "state-badge state-badge-active"
+    end
+  end
 
   defp admin_write_actions_ready?(false, _instances_loading?, _instances_loaded?), do: false
   defp admin_write_actions_ready?(true, true, false), do: false

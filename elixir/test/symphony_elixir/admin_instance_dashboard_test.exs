@@ -353,8 +353,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
       end)
 
     assert duration_us < 500_000
-    assert html =~ "正在加载实例总览"
-    assert html =~ "写操作会先锁定"
+    assert html =~ "实例状态加载中，写操作已临时锁定"
+    assert html =~ "自动更新与 timer 独立加载"
+    assert html =~ "实例总览：加载中"
+    assert html =~ "自动更新：加载中"
+    assert html =~ "timer：加载中"
     {:ok, document} = Floki.parse_document(html)
     assert document |> Floki.find(~s(button[aria-describedby="admin-write-action-note"][disabled])) |> length() >= 6
     assert_receive {:slow_list_instances, _opts}
@@ -928,12 +931,16 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".lifecycle-action-note"
     assert css =~ ".lifecycle-button-danger"
     assert css =~ ".metric-card-warning"
+    assert css =~ ".metric-card-muted"
     assert css =~ ".fleet-risk-banner"
+    assert css =~ ".admin-load-lanes"
     assert css =~ ".disabled-link"
     assert css =~ ".diagnostic-guidance"
     assert css =~ ".workspace-nav"
     assert css =~ ".notice-banner"
     assert css =~ ".operator-attention-card"
+    assert css =~ ".hub-project-next-action small"
+    assert css =~ ".workflow-mermaid-node-focused"
     assert css =~ ".phx-client-error .status-badge-offline"
     assert css =~ ".sr-only"
     assert css =~ ".phx-click-loading"

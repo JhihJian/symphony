@@ -176,7 +176,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <div class="section-header">
             <div>
               <h2 class="section-title">Hub 项目焦点</h2>
-              <p class="section-copy">优先列出仍有尝试、租约、运行记录或人工关注项的项目；点击项目可跳到完整明细行。</p>
+              <p class="section-copy">优先列出仍有尝试、租约、运行记录或人工关注项的项目；点击项目会定位到高级诊断入口，展开后查看 workspace/attempt 明细。</p>
             </div>
             <a class="issue-link" href="#hub-project-details">完整项目明细</a>
           </div>
@@ -188,7 +188,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <a
                 :for={project <- hub_project_focus_projects(@payload)}
                 class="hub-project-focus-row"
-                href={"##{hub_project_anchor(project)}"}
+                href="#hub-project-details"
               >
                 <span class="hub-project-focus-main">
                   <strong><%= project.project_id %></strong>
@@ -197,7 +197,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
                 <span class="muted event-meta"><%= hub_poll_text(project.detail.poll_eligibility) %></span>
                 <span class="muted event-meta"><%= hub_active_attempt_project_summary(project) %></span>
-                <span class="hub-project-next-action">下一步：<%= hub_project_next_action(project) %></span>
+                <span class="hub-project-next-action">
+                  下一步：<%= hub_project_next_action(project) %>
+                  <small><%= hub_project_next_action_boundary(project) %></small>
+                </span>
               </a>
             </div>
           <% end %>
@@ -1289,6 +1292,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> hub_operator_action_text()
   end
 
+  defp hub_project_next_action_boundary(project) do
+    project
+    |> hub_project_next_action_code()
+    |> hub_operator_action_boundary()
+  end
+
   defp hub_project_next_action_code(project) do
     if hub_project_writeback_manual_attention?(project) do
       "resolve_writeback_manual_attention"
@@ -1336,6 +1345,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_operator_action_text(code) when is_binary(code) and code != "", do: "检查 " <> code
   defp hub_operator_action_text(_code), do: "继续观察"
+
+  defp hub_operator_action_boundary("release_workspace_or_capacity") do
+    "入口：展开 Hub 项目明细查看 workspace lease；释放需实例管理或命令行。"
+  end
+
+  defp hub_operator_action_boundary("resolve_writeback_manual_attention") do
+    "入口：展开 Hub 项目明细确认 writeback 证据；当前页只读。"
+  end
+
+  defp hub_operator_action_boundary("resolve_manual_attention") do
+    "入口：展开 Hub 项目明细确认阻塞证据；当前页只读。"
+  end
+
+  defp hub_operator_action_boundary(_code) do
+    "入口：展开 Hub 项目明细查看证据；当前页只读。"
+  end
 
   defp hub_primary_attention_anchor(payload) do
     payload

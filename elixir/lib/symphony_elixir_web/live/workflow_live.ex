@@ -547,8 +547,15 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     Enum.find(diagnostics, fn diagnostic -> diagnostic.severity in [:error, :warning] end)
   end
 
+  defp diagnostic_brief(%{code: :unreachable_stage, message: message}) do
+    %{"stage" => stage, "start" => start} =
+      Regex.named_captures(~r/^Stage (?<stage>.+) is not reachable from start_stage (?<start>.+)\.$/, message)
+
+    "#{stage} 无法从 #{start} 到达；确认是否废弃或补 transition。"
+  end
+
   defp diagnostic_brief(%{code: code, message: message}) do
-    "#{code} - #{message}"
+    "#{code}：#{message}"
   end
 
   defp diagnostic_operator_guidance(%{code: :unreachable_stage}) do

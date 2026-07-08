@@ -887,6 +887,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_js =~ "output.querySelector(\"svg\")"
     assert dashboard_js =~ ".render(renderId, definition)"
     assert dashboard_js =~ "renderWorkflowMermaidError"
+    assert dashboard_js =~ "workflow-mermaid-node-focused"
     assert dashboard_js =~ "copyTextFromButton"
     assert dashboard_js =~ "announceCopyButtonState"
     assert dashboard_js =~ "document.getElementById(\"copy-status\")"
@@ -1077,6 +1078,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "诊断提醒"
     assert html =~ "配置有提醒"
     assert html =~ "查看 1 条配置提醒："
+    assert html =~ "protocol_blocked 无法从 ready 到达；确认是否废弃或补 transition。"
     assert html =~ "unreachable_stage"
     assert html =~ ~s(href="#workflow-diagnostics")
     assert html =~ ~s(id="workflow-diagnostics")
@@ -1351,6 +1353,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "tracker_config_unavailable"
     assert html =~ "运行态仍可展示静态流程图"
     assert html =~ "ready"
+  end
+
+  test "workflow dashboard renders generic diagnostic brief when no specialized operator copy exists" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_terminal_stages: ["done"],
+      workflow_outcomes: ["completed"],
+      workflow_missing_outcome_on_exhausted: "done",
+      workflow_stages: %{
+        "ready" => %{"prompt" => "Ready stage.", "transitions" => %{}},
+        "done" => %{"prompt" => "Done stage.", "transitions" => %{}}
+      },
+      tracker_kind: "github",
+      tracker_project_number: 42,
+      tracker_stage_states: %{
+        "ready" => %{"state" => "Ready"},
+        "done" => %{"state" => "Done", "terminal" => true}
+      }
+    )
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :GenericDiagnosticWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "查看 2 条配置提醒：non_terminal_without_transitions：Non-terminal stage ready has no outgoing transitions."
   end
 
   test "workflow dashboard handles workflow files without stage definitions" do
