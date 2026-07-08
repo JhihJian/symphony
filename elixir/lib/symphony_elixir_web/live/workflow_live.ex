@@ -450,8 +450,6 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     Enum.sort_by(stages, &{if(&1.id == start_stage, do: 0, else: 1), &1.id})
   end
 
-  defp mobile_flow_stages(%{stages: stages}), do: stages
-
   defp workflow_mermaid(projection, selected_stage_id) do
     stages = Map.get(projection, :stages, [])
 
