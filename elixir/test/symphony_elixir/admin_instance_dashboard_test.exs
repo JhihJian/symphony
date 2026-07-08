@@ -430,6 +430,10 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "GitHub main 自动更新"
     assert html =~ "unavailable"
     assert html =~ "auto_update_unavailable"
+    assert html =~ "自动更新状态不可用"
+    assert html =~ "无法判断/不可用"
+    assert html =~ "页面和实例管理仍可用"
+    refute html =~ "已是最新"
 
     status_payload = json_response(get(build_conn(), "/api/v1/admin/auto-update"), 503)
     assert status_payload["last_check"]["status"] == "unavailable"
@@ -451,6 +455,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "流程配置"
     assert html =~ "集中观察"
     assert html =~ "fleet-summary"
+    assert html =~ "不可达/未知实例"
+    assert html =~ "不应被解读为 0 风险"
     assert html =~ "instance-card-grid"
     assert html =~ "instance-identity"
     assert html =~ "health-panel"
@@ -515,34 +521,62 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard marks dangerous actions and slow requests" do
     {:ok, _view, html} = live(build_conn(), "/admin/instances")
+    {:ok, document} = Floki.parse_document(html)
 
     assert html =~ ~s(phx-confirm="确认执行 GitHub main 更新)
     assert html =~ ~s(phx-disable-with="更新中...")
     assert html =~ ~s(phx-disable-with="检查中...")
+    assert html =~ ~s(phx-confirm="确认启用并立即启动 symphony-update.timer)
     assert html =~ ~s(phx-confirm="确认禁用 symphony-update.timer)
     assert html =~ ~s(phx-confirm="确认手动触发 symphony-update.service)
+    assert html =~ ~s(phx-confirm="确认启动 symphony@project-a.service)
     assert html =~ ~s(phx-confirm="确认停止 symphony@project-a.service)
     assert html =~ ~s(phx-confirm="确认重启 symphony@project-a.service)
+    assert html =~ ~s(phx-confirm="确认启用 symphony@project-a.service)
     assert html =~ ~s(phx-confirm="确认禁用 symphony@project-a.service)
+    assert html =~ ~s(phx-confirm="确认创建实例？)
     assert html =~ ~s(phx-disable-with="读取中...")
     assert html =~ "force_restart - 强制重启（危险）"
+
+    assert document
+           |> Floki.find(~s(button[phx-click="lifecycle"][phx-value-action="start"][phx-confirm]))
+           |> length() == 2
+
+    assert document
+           |> Floki.find(~s(button[phx-click="lifecycle"][phx-value-action="enable"][phx-confirm]))
+           |> length() == 2
+
+    assert document
+           |> Floki.find(~s(button[phx-click="update_timer"][phx-value-action="enable"][phx-confirm]))
+           |> length() == 1
+
+    assert document
+           |> Floki.find(~s(form.instance-form button[type="submit"][phx-confirm]))
+           |> length() == 1
   end
 
   test "admin dashboard new instance button reveals the create form" do
     {:ok, view, html} = live(build_conn(), "/admin/instances")
+    {:ok, document} = Floki.parse_document(html)
 
     assert html =~ "新建实例"
     assert html =~ ~s(<form id="create-instance-form")
     assert html =~ ~s(hidden)
+    assert Floki.attribute(document, ~s(button[aria-controls="create-instance-form"]), "aria-expanded") == ["false"]
+    assert document |> Floki.find(~s(form#create-instance-form[hidden])) |> length() == 1
 
     html =
       view
       |> element("button", "新建实例")
       |> render_click()
 
+    {:ok, document} = Floki.parse_document(html)
+
     assert html =~ "收起表单"
     assert html =~ ~s(<form id="create-instance-form")
     refute html =~ ~s(<form id="create-instance-form" hidden)
+    assert Floki.attribute(document, ~s(button[aria-controls="create-instance-form"]), "aria-expanded") == ["true"]
+    assert document |> Floki.find(~s(form#create-instance-form[hidden])) |> length() == 0
   end
 
   test "admin dashboard creates instances and reads recent logs without exposing tokens" do

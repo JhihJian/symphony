@@ -124,6 +124,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-detail">当前运行时中的活跃 Issue 会话。</p>
           </article>
 
+          <article :if={hub_device?(@payload)} class="metric-card">
+            <p class="metric-label">Hub 活跃尝试</p>
+            <p class="metric-value numeric"><%= hub_active_attempt_count(@payload) %></p>
+            <p class="metric-detail">Hub worker 生命周期中仍未完全收敛的活跃尝试。</p>
+          </article>
+
           <article class="metric-card">
             <p class="metric-label">重试中</p>
             <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
@@ -149,6 +155,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
             <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
           </article>
+        </section>
+
+        <section class="section-card operator-priority-panel">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">当前工作队列</h2>
+              <p class="section-copy">先看有没有正在处理、等待人工输入或即将重试的工作；Hub 内部诊断放在后面。</p>
+            </div>
+          </div>
+
+          <div class="hub-overview-grid">
+            <article class="hub-summary-panel">
+              <p class="metric-label">运行中 Issue 会话</p>
+              <p class="metric-value numeric"><%= @payload.counts.running %></p>
+              <p class="metric-detail">
+                <a class="issue-link" href="#running-sessions">查看运行明细</a>
+              </p>
+            </article>
+
+            <article :if={hub_device?(@payload)} class="hub-summary-panel">
+              <p class="metric-label">Hub 活跃尝试</p>
+              <p class="metric-value numeric"><%= hub_active_attempt_count(@payload) %></p>
+              <p class="metric-detail">
+                pending start <%= hub_pending_start_intent_count(@payload) %> · workspace lease <%= hub_workspace_lease_count(@payload) %>
+              </p>
+            </article>
+
+            <article class="hub-summary-panel">
+              <p class="metric-label">阻塞会话</p>
+              <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
+              <p class="metric-detail">
+                <a class="issue-link" href="#blocked-sessions">查看需要人工处理的会话</a>
+              </p>
+            </article>
+
+            <article class="hub-summary-panel">
+              <p class="metric-label">重试队列</p>
+              <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
+              <p class="metric-detail">
+                <a class="issue-link" href="#retry-queue">查看退避等待的 Issue</a>
+              </p>
+            </article>
+          </div>
         </section>
 
         <section class="section-card">
@@ -674,7 +723,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
-        <section class="section-card">
+        <section class="section-card" id="running-sessions">
           <div class="section-header">
             <div>
               <h2 class="section-title">运行中会话</h2>
@@ -770,7 +819,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="blocked-sessions">
           <div class="section-header">
             <div>
               <h2 class="section-title">阻塞会话</h2>
@@ -862,7 +911,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
 
-        <section class="section-card">
+        <section class="section-card" id="retry-queue">
           <div class="section-header">
             <div>
               <h2 class="section-title">重试队列</h2>
@@ -1048,6 +1097,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_device?(payload) do
     is_map(payload) and is_map(Map.get(payload, :hub_device_observability))
+  end
+
+  defp hub_active_attempt_count(payload) do
+    hub_capacity_count(payload, :active_attempt_count)
+  end
+
+  defp hub_pending_start_intent_count(payload) do
+    hub_capacity_count(payload, :pending_start_intent_count)
+  end
+
+  defp hub_workspace_lease_count(payload) do
+    hub_capacity_count(payload, :workspace_lease_count)
+  end
+
+  defp hub_capacity_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :capacity_workspace, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
   end
 
   defp hub_scheduler_badge_class("scheduled"), do: "state-badge state-badge-warning"

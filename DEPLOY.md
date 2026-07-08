@@ -919,7 +919,7 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 
 这个页面是 operator 管理面，不是多租户 orchestrator：
 
-- `/` 是当前进程的单实例执行 Dashboard，展示该实例内部 orchestrator 的运行、重试、阻塞和 token 状态。
+- `/` 是当前进程的单实例执行 Dashboard，优先展示运行中 Issue、Hub 活跃尝试、阻塞和重试队列，再展示速率限制、Hub 设备诊断和 token 状态。
 - `/workflow` 是当前实例的只读 workflow-stage 配置可视化页面，读取该实例的 `WORKFLOW.md`
   和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
   `current_stage` 运行态分布；页面不展示 token、`api_key` 或 env secret 原始值。

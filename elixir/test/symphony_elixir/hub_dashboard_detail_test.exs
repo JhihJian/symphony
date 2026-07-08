@@ -52,6 +52,15 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
 
+    assert html =~ "当前工作队列"
+    assert html =~ "Hub 活跃尝试"
+    assert html =~ "pending start 0 · workspace lease 1"
+    assert html =~ ~s(href="#running-sessions")
+    assert html =~ ~s(href="#blocked-sessions")
+    assert html =~ ~s(href="#retry-queue")
+    assert_order(html, "当前工作队列", "速率限制")
+    assert_order(html, "当前工作队列", "Hub 设备总览")
+
     assert html =~ "Hub 设备总览"
     assert html =~ "Hub 项目明细"
     assert html =~ "Migration Readiness"
@@ -554,6 +563,15 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     |> Floki.text()
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
+  end
+
+  defp assert_order(html, first, second) do
+    first_match = :binary.match(html, first)
+    second_match = :binary.match(html, second)
+
+    assert first_match != :nomatch
+    assert second_match != :nomatch
+    assert elem(first_match, 0) < elem(second_match, 0)
   end
 
   defp hub_snapshot do
