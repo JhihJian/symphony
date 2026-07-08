@@ -1057,6 +1057,39 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert view
            |> element("[data-stage-target=\"working\"]")
            |> render_click() =~ "Implement the issue."
+
+    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Implement the issue."
+  end
+
+  test "workflow dashboard renders sanitized mermaid ids for simple non-blocking flows" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_start_stage: "___",
+      workflow_terminal_stages: ["done"],
+      workflow_outcomes: ["completed"],
+      workflow_missing_outcome_on_exhausted: "done",
+      workflow_stages: %{
+        "___" => %{"prompt" => "Sanitized start.", "transitions" => %{"completed" => "done"}},
+        "done" => %{"prompt" => "Finished cleanly.", "transitions" => %{}}
+      },
+      tracker_stage_states: %{
+        "___" => %{"state" => "Ready"},
+        "done" => %{"state" => "Done", "terminal" => true}
+      }
+    )
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :SimpleWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "stage_0_stage"
+    assert html =~ "completed"
+    assert html =~ "Sanitized start."
+    refute html =~ "-->|blocked|"
   end
 
   test "workflow dashboard shows configuration errors without crashing" do
@@ -1083,11 +1116,13 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/workflow")
+    {:ok, view, html} = live(build_conn(), "/workflow")
 
     assert html =~ "Workflow 配置不可用"
     assert html =~ "invalid_workflow_definition"
     assert html =~ "workflow.start_stage is required"
+
+    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Workflow 配置不可用"
   end
 
   test "workflow dashboard keeps static graph when tracker mapping and snapshot are unavailable" do
