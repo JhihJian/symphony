@@ -155,6 +155,45 @@ defmodule SymphonyElixir.HubHostServiceProbeTest do
     end
   end
 
+  test "not-found legacy template is treated as inactive disabled ownership" do
+    root = tmp_root("host-service-probe-not-found-template")
+
+    try do
+      registry =
+        registry([
+          project("alpha", migration_state: "hub_managed", workspace_root: Path.join(root, "workspaces/alpha"), port: 20_001)
+        ])
+
+      probe =
+        HostServiceProbe.build(registry,
+          config_root: Path.join(root, "config"),
+          runtime_root: Path.join(root, "runtime"),
+          deps:
+            deps(%{
+              systemctl_show: fn "symphony@alpha.service" ->
+                {:ok, "Result=success\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n"}
+              end,
+              systemctl_enabled: fn "symphony@alpha.service" -> {:ok, "not-found"} end,
+              listening_ports: fn -> {:ok, []} end
+            })
+        )
+
+      service = probe.projects["alpha"].legacy_service
+      assert service.active == false
+      assert service.enabled == "disabled"
+      assert service.status == "inactive"
+
+      summary = ActivationPreflight.build(registry, probe: probe)
+      alpha = Enum.find(summary.projects, &(&1.project_id == "alpha"))
+
+      assert alpha.status == "safe_to_manage"
+      assert alpha.detected_legacy_ownership == []
+      assert ActivationPreflight.safe_to_manage?(summary, "alpha", :poll)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "probe failures become per-project unknown manual attention without leaking sensitive evidence" do
     root = tmp_root("host-service-probe-failures")
     config_root = Path.join(root, "config")

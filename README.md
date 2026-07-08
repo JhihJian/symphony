@@ -505,7 +505,9 @@ cutover execution audits and should not be loaded by the long-running production
 each authorized operation is intentionally being consumed. Production Hub-only operation expects
 projects in `HUB.yaml` to be
 `hub_managed` with `dispatch_enabled: true`, after the operator has stopped/disabled legacy
-`symphony@<project>.service` owners and verified the cutover gate. The legacy
+`symphony@<project>.service` owners and verified the cutover gate. If the legacy template has already
+been archived or removed, host-service probe treats `systemctl is-enabled` returning `not-found` as
+inactive/disabled rather than unknown ownership. The legacy
 `symphony@<project>.service` path is retained only for migration compatibility and rollback, not as
 the formal runtime.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed

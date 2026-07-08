@@ -422,6 +422,8 @@ workspace/runtime/log/state 路径和 cutover gate。所有项目暂停、配置
 停止并 disable 旧 `symphony@<project>.service` 后，`~/.config/symphony/projects/<project>/`
 里的 `WORKFLOW.md`、`TRACKER.yaml` 和 env 可以继续作为 Hub 项目配置和回滚材料存在；host-service
 probe 不会仅因这些文件存在就判定 legacy owner，除非旧服务仍 active/enabled/failed 或旧端口仍在监听。
+如果 legacy template 已经归档或删除，`systemctl --user is-enabled symphony@<project>.service`
+返回 `not-found` 时按 inactive/disabled 处理，表示没有检测到 legacy service ownership。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
 边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在

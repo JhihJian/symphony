@@ -162,7 +162,7 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
   defp enabled_status(value) when is_binary(value) do
     case String.trim(value) do
       status when status in ["enabled", "enabled-runtime", "linked", "linked-runtime"] -> "enabled"
-      status when status in ["disabled", "static", "indirect", "masked", "generated", "transient"] -> "disabled"
+      status when status in ["disabled", "static", "indirect", "masked", "generated", "transient", "not-found"] -> "disabled"
       "" -> "unknown"
       "unknown" -> "unknown"
       _status -> "unknown"
