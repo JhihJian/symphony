@@ -22,10 +22,12 @@ scripts/install-hub-systemd-service.sh \
   --hub-config ~/.config/symphony/hub/HUB.yaml \
   --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
   --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
-  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
   --host 0.0.0.0 \
   --port 21000
 ```
+
+`--execution-authorization-request` 是一次性显式 cutover 执行审计材料。常驻 production Hub
+scheduler 不应默认加载它，否则授权消费守卫会把周期性 poll 当成需要逐次授权的操作。
 
 生成的 `symphony-hub.service` 默认启用 production Hub 参数：
 
@@ -171,9 +173,12 @@ dispatch、启动 worker、写 runtime ledger / provider、操作 systemd 或修
 当显式 Hub cutover execution path 进入真实 side-effect 入口时，Hub 还会暴露 authorization
 consumption guard 摘要：`hub_cutover_authorization_consumption_guard` 和
 `hub_device_observability.cutover_authorization_consumption_guard`。real candidate scan、dispatch plan
-application、real worker start handoff 和 real provider writeback 会在 provider I/O、runtime ledger
-mutation、worker start 或 provider writeback 前进入同一个 guard，即使 authorization ledger 为空也会先得到
-`no_authorization`，不会继续做真实副作用。摘要会按 operation / 入口统计 `allowed`、`blocked`、`no_authorization`、`stale`、`manual_attention`、`unsupported`、
+application、real worker start handoff 和 real provider writeback 在加载 execution authorization
+ledger 时会在 provider I/O、runtime ledger mutation、worker start 或 provider writeback 前进入同一个
+guard；缺少或不匹配当前授权记录会得到 `no_authorization`，不会继续做真实副作用。常驻 production
+Hub 可以不加载一次性 execution authorization request，此时真实执行器继续受 cutover gate、
+activation preflight、provider governance、runtime ledger、workspace lease 和 lifecycle reconciliation
+约束，guard 摘要显示 `no_consumption`。摘要会按 operation / 入口统计 `allowed`、`blocked`、`no_authorization`、`stale`、`manual_attention`、`unsupported`、
 `malformed`，并记录最近的脱敏 reason/action code、safe evidence fingerprint 和被缺失/不匹配授权阻断的
 入口。这个 guard 只是显式执行前的共同授权消费边界，不是一键迁移、执行队列或 legacy service 接管，也不替代
 cutover gate、readiness permit、authorization ledger、activation preflight、provider governance、

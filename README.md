@@ -404,17 +404,18 @@ operate systemd, or edit config. Without an explicit authorization request it re
 count 0 and does not imply execution is pending.
 `hub_cutover_authorization_consumption_guard` /
 `hub_device_observability.cutover_authorization_consumption_guard` adds the shared consumption
-boundary for explicit Hub cutover execution paths. Real candidate scan, dispatch plan application,
-real worker start handoff, and real provider writeback always receive the guard before provider
-I/O, runtime-ledger mutation, worker start, or provider writeback, even when the authorization
-ledger is empty. Decisions are safe summaries such as
+boundary for explicit Hub cutover execution paths. When explicit authorization records are loaded,
+real candidate scan, dispatch plan application, real worker start handoff, and real provider
+writeback receive the guard before provider I/O, runtime-ledger mutation, worker start, or provider
+writeback. Decisions are safe summaries such as
 `allowed`, `blocked`, `no_authorization`, `stale`, `manual_attention`, `unsupported`, and
 `malformed`, with reason/action codes, source/operation counts, blocked sources, and sanitized
 evidence fingerprints. The guard is not an executor, queue, one-click migration, or legacy service
 takeover; it does not replace the cutover gate, readiness permit, authorization ledger, activation
 preflight, provider governance, runtime ledger, worker starter, or writeback executor. Empty or
-non-matching authorization records block as `no_authorization`; snapshots with no real consumption
-event report `no_consumption` and do not imply pending migration or execution.
+non-matching configured authorization records block as `no_authorization`. When the long-running
+production scheduler omits one-shot execution authorization input, normal real executor ticks report
+`no_consumption` and do not imply pending migration or execution.
 `hub_cutover_execution_outcome_ledger` /
 `hub_device_observability.cutover_execution_outcome_ledger` records the next safe audit boundary:
 what happened after the authorization consumption guard either blocked the entrypoint or allowed a
@@ -498,9 +499,11 @@ The formal production entrypoint is `symphony-hub.service`, installed with
 `scripts/install-hub-systemd-service.sh`. The generated service passes `--hub-scheduler`,
 `--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
 `--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
-`--host`/`--port`. It can also load optional activation ack, cutover operation request, and
-execution authorization request files when a gate requires operator evidence. Production Hub-only
-operation expects projects in `HUB.yaml` to be
+`--host`/`--port`. It can also load optional activation ack and cutover operation request files when
+a gate requires operator evidence. One-shot execution authorization request files are for explicit
+cutover execution audits and should not be loaded by the long-running production scheduler unless
+each authorized operation is intentionally being consumed. Production Hub-only operation expects
+projects in `HUB.yaml` to be
 `hub_managed` with `dispatch_enabled: true`, after the operator has stopped/disabled legacy
 `symphony@<project>.service` owners and verified the cutover gate. The legacy
 `symphony@<project>.service` path is retained only for migration compatibility and rollback, not as

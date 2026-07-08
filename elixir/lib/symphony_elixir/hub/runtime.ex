@@ -1311,7 +1311,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     authorization_consumption_guard =
       authorization_consumption_guard_context(
         state.cutover_execution_authorization_ledger,
-        required?: authorization_consumption_guard_required?(state, executable_entries)
+        required?: false
       )
 
     {poll_facts, provider_queue, result_summaries, intake_sources} =
@@ -2326,38 +2326,6 @@ defmodule SymphonyElixir.Hub.Runtime do
   end
 
   defp writeback_executor_summary(executor), do: provider_executor_summary(executor)
-
-  defp authorization_consumption_guard_required?(state, executable_entries) do
-    (executable_entries != [] and real_candidate_scan_executor?(state.provider_executor)) or
-      real_writeback_executor?(state.writeback_executor) or
-      real_worker_start_starter?(state.worker_start_starter) or
-      dispatch_application_pending?(state.dispatch_planning)
-  end
-
-  defp real_candidate_scan_executor?(RealCandidateScanExecutor), do: true
-  defp real_candidate_scan_executor?(_executor), do: false
-
-  defp real_writeback_executor?(RealWritebackExecutor), do: true
-  defp real_writeback_executor?(_executor), do: false
-
-  defp real_worker_start_starter?(starter) do
-    case starter do
-      starter when is_atom(starter) -> Atom.to_string(starter) == "Elixir.SymphonyElixir.Hub.RealWorkerStarter"
-      _starter -> false
-    end
-  end
-
-  defp dispatch_application_pending?(dispatch_planning) when is_map(dispatch_planning) do
-    dispatch_planning
-    |> list_value(:projects)
-    |> Enum.any?(fn project ->
-      project
-      |> list_value(:outcomes)
-      |> Enum.any?(&(status_string(value(&1, :status)) == "planned"))
-    end)
-  end
-
-  defp dispatch_application_pending?(_dispatch_planning), do: false
 
   defp authorization_consumption_guard_context(ledger, opts) when is_map(ledger) and is_list(opts) do
     ledger = CutoverExecutionAuthorization.to_snapshot(ledger)

@@ -660,17 +660,18 @@ service takeover; it does not bypass the gate or permit and does not call provid
 workers, mutate runtime-ledger/provider state, operate systemd, or edit config.
 `hub_cutover_authorization_consumption_guard` and
 `hub_device_observability.cutover_authorization_consumption_guard` add the shared authorization
-consumption boundary for explicit Hub cutover execution paths. Real candidate scan, dispatch plan
-application, real worker start handoff, and real provider writeback evaluate the same guard before
-provider I/O, runtime-ledger mutation, worker start, or provider writeback, even when the
-authorization ledger is empty. The summary reports `allowed`, `blocked`, `no_authorization`, `stale`,
+consumption boundary for explicit Hub cutover execution paths. When explicit authorization records
+are loaded, real candidate scan, dispatch plan application, real worker start handoff, and real
+provider writeback evaluate the same guard before provider I/O, runtime-ledger mutation, worker
+start, or provider writeback. The summary reports `allowed`, `blocked`, `no_authorization`, `stale`,
 `manual_attention`, `unsupported`, and `malformed` counts by operation and side-effect source, recent
 safe reason/action codes, blocked sources, and sanitized evidence fingerprints. It is not an
 executor, queue, one-click migration, or legacy service takeover, and it does not replace the
 cutover gate, readiness permit, authorization ledger, activation preflight, provider governance,
-runtime ledger, worker starter, or writeback executor. Empty or non-matching authorization records
-block as `no_authorization`; snapshots with no real consumption event stay at `no_consumption`
-rather than implying pending execution.
+runtime ledger, worker starter, or writeback executor. Empty or non-matching configured
+authorization records block as `no_authorization`. When the long-running production scheduler omits
+one-shot execution authorization input, normal real executor ticks stay at `no_consumption` rather
+than implying pending execution.
 `hub_cutover_execution_outcome_ledger` and
 `hub_device_observability.cutover_execution_outcome_ledger` add the execution outcome audit boundary
 after authorization consumption. It records guard-blocked attempts as no-side-effect outcomes and
@@ -831,7 +832,6 @@ Optional operator evidence can be loaded into the generated unit:
   --hub-config ~/.config/symphony/hub/HUB.yaml \
   --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
   --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
-  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
   --host 0.0.0.0 \
   --port 21000
 ```
@@ -843,6 +843,9 @@ The generated `symphony-hub.service` passes `--hub-scheduler`,
 production expects all managed projects to live in `HUB.yaml` and the
 legacy `symphony@<project>.service` units to be stopped and disabled after readiness and ownership
 checks. The installer itself does not stop those units so rollback remains explicit.
+`--execution-authorization-request` is one-shot explicit cutover execution audit material and should
+not be loaded by the default long-running production scheduler unless an operator is intentionally
+running that explicit execution stage.
 
 #### Hub migration readiness dry-run runbook
 
@@ -921,19 +924,24 @@ Use readiness for migration preparation only; it does not execute a migration.
    handling only; stale, conflicting, malformed, or unsupported closeouts do not clear unresolved
    manual attention and never bypass the cutover gate.
 9. Optionally pass `--hub-cutover-execution-authorization-request /path/to/request.yaml` to record a
-   read-only execution authorization request for one explicitly requested operation. The request
-   should bind the current cutover operation request fingerprint, readiness permit
-   fingerprint/decision, activation plan/ack fingerprint, cutover gate evidence, dry-run audit,
-   audit-history/closeout evidence, and executor/starter mode. The resulting ledger record is
-   authorization evidence for a later explicit execution stage only; it is not a queue and does not
-   execute migration work, provider I/O, dispatch, worker start, writeback, systemd operations, or
-   config changes.
+   read-only execution authorization request for one explicitly requested operation. Treat this as
+   one-shot cutover execution audit input, not as default configuration for the long-running
+   production scheduler. The request should bind the current cutover operation request fingerprint,
+   readiness permit fingerprint/decision, activation plan/ack fingerprint, cutover gate evidence,
+   dry-run audit, audit-history/closeout evidence, and executor/starter mode. The resulting ledger
+   record is authorization evidence for a later explicit execution stage only; it is not a queue and
+   does not execute migration work, provider I/O, dispatch, worker start, writeback, systemd
+   operations, or config changes. Without this input, the ledger reports zero records and normal
+   scheduler ticks should report `no_consumption` instead of blocking every real executor as
+   `no_authorization`.
 10. When a later explicit Hub cutover execution path uses a real side-effect entrypoint, treat the
     consumption guard as the common authorization-consumption boundary before that side effect. A
-    missing/mismatched/stale/manual-attention/malformed record, including a completely empty
-    authorization ledger, blocks as `no_authorization` before provider calls, dispatch mutation,
-    worker start, or writeback, but the guard still does not replace the existing gate, permit,
-    provider governance, runtime ledger, starter, or writeback checks.
+    missing/mismatched/stale/manual-attention/malformed record blocks as `no_authorization` before
+    provider calls, dispatch mutation, worker start, or writeback when explicit authorization
+    consumption is configured. If no execution authorization records are loaded, the long-running
+    production scheduler may still use real candidate scan, worker start, and writeback under the
+    existing gate, activation preflight, provider governance, runtime ledger, starter, and writeback
+    checks; the guard reports `no_consumption` instead of manufacturing an empty blocking ledger.
 11. After a guard decision, inspect `hub_cutover_execution_outcome_ledger` for the safe execution
     result summary. Guard-blocked paths should appear as `not_executed` with no side effects; real
     side-effect boundaries should normalize their safe return into success, failure, retryable,

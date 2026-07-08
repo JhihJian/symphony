@@ -1699,13 +1699,16 @@ Runtime entrypoint:
 - In explicit Hub cutover execution paths, real provider candidate scan, dispatch plan application,
   real worker start handoff, and real provider writeback MUST consume the same authorization record
   before provider I/O, runtime-ledger dispatch mutation, worker start, provider writeback, systemd
-  operations, or configuration writes. These real side-effect entrypoints MUST receive a guard
-  context even when the authorization ledger has no requests or records; an empty or missing
-  matching `authorized_for_explicit_execution` record MUST produce `no_authorization` before any
-  external side effect. Operation/scope mismatch, non-ready permits, gate/preflight blocks,
-  dry-run/history/closeout staleness, unresolved manual attention, mode incompatibility,
-  unknown/malformed/unsupported inputs, or evidence fingerprint drift MUST also block before
-  external side effects.
+  operations, or configuration writes. When explicit authorization consumption is configured, an
+  empty, missing, or mismatched `authorized_for_explicit_execution` record MUST produce
+  `no_authorization` before any external side effect. Long-running Hub production mode MAY omit
+  one-shot execution authorization requests; in that case real executors still rely on cutover gate,
+  activation preflight, provider governance, runtime ledger, workspace lease, lifecycle
+  reconciliation, and executor mode guards, and the consumption guard SHOULD report
+  `no_consumption` rather than blocking every scheduler tick. Operation/scope mismatch, non-ready
+  permits, gate/preflight blocks, dry-run/history/closeout staleness, unresolved manual attention,
+  mode incompatibility, unknown/malformed/unsupported inputs, or evidence fingerprint drift MUST
+  also block before external side effects when explicit authorization consumption is configured.
 - The consumption guard MUST NOT execute migration work, queue execution, take over legacy services,
   bypass or replace the cutover gate, readiness permit, execution authorization ledger, activation
   preflight, legacy ownership guardrail, provider governance, runtime ledger, worker starter, or

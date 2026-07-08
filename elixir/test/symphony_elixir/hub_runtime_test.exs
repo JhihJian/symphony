@@ -1968,7 +1968,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
            }
   end
 
-  test "real candidate scan runtime requires authorization before project-local tracker I/O" do
+  test "real candidate scan runtime uses project-local tracker I/O without one-shot authorization" do
     root = tmp_root("hub-runtime-real-candidate-scan")
     hub_path = Path.join(root, "HUB.yaml")
     legacy_issue = %Issue{id: "legacy", identifier: "LEGACY", title: "Legacy", state: "Todo"}
@@ -2026,19 +2026,19 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_real_candidate_scan
       )
 
-      assert %{poll_tick: %{selected_count: 2, result_counts: %{"permanent_failure" => 2}}} =
+      assert %{poll_tick: %{selected_count: 2, result_counts: %{"success" => 2}}} =
                Runtime.request_refresh(runtime_name)
 
-      refute_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
-      refute_receive {:memory_tracker_fetch_candidate_issues, "beta"}, 100
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
+      assert_receive {:memory_tracker_fetch_candidate_issues, "beta"}, 100
 
       snapshot = Runtime.snapshot(runtime_name, 100)
       assert snapshot.hub_runtime.provider_executor.mode == "real_candidate_scan"
       assert snapshot.hub_runtime.provider_executor.provider_io == true
-      assert snapshot.hub_runtime.poll_tick.candidate_intake.candidate_count == 0
-      assert snapshot.hub_candidate_intake.counts.candidate_count == 0
-      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_authorization"
-      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 2
+      assert snapshot.hub_runtime.poll_tick.candidate_intake.candidate_count == 2
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 2
+      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_consumption"
+      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 0
 
       results =
         snapshot.hub_poll_coordination.facts
@@ -2046,9 +2046,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
         |> Map.new(&{&1.project_id, &1})
 
       assert results["alpha"].result_summary.executor == "real_candidate_scan"
-      assert results["alpha"].result_summary.provider_io in [false, "false"]
-      assert results["alpha"].result_summary.authorization_consumption.decision == "no_authorization"
-      assert results["alpha"].result_summary.authorization_consumption.reason_code == "authorization_record_missing"
+      assert results["alpha"].result_summary.provider_io in [true, "true"]
+      refute Map.has_key?(results["alpha"].result_summary, :authorization_consumption)
 
       payload = Presenter.state_payload(runtime_name, 100)
       safe_text = inspect(payload)
@@ -2065,8 +2064,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
-  test "real candidate scan runtime blocks empty authorization ledger before provider I/O" do
-    root = tmp_root("hub-runtime-real-candidate-no-authorization")
+  test "real candidate scan runtime allows provider I/O when execution authorization is not configured" do
+    root = tmp_root("hub-runtime-real-candidate-no-execution-authorization")
     hub_path = Path.join(root, "HUB.yaml")
 
     try do
@@ -2084,7 +2083,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       """)
 
       Application.put_env(:symphony_elixir, :memory_tracker_issues_by_project, %{
-        "alpha" => [%{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue"}]
+        "alpha" => [%Issue{id: "alpha-1", identifier: "ALPHA-1", title: "Alpha issue", state: "Todo"}]
       })
 
       Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -2100,20 +2099,16 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_real_candidate_no_authorization
       )
 
-      assert %{poll_tick: %{selected_count: 1, result_counts: %{"permanent_failure" => 1}}} =
+      assert %{poll_tick: %{selected_count: 1, result_counts: %{"success" => 1}}} =
                Runtime.request_refresh(runtime_name)
 
-      refute_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
+      assert_receive {:memory_tracker_fetch_candidate_issues, "alpha"}, 100
 
       snapshot = Runtime.snapshot(runtime_name, 100)
-      assert snapshot.hub_candidate_intake.counts.candidate_count == 0
-      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_authorization"
-      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 1
-
-      [blocked] = snapshot.hub_cutover_authorization_consumption_guard.blocked_sources
-      assert blocked.project_id == "alpha"
-      assert blocked.side_effect_source == "candidate_scan"
-      assert blocked.reason_code == "authorization_record_missing"
+      assert snapshot.hub_candidate_intake.counts.candidate_count == 1
+      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_consumption"
+      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 0
+      assert snapshot.hub_cutover_authorization_consumption_guard.blocked_sources == []
     after
       File.rm_rf(root)
     end
@@ -2185,7 +2180,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
-  test "real candidate scan runtime blocks provider failure paths without authorization" do
+  test "real candidate scan runtime classifies provider failure paths without one-shot authorization" do
     root = tmp_root("hub-runtime-real-candidate-failures")
     hub_path = Path.join(root, "HUB.yaml")
 
@@ -2224,23 +2219,32 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_real_candidate_failures
       )
 
-      assert %{poll_tick: %{selected_count: 3, result_counts: %{"permanent_failure" => 3}}} =
+      assert %{
+               poll_tick: %{
+                 selected_count: 3,
+                 result_counts: %{
+                   "permanent_failure" => 1,
+                   "rate_limited" => 1,
+                   "retryable_failure" => 1
+                 }
+               }
+             } =
                Runtime.request_refresh(runtime_name)
 
       snapshot = Runtime.snapshot(runtime_name, 100)
       projects = Map.new(snapshot.hub_poll_coordination.projects, &{&1.project_id, &1})
 
-      assert projects["limited"].last_poll.status == :permanent_failure
-      assert projects["limited"].last_poll.error_class == :conflict
-      assert projects["retry"].last_poll.status == :permanent_failure
-      assert projects["retry"].last_poll.error_class == :conflict
+      assert projects["limited"].last_poll.status == :rate_limited
+      assert projects["limited"].last_poll.error_class == :rate_limited
+      assert projects["retry"].last_poll.status == :retryable_failure
+      assert projects["retry"].last_poll.error_class == :provider_5xx
       assert projects["bad"].last_poll.status == :permanent_failure
 
       device_projects = Map.new(snapshot.hub_device_observability.projects, &{&1.project_id, &1})
-      refute "provider_rate_limit" in reason_names(device_projects["limited"])
-      refute "provider_backoff" in reason_names(device_projects["retry"])
-      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_authorization"
-      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 3
+      assert "provider_rate_limit" in reason_names(device_projects["limited"])
+      assert "provider_backoff" in reason_names(device_projects["retry"])
+      assert snapshot.hub_cutover_authorization_consumption_guard.status == "no_consumption"
+      assert snapshot.hub_cutover_authorization_consumption_guard.counts.no_authorization_count == 0
 
       unsupported =
         provider_request!(
