@@ -1349,9 +1349,20 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Mermaid as a vendored static asset for the workflow-stage graph at `/workflow`
 
+All LiveView pages share a compact workspace navigation bar with three operator paths:
+
+- `当前实例运行` for the active process dashboard at `/`
+- `流程配置` for the read-only workflow/tracker configuration view at `/workflow`
+- `实例管理` for the local operator management plane at `/admin/instances`
+
+The navigation bar also shows whether the browser session is a loopback `本机管理员` session or a
+`远程只读` session, so operators can tell whether visible controls are executable or only a preview.
+
 The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
-detail links.
+detail links. Its first section summarizes the current context: whether the view is a single
+instance or Hub device runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path,
+the snapshot timestamp, and the `/api/v1/state` traceability entry.
 
 The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
 the current `WORKFLOW.md` directly, renders a Mermaid stage graph with clickable nodes and
@@ -1385,7 +1396,14 @@ Admin instance creation accepts either a one-time token entry or an environment 
 tokens are passed only to the install script environment and are not returned by the JSON API or
 rendered back into the page. Project names are restricted to safe systemd instance/path characters.
 Admin JSON endpoints and LiveView actions are restricted to loopback clients because they can run
-local `systemctl`, `journalctl`, and install-script commands.
+local `systemctl`, `journalctl`, and install-script commands. Remote browser sessions can still
+view the management page as a read-only overview, but create, update, lifecycle, timer, and log
+buttons are visibly disabled and continue to be guarded server-side; the admin JSON API link is
+shown only to loopback administrator sessions. Destructive or high-impact
+operations such as stop, restart, disable, manual update execution, and timer triggering require a
+LiveView confirmation prompt that names the affected service or operation. Long-running actions use
+LiveView loading/disable feedback, and operation results render in a status or alert banner rather
+than as an unclassified text block.
 
 The same management page shows `symphony-update.timer` state, including enabled/active status and
 the next run time, and can enable, disable, or manually trigger `symphony-update.service`.

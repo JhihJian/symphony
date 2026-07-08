@@ -924,9 +924,12 @@ http://127.0.0.1:<port>/api/v1/admin/instances
   和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
   `current_stage` 运行态分布；页面不展示 token、`api_key` 或 env secret 原始值。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
+- 页面顶部固定提供“当前实例运行 / 流程配置 / 实例管理”三类入口，并标出当前访问身份是“本机管理员”还是“远程只读”。
 - 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、`TRACKER.yaml`、环境变量、日志目录、workspace root、端口和内存调度账本。
 - 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。
 - 管理面可以请求 `start`、`stop`、`restart`，失败时 API 返回可读错误；issue 派发、重试、reconciliation 和 workspace 隔离仍由对应实例内部 `Orchestrator` 负责。
+- 只有 loopback 本机客户端可以执行创建实例、自动更新、systemd lifecycle、timer 和日志读取操作；局域网或其他远程浏览器只能看到只读总览，相关按钮会禁用，管理 JSON API 链接不作为可点击入口展示，并且后端仍会拒绝执行。
+- `stop`、`restart`、`disable`、执行 GitHub main 更新、手动触发 update service 等高影响操作在 LiveView 页面中需要二次确认，确认文案会带上目标 service 或操作。
 
 管理 API 示例：
 

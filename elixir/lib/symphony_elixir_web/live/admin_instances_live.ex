@@ -13,6 +13,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
     socket =
       socket
+      |> assign(:active_nav, :instances)
+      |> assign(:access_role, if(local_admin?, do: "本机管理员", else: "远程只读"))
       |> assign(:local_admin?, local_admin?)
       |> assign(:create_form, default_create_form())
       |> assign(:create_form_open?, false)
@@ -93,22 +95,25 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">Symphony 实例管理</p>
-            <h1 class="hero-title">多实例管理 Dashboard</h1>
+            <h1 class="hero-title">实例管理工作台</h1>
             <p class="hero-copy">
               集中观察多个独立 Symphony 实例的 systemd 状态、运行压力、健康摘要和运维入口。
             </p>
           </div>
           <div class="status-stack">
-            <a class="status-badge" href="/">打开单实例 Dashboard</a>
-            <a class="status-badge" href="/workflow">Workflow 图</a>
-            <a class="status-badge" href="/api/v1/admin/instances">JSON API</a>
+            <span class={if @local_admin?, do: "state-badge state-badge-active", else: "state-badge state-badge-warning"}>
+              <%= if @local_admin?, do: "可执行管理操作", else: "只读预览" %>
+            </span>
+            <a :if={@local_admin?} class="status-badge" href="/api/v1/admin/instances">JSON API</a>
+            <span :if={!@local_admin?} class="status-badge status-badge-disabled">JSON API 仅本机</span>
           </div>
         </div>
       </header>
 
       <%= if @notice do %>
-        <section class="section-card">
-          <p class="section-copy"><%= @notice %></p>
+        <section class={notice_class(@notice)} role={notice_role(@notice)} aria-live="polite">
+          <strong><%= notice_title(@notice) %></strong>
+          <p><%= @notice %></p>
         </section>
       <% end %>
 
@@ -153,6 +158,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-primary"
               type="button"
               phx-click="toggle_create_form"
+              phx-disable-with="切换中..."
               aria-expanded={@create_form_open?}
               aria-controls="create-instance-form"
             ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
@@ -222,8 +228,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   <label class="field">
                     <span>更新策略</span>
                     <select name="instance[update_strategy]">
-                      <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy %></option>
+                      <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy_label(strategy) %></option>
                     </select>
+                    <small class="field-hint field-warning">选择 force_restart 时会强制重启实例，仅适合明确需要抢修的场景。</small>
                   </label>
 
                   <label class="field">
@@ -283,7 +290,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <strong>创建后将写入实例配置并刷新总览</strong>
               <span>本机管理员可提交；远端访问仅能预览当前表单。</span>
             </div>
-            <button class="lifecycle-button lifecycle-button-primary" type="submit" disabled={!@local_admin?}>创建实例</button>
+            <button class="lifecycle-button lifecycle-button-primary" type="submit" disabled={!@local_admin?} phx-disable-with="创建中...">创建实例</button>
           </div>
         </form>
       </section>
@@ -302,12 +309,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               class="lifecycle-button lifecycle-button-neutral"
               phx-click="auto_update"
               phx-value-action="check"
+              disabled={!@local_admin?}
+              phx-disable-with="检查中..."
             >立即检查</button>
             <button
               type="button"
               class="lifecycle-button lifecycle-button-primary"
               phx-click="auto_update"
               phx-value-action="update"
+              disabled={!@local_admin?}
+              phx-confirm="确认执行 GitHub main 更新？此操作会按各实例更新策略执行，部分实例可能被重启。"
+              phx-disable-with="更新中..."
             >执行更新</button>
           </div>
         </div>
@@ -395,9 +407,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?}>启用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?}>禁用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?}>手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
           </div>
         </div>
 
@@ -515,6 +527,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-click="lifecycle"
                   phx-value-action="start"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-disable-with="启动中..."
                 >启动</button>
                 <button
                   type="button"
@@ -522,6 +536,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-click="lifecycle"
                   phx-value-action="stop"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-confirm={"确认停止 #{instance.service}？停止后该实例不会继续派发或处理 Issue。"}
+                  phx-disable-with="停止中..."
                 >停止</button>
                 <button
                   type="button"
@@ -529,6 +546,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-click="lifecycle"
                   phx-value-action="restart"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-confirm={"确认重启 #{instance.service}？重启期间当前实例会短暂不可用。"}
+                  phx-disable-with="重启中..."
                 >重启</button>
                 <button
                   type="button"
@@ -536,6 +556,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-click="lifecycle"
                   phx-value-action="enable"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-disable-with="启用中..."
                 >启用</button>
                 <button
                   type="button"
@@ -543,12 +565,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-click="lifecycle"
                   phx-value-action="disable"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-confirm={"确认禁用 #{instance.service}？禁用后该实例不会随用户 systemd 自动启动。"}
+                  phx-disable-with="禁用中..."
                 >禁用</button>
                 <button
                   type="button"
                   class="lifecycle-button lifecycle-button-neutral"
                   phx-click="logs"
                   phx-value-name={instance.name}
+                  disabled={!@local_admin?}
+                  phx-disable-with="读取中..."
                 >最近日志</button>
               </footer>
             </article>
@@ -706,6 +733,36 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp update_strategies do
     ["idle_restart", "defer_until_idle", "download_only", "manual_restart", "force_restart"]
   end
+
+  defp strategy_label("force_restart"), do: "force_restart - 强制重启（危险）"
+  defp strategy_label(strategy), do: strategy
+
+  defp notice_class(notice), do: "notice-banner notice-banner-#{notice_kind(notice)}"
+
+  defp notice_role(notice) do
+    case notice_kind(notice) do
+      :error -> "alert"
+      _kind -> "status"
+    end
+  end
+
+  defp notice_title(notice) do
+    case notice_kind(notice) do
+      :success -> "操作已受理"
+      :error -> "操作未完成"
+      :warning -> "需要注意"
+    end
+  end
+
+  defp notice_kind(notice) when is_binary(notice) do
+    cond do
+      String.contains?(notice, ["失败", "只允许", "Unsupported", "unavailable", "Failed"]) -> :error
+      String.contains?(notice, ["已", "完成", "created", "updated"]) -> :success
+      true -> :warning
+    end
+  end
+
+  defp notice_kind(_notice), do: :warning
 
   defp local_admin_session?(ip) when ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1"], do: true
   defp local_admin_session?(_ip), do: false

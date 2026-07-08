@@ -11,11 +11,13 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   alias SymphonyElixirWeb.Endpoint
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     projection = load_projection()
 
     {:ok,
      socket
+     |> assign(:active_nav, :workflow)
+     |> assign(:access_role, access_role(session))
      |> assign(:projection, projection)
      |> assign(:selected_stage_id, default_selected_stage_id(projection))}
   end
@@ -40,15 +42,17 @@ defmodule SymphonyElixirWeb.WorkflowLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">Workflow 配置</p>
-            <h1 class="hero-title">阶段流向图</h1>
+            <h1 class="hero-title">只读流程配置</h1>
             <p class="hero-copy">
               只读展示当前 WORKFLOW.md workflow-stage 定义、TRACKER.yaml 映射诊断和运行态 stage 分布。
             </p>
           </div>
 
           <div class="status-stack">
-            <a class="status-badge" href="/">单实例 Dashboard</a>
-            <a class="status-badge" href="/admin/instances">多实例管理</a>
+            <span class="status-badge">只读</span>
+            <span class={if @projection[:error], do: "state-badge state-badge-danger", else: "state-badge state-badge-active"}>
+              <%= if @projection[:error], do: "配置不可用", else: "配置可读" %>
+            </span>
           </div>
         </div>
       </header>
@@ -412,6 +416,17 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
+
+  defp access_role(session) do
+    if local_admin_session?(Map.get(session, "admin_client_ip") || Map.get(session, :admin_client_ip)) do
+      "本机管理员"
+    else
+      "远程只读"
+    end
+  end
+
+  defp local_admin_session?(ip) when ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1"], do: true
+  defp local_admin_session?(_ip), do: false
 
   defp missing_outcome_class(missing_outcome) do
     [

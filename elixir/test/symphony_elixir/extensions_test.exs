@@ -883,6 +883,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_js =~ "MutationObserver"
     assert dashboard_js =~ "output.querySelector(\"svg\")"
     assert dashboard_js =~ ".render(renderId, definition)"
+    assert dashboard_js =~ "renderWorkflowMermaidError"
+    assert dashboard_js =~ "copyTextFromButton"
+    assert dashboard_js =~ "copy.textContent"
+    refute dashboard_js =~ "String(error && error.message ? error.message : error) +"
 
     mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
     assert mermaid_js =~ "globalThis[\"mermaid\"]"
@@ -920,6 +924,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "Symphony 可观测性"
     assert html =~ "运维仪表盘"
+    assert html =~ "当前上下文"
+    assert html =~ "当前实例运行"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
@@ -930,6 +936,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "实时"
     assert html =~ "离线"
     assert html =~ "复制 ID"
+    assert html =~ "copy-button"
+    refute html =~ "onclick=\"navigator.clipboard"
     assert html =~ "Codex 更新"
     refute html =~ "Operations Dashboard"
     refute html =~ "Copy ID"
@@ -995,6 +1003,21 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
+  test "dashboard liveview labels remote browser sessions as read-only" do
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :RemoteDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    conn = Map.put(build_conn(), :remote_ip, {192, 0, 2, 10})
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "远程只读"
+    assert html =~ "当前上下文"
+    assert html =~ "/api/v1/state"
+  end
+
   test "workflow dashboard renders graph, tracker mapping and runtime stage distribution" do
     workflow_path = Workflow.workflow_file_path()
 
@@ -1056,7 +1079,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "running <strong class=\"numeric\">1</strong>"
     assert html =~ "retrying <strong class=\"numeric\">1</strong>"
     assert html =~ "blocked <strong class=\"numeric\">1</strong>"
-    assert html =~ "单实例 Dashboard"
+    assert html =~ "当前实例运行"
     refute html =~ "ghp_secret_token"
     refute html =~ "api_key"
 
@@ -1096,6 +1119,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "completed"
     assert html =~ "Sanitized start."
     refute html =~ "-->|blocked|"
+  end
+
+  test "workflow dashboard labels remote browser sessions as read-only" do
+    workflow_path = Workflow.workflow_file_path()
+    write_workflow_file!(workflow_path)
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :RemoteWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    conn = Map.put(build_conn(), :remote_ip, {192, 0, 2, 10})
+
+    {:ok, _view, html} = live(conn, "/workflow")
+
+    assert html =~ "远程只读"
+    assert html =~ "只读流程配置"
+    assert html =~ "配置可读"
   end
 
   test "workflow dashboard wraps long snake case stage labels in the Mermaid graph" do

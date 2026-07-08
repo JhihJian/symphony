@@ -343,6 +343,47 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            }
   end
 
+  test "admin dashboard makes remote clients visibly read-only" do
+    conn = Map.put(build_conn(), :remote_ip, {192, 0, 2, 10})
+
+    {:ok, _view, html} = live(conn, "/admin/instances")
+    {:ok, document} = Floki.parse_document(html)
+
+    assert html =~ "远程只读"
+    assert html =~ "只读预览"
+    assert html =~ "管理操作已限制"
+    assert html =~ "JSON API 仅本机"
+    refute html =~ ~s(href="/api/v1/admin/instances")
+
+    assert document |> Floki.find(~s(button[phx-click="auto_update"][disabled])) |> length() == 2
+    assert document |> Floki.find(~s(button[phx-click="lifecycle"][disabled])) |> length() == 10
+    assert document |> Floki.find(~s(button[phx-click="logs"][disabled])) |> length() == 2
+  end
+
+  test "admin dashboard server-side guards still block remote LiveView events" do
+    conn = Map.put(build_conn(), :remote_ip, {192, 0, 2, 10})
+
+    {:ok, view, _html} = live(conn, "/admin/instances")
+
+    html =
+      render_hook(view, :lifecycle, %{"action" => "restart", "name" => "project-a"})
+
+    assert html =~ "管理操作只允许本机客户端访问"
+    refute_receive {:instance_action, "restart", "project-a", _opts}
+
+    html =
+      render_hook(view, :logs, %{"name" => "project-a"})
+
+    assert html =~ "管理操作只允许本机客户端访问"
+    refute_receive {:latest_logs, "project-a", _opts}
+
+    html =
+      render_hook(view, :auto_update, %{"action" => "update"})
+
+    assert html =~ "管理操作只允许本机客户端访问"
+    refute_receive {:auto_update_update_now, _opts}
+  end
+
   test "admin auto update API exposes status and manual triggers" do
     status_payload = json_response(get(build_conn(), "/api/v1/admin/auto-update"), 200)
     assert_receive {:auto_update_snapshot, opts}
@@ -373,6 +414,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     {:ok, _view, html} = live(build_conn(), "/admin/instances")
 
     assert html =~ "Symphony 实例管理"
+    assert html =~ "实例管理工作台"
+    assert html =~ "当前实例运行"
+    assert html =~ "流程配置"
     assert html =~ "集中观察"
     assert html =~ "fleet-summary"
     assert html =~ "instance-card-grid"
@@ -435,6 +479,21 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "立即检查"
     assert html =~ "执行更新"
     assert html =~ "空闲自动重启"
+  end
+
+  test "admin dashboard marks dangerous actions and slow requests" do
+    {:ok, _view, html} = live(build_conn(), "/admin/instances")
+
+    assert html =~ ~s(phx-confirm="确认执行 GitHub main 更新)
+    assert html =~ ~s(phx-disable-with="更新中...")
+    assert html =~ ~s(phx-disable-with="检查中...")
+    assert html =~ ~s(phx-confirm="确认禁用 symphony-update.timer)
+    assert html =~ ~s(phx-confirm="确认手动触发 symphony-update.service)
+    assert html =~ ~s(phx-confirm="确认停止 symphony@project-a.service)
+    assert html =~ ~s(phx-confirm="确认重启 symphony@project-a.service)
+    assert html =~ ~s(phx-confirm="确认禁用 symphony@project-a.service)
+    assert html =~ ~s(phx-disable-with="读取中...")
+    assert html =~ "force_restart - 强制重启（危险）"
   end
 
   test "admin dashboard new instance button reveals the create form" do
@@ -588,6 +647,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".form-option"
     assert css =~ ".form-submit-strip"
     assert css =~ ".lifecycle-button-danger"
+    assert css =~ ".workspace-nav"
+    assert css =~ ".notice-banner"
+    assert css =~ ".phx-click-loading"
     assert css =~ "@media (prefers-reduced-motion: reduce)"
     assert css =~ "@media (max-width: 720px)"
   end
