@@ -6,6 +6,12 @@ usage() {
 Usage:
   scripts/install-systemd-template.sh --project <name> --owner <github-owner> --repo <github-repo> --project-number <n> [options]
 
+Deprecated:
+  This installs the legacy per-project symphony@<project>.service runtime.
+  It is no longer the formal production installation path. Use
+  scripts/install-hub-systemd-service.sh for Hub-only production deployments.
+  Keep this script only for migration compatibility and rollback preparation.
+
 Options:
   --project <name>          Local Symphony instance name, e.g. symphony or project-a.
   --owner <owner>           GitHub owner or organization.
@@ -44,6 +50,16 @@ Example:
     --port 20001 \
     --token "$GITHUB_TOKEN"
 USAGE
+}
+
+warn_deprecated() {
+  cat >&2 <<'WARNING'
+WARNING: scripts/install-systemd-template.sh installs the deprecated legacy
+symphony@<project>.service runtime. It is kept for migration compatibility and
+rollback only. Use scripts/install-hub-systemd-service.sh for the formal
+Hub-only production service.
+
+WARNING
 }
 
 project=""
@@ -191,6 +207,8 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+warn_deprecated
 
 require_value() {
   local name="$1"

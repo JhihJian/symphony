@@ -493,17 +493,16 @@ resolve readiness actions before changing any project to `hub_managed`. `legacy_
 only observing a legacy-owned project; `hub_ready` means the project can be evaluated for dry-run or
 future management; `hub_managed` means Hub-owned actions are allowed only after activation
 preflight is safe, acknowledgement still matches the activation plan, and the cutover gate allows
-the specific operation. Stopping/disabling legacy `symphony@<project>.service`, resolving unknown
-writeback/manual-attention items, confirming real provider/writeback/worker modes, and changing
-project ownership remain manual operator decisions. This command gathers evidence only and does not
-stop, disable, restart, delete, modify `HUB.yaml`, modify project config, or migrate
-`symphony@<project>.service`.
-For a long-running observability entrypoint, install `symphony-hub.service` with
-`scripts/install-hub-systemd-service.sh`. The generated `symphony-hub.service` is the formal Hub
-production entrypoint and passes `--hub-scheduler`, `--hub-provider-executor real-candidate-scan`,
-`--hub-writeback-executor real-writeback`, `--hub-worker-starter real`,
-`--hub-activation-probe host-service`, and the configured `--host`/`--port`. It does not stop,
-disable, or restart existing `symphony@<project>.service` instances by itself.
+the specific operation.
+The formal production entrypoint is `symphony-hub.service`, installed with
+`scripts/install-hub-systemd-service.sh`. The generated service passes `--hub-scheduler`,
+`--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
+`--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
+`--host`/`--port`. Production Hub-only operation expects projects in `HUB.yaml` to be
+`hub_managed` with `dispatch_enabled: true`, after the operator has stopped/disabled legacy
+`symphony@<project>.service` owners and verified the cutover gate. The legacy
+`symphony@<project>.service` path is retained only for migration compatibility and rollback, not as
+the formal runtime.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

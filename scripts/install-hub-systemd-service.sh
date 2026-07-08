@@ -18,7 +18,7 @@ Options:
   --no-start                Do not enable/start the service.
   -h, --help                Show this help.
 
-The installed service is the Hub production entrypoint. It enables the Hub
+The installed service is the only formal Hub-only production entrypoint. It enables the Hub
 scheduler, real candidate scan executor, real writeback executor, real worker
 starter, and host-service activation probe. It does not stop or disable legacy
 symphony@project.service units by itself.
