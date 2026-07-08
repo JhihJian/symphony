@@ -1,6 +1,51 @@
-# Symphony systemd template 部署
+# Symphony Hub-only 部署
 
-本文档说明如何用用户级 systemd template 部署多个 Symphony 项目实例。
+本文档说明当前正式部署方式：只保留一个用户级 `symphony-hub.service`，所有项目通过
+`~/.config/symphony/hub/HUB.yaml` 注册和管理，Dashboard/API 统一使用 `:21000`。旧的
+`symphony@<project>.service` 多实例模式只作为迁移兼容和回滚路径保留，不再是正式运行入口。
+
+## Hub-only 正式部署入口
+
+正式安装或更新 Hub 服务只使用：
+
+```bash
+scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
+如果当前 cutover gate 要求 operator ack 或显式 request，可在安装时加载文件：
+
+```bash
+scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
+  --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
+  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
+生成的 `symphony-hub.service` 默认启用 production Hub 参数：
+
+```text
+--hub-scheduler
+--hub-provider-executor real-candidate-scan
+--hub-writeback-executor real-writeback
+--hub-worker-starter real
+--hub-activation-probe host-service
+--host 0.0.0.0 --port 21000
+```
+
+切换到 Hub-only 前，先确认四个 legacy API 均为 `running=0/retrying=0/blocked=0`，再把
+`HUB.yaml` 中的项目改为 `migration_state: hub_managed` 和 `dispatch_enabled: true`，并确保
+activation ack / cutover request 满足当前 gate。正式切换时停止并 disable 旧的
+`symphony@<project>.service`，重启 `symphony-hub.service`，最后确认只有 `:21000` 仍在监听。
+
+回滚路径保留 legacy template：恢复旧 `HUB.yaml`，停止 Hub，重新 enable/start 四个
+`symphony@<project>.service`，并验证 `:20000/:20001/:20002/:20004` API 能返回状态且 tracker 没有
+双重领取。
 
 ## GitHub Actions OpenCodeReview 审计
 
@@ -40,12 +85,10 @@ gh api repos/jhihjian/symphony/actions/runners --jq '.runners[] | {name,status,b
 OPENAI_API_KEY="$OPENAI_API_KEY" /home/jhihjian/.local/bin/ocr llm test
 ```
 
-当前 systemd template 仍是 legacy 多实例模型：每个 `symphony@<project>.service` 是独立
+旧 systemd template 是 deprecated legacy 多实例模型：每个 `symphony@<project>.service` 是独立
 进程，读取自己的 `WORKFLOW.md`、`TRACKER.yaml`、workspace、tracker scope 和 Dashboard/API
-端口。Elixir 代码中新增的 Hub mode `HUB.yaml` 项目注册表只提供进程内 Hub 方向的模型加载、
-身份快照和校验能力；Hub provider request governance 也只是定义未来统一 provider 出口的请求、
-队列、quota/backoff/circuit 和结果分类模型。它不会让本部署方式变成单进程 Hub 调度，也不会接管
-现有 poll loop、tracker fetch、写回或 dynamic tools provider 调用。
+端口。它只用于迁移兼容或回滚，不再作为正式部署方式。正式运行应由 `symphony-hub.service`
+读取 `HUB.yaml`，统一执行 Hub scheduler、candidate scan、writeback 和 worker start。
 Hub device observability 投影同样只是把这些 safe summary 汇总成 Dashboard/API 可消费的设备视图：
 它可以标记 `legacy_only`、`hub_ready`、`hub_managed` 等迁移状态，但不会替换
 `symphony@project.service`，也不会把 legacy 多实例自动迁移成 Hub mode。
@@ -366,7 +409,8 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
 该服务是正式 Hub production 入口，默认传 `--hub-scheduler`、
 `--hub-provider-executor real-candidate-scan`、`--hub-writeback-executor real-writeback`、
 `--hub-worker-starter real` 和 `--hub-activation-probe host-service`。安装脚本不会自动停止、
-disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置。生产切换到
+disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置；可选 ack/request 参数只把
+operator 输入传给 Hub API 的 gate/audit/authorization 摘要。生产切换到
 `hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
 workspace/runtime/log/state 路径和 cutover gate。所有项目暂停、配置无效或被 activation/cutover
 门禁阻断时，Hub scheduler 只按默认间隔复查，不应出现因暂停项目 `next_due_at` 已到而连续空转。
@@ -390,9 +434,13 @@ config、完整 prompt/transcript、完整 issue/comment/PR/provider body、raw 
 output、hook/app-server raw output 或异常堆栈。单个 project 的 summary 缺字段、版本不兼容或构建失败
 只会让该 project 显示 summary error/manual attention，不会让整个 Dashboard/API 失败。
 
-## 快速安装
+## Legacy template 兼容入口
 
-推荐直接使用远程安装脚本创建或更新项目实例。脚本会先把 Symphony `main` 分支 clone 或更新到 `~/.codex/symphony`，再从这份 clone 安装 systemd 服务：
+下面的 `install-systemd-template.sh` 会创建或更新 deprecated `symphony@<project>.service` 实例。
+它不再是正式部署入口，只用于迁移旧实例、准备回滚或短期兼容。正式 Hub-only 部署请使用
+`scripts/install-hub-systemd-service.sh`。
+
+远程兼容安装示例：
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/jhihjian/symphony/main/scripts/install-systemd-template.sh)" -- \
@@ -405,7 +453,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/jhihjian/symphony/main/s
   --auto-update
 ```
 
-如果已经 clone 了仓库，也可以在仓库内运行：
+如果已经 clone 了仓库，也可以在仓库内运行兼容安装：
 
 ```bash
 scripts/install-systemd-template.sh \
@@ -418,7 +466,7 @@ scripts/install-systemd-template.sh \
   --auto-update
 ```
 
-脚本会完成：
+兼容脚本会完成：
 
 - 安装或更新 `~/.config/systemd/user/symphony@.service`
 - 创建 `~/.config/symphony/projects/<project>/env`
@@ -430,7 +478,7 @@ scripts/install-systemd-template.sh \
 - 使用 `~/.codex/symphony/elixir` 作为 Symphony 程序目录
 - 如果 `~/.codex/symphony/elixir/bin/symphony` 不存在，自动在 `~/.codex/symphony/elixir` 下执行 `mix setup` 和 `mix build`
 - 执行 `systemctl --user daemon-reload`
-- 默认启用并启动 `symphony@<project>.service`
+- 默认启用并启动 deprecated `symphony@<project>.service`
 - 如果传了 `--auto-update`，安装并启用 `symphony-update.timer`
 
 如果没有传 `--port`，新项目会从 `20000` 开始查找下一个未被现有项目配置使用的端口；更新已有项目时会保留该项目原来的端口。
@@ -483,9 +531,9 @@ scripts/install-systemd-template.sh ... \
   workspaces/
 ```
 
-## systemd template
+## Deprecated systemd template
 
-用户级 template unit 位于：
+Deprecated 用户级 template unit 位于：
 
 ```text
 ~/.config/systemd/user/symphony@.service
@@ -505,7 +553,7 @@ scripts/install-systemd-template.sh ... \
 ./bin/symphony ... --tracker-config ~/.config/symphony/projects/%i/TRACKER.yaml ~/.config/symphony/projects/%i/WORKFLOW.md
 ```
 
-服务命令形态：
+兼容/回滚时的服务命令形态：
 
 ```bash
 systemctl --user start symphony@<project>.service

@@ -356,14 +356,15 @@ candidate scan and writeback executors independently:
   --port 21000
 ```
 
-`--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
-present, and the legacy startup path remains:
+`--hub-config` is explicit. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
+present. The legacy startup path remains available for migration compatibility and rollback, but it
+is no longer the formal production deployment mode:
 
 ```bash
 ./bin/symphony --tracker-config /path/to/TRACKER.yaml /path/to/WORKFLOW.md
 ```
 
-`--host` overrides the Dashboard/API bind address for both legacy and Hub startup paths. A Hub
+`--host` overrides the Dashboard/API bind address for both compatibility legacy and Hub startup paths. A Hub
 sidecar intended for LAN access should pass `--host 0.0.0.0`; the terminal dashboard URL is still
 normalized to a loopback URL for local copy/paste.
 
@@ -809,7 +810,7 @@ traces.
 
 #### Hub production systemd service
 
-For a long-running Hub production entrypoint, install a separate `symphony-hub.service`:
+For the formal long-running Hub-only production entrypoint, install `symphony-hub.service`:
 
 ```bash
 ../scripts/install-hub-systemd-service.sh \
@@ -818,11 +819,25 @@ For a long-running Hub production entrypoint, install a separate `symphony-hub.s
   --port 21000
 ```
 
+Optional operator evidence can be loaded into the generated unit:
+
+```bash
+../scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
+  --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
+  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
 The generated `symphony-hub.service` passes `--hub-scheduler`,
 `--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
 `--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
-`--host`/`--port`. The installer does not stop or disable existing `symphony@<project>.service`
-instances; perform that cutover explicitly after readiness and ownership checks.
+`--host`/`--port`; optional files append the corresponding Hub ack/request CLI flags. Hub-only
+production expects all managed projects to live in `HUB.yaml` and the
+legacy `symphony@<project>.service` units to be stopped and disabled after readiness and ownership
+checks. The installer itself does not stop those units so rollback remains explicit.
 
 #### Hub migration readiness dry-run runbook
 
