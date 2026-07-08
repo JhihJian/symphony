@@ -100,6 +100,58 @@ defmodule SymphonyElixir.InstanceRegistryTest do
     refute_received :unexpected_http_call
   end
 
+  test "isolates slow instance probes instead of blocking the fleet summary" do
+    root = temporary_root("instance-registry-slow-probe")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+
+    write_instance!(config_root, runtime_root, "project-a",
+      port: 20_001,
+      systemd: "active",
+      state: %{counts: %{running: 1, retrying: 0, blocked: 0}}
+    )
+
+    write_instance!(config_root, runtime_root, "project-b",
+      port: 20_002,
+      systemd: "active",
+      state: %{counts: %{running: 99, retrying: 0, blocked: 0}}
+    )
+
+    state_by_url = Process.get(:state_by_url, %{})
+
+    opts =
+      config_root
+      |> registry_opts()
+      |> Keyword.update!(:deps, fn deps ->
+        %{
+          deps
+          | http_get_state: fn
+              "http://127.0.0.1:20002/api/v1/state" ->
+                Process.sleep(:infinity)
+
+              url ->
+                Map.fetch!(state_by_url, url)
+            end
+        }
+      end)
+      |> Keyword.put(:instance_load_timeout_ms, 25)
+      |> Keyword.put(:instance_load_concurrency, 2)
+
+    {duration_us, {:ok, instances}} = :timer.tc(fn -> InstanceRegistry.list_instances(opts) end)
+
+    assert duration_us < 500_000
+    assert Enum.map(instances, & &1.name) == ["project-a", "project-b"]
+
+    assert [project_a, project_b] = instances
+    assert project_a.counts.running == 1
+    assert project_a.health.status == "reachable"
+
+    assert project_b.status == "unknown"
+    assert project_b.counts == %{running: 0, retrying: 0, blocked: 0}
+    assert project_b.health.status == "unreachable"
+    assert project_b.health.error == "instance_probe_timeout"
+  end
+
   test "discovers workflow-stage instances from sibling TRACKER.yaml" do
     root = temporary_root("instance-registry-two-file-discovery")
     config_root = Path.join(root, "config")
@@ -519,13 +571,15 @@ defmodule SymphonyElixir.InstanceRegistryTest do
   defp registry_opts(config_root) do
     state_by_url = Process.get(:state_by_url, %{})
     status_by_service = Process.get(:status_by_service, %{})
+    show_by_service = show_by_service()
+    enabled_by_service = enabled_by_service()
 
     [
       config_root: config_root,
       deps: %{
         systemctl_status: fn service -> Map.fetch(status_by_service, service) end,
-        systemctl_show: fn service -> Map.fetch(show_by_service(), service) end,
-        systemctl_enabled: fn service -> Map.fetch(enabled_by_service(), service) end,
+        systemctl_show: fn service -> Map.fetch(show_by_service, service) end,
+        systemctl_enabled: fn service -> Map.fetch(enabled_by_service, service) end,
         list_services: fn -> {:ok, Map.keys(status_by_service)} end,
         http_get_state: fn url -> Map.fetch!(state_by_url, url) end,
         systemctl_action: fn _action, _service -> :ok end

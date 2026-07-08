@@ -65,14 +65,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
-            <span class="status-badge">当前进程</span>
+            <span class="status-badge">页面连接</span>
+            <span class="status-badge status-badge-connecting">
+              <span class="status-badge-dot"></span>
+              连接中
+            </span>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
-              实时
+              实时连接
             </span>
             <span class="status-badge status-badge-offline">
               <span class="status-badge-dot"></span>
-              离线
+              连接断开
             </span>
           </div>
         </div>
@@ -198,6 +202,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </p>
             </article>
           </div>
+
+          <section :if={hub_active_attempt_count(@payload) > 0} class="operator-attention-card" role="status">
+            <div class="detail-stack">
+              <p class="panel-label">Hub 仍在收敛</p>
+              <strong>普通运行中会话为 <%= @payload.counts.running %>，但 Hub 还有 <%= hub_active_attempt_count(@payload) %> 个活跃尝试。</strong>
+              <span class="muted">
+                这类尝试可能只表现为 workspace lease、start intent 或 lifecycle 记录；不要把运行中 Issue 为 0 解读为空闲。
+              </span>
+            </div>
+            <div class="operator-attention-actions">
+              <a :for={project <- hub_active_attempt_projects(@payload)} class="issue-link operator-attention-link" href={"##{hub_project_anchor(project)}"}>
+                <span><%= project.project_id %></span>
+                <small><%= hub_active_attempt_project_summary(project) %></small>
+              </a>
+            </div>
+          </section>
         </section>
 
         <section class="section-card">
@@ -495,7 +515,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </tr>
                 </thead>
                 <tbody>
-                  <tr :for={project <- @payload.hub_device_observability.projects}>
+                  <tr :for={project <- @payload.hub_device_observability.projects} id={hub_project_anchor(project)}>
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= project.project_id %></span>
@@ -1109,6 +1129,76 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp hub_workspace_lease_count(payload) do
     hub_capacity_count(payload, :workspace_lease_count)
+  end
+
+  defp hub_active_attempt_projects(payload) do
+    payload
+    |> get_in([:hub_device_observability, :projects])
+    |> List.wrap()
+    |> Enum.filter(&(hub_project_active_attempt_count(&1) + hub_project_workspace_lease_count(&1) + hub_project_lifecycle_running_count(&1) > 0))
+    |> Enum.take(4)
+  end
+
+  defp hub_active_attempt_project_summary(project) do
+    [
+      "attempt #{hub_project_active_attempt_count(project)}",
+      "lease #{hub_project_workspace_lease_count(project)}",
+      "lifecycle #{hub_project_lifecycle_running_count(project)}"
+    ]
+    |> Enum.join(" · ")
+  end
+
+  defp hub_project_anchor(project) do
+    project
+    |> Map.get(:project_id, "unknown")
+    |> safe_fragment_id()
+    |> then(&"hub-project-#{&1}")
+  end
+
+  defp hub_project_active_attempt_count(project) do
+    project
+    |> hub_nested_list([:runtime, :active_attempts])
+    |> length()
+  end
+
+  defp hub_project_workspace_lease_count(project) do
+    project
+    |> hub_nested_list([:runtime, :workspace_leases])
+    |> length()
+  end
+
+  defp hub_project_lifecycle_running_count(project) do
+    project
+    |> hub_nested_value([:detail, :lifecycle, :counts], %{})
+    |> hub_count("running")
+  end
+
+  defp hub_nested_list(map, path) do
+    case hub_nested_value(map, path, []) do
+      value when is_list(value) -> value
+      _value -> []
+    end
+  end
+
+  defp hub_nested_value(map, [], _default), do: map
+
+  defp hub_nested_value(map, [key | rest], default) when is_map(map) do
+    map
+    |> Map.get(key, Map.get(map, to_string(key), default))
+    |> hub_nested_value(rest, default)
+  end
+
+  defp hub_nested_value(_value, _path, default), do: default
+
+  defp safe_fragment_id(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[^A-Za-z0-9_-]+/, "-")
+    |> String.trim("-")
+    |> case do
+      "" -> "unknown"
+      safe -> safe
+    end
   end
 
   defp hub_capacity_count(payload, key) do

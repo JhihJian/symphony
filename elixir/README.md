@@ -1389,8 +1389,10 @@ configuration diagnostics still render.
 The multi-instance dashboard at `/admin/instances` is a thin operator management plane. It reads
 registered instances from `~/.config/symphony/projects` by default, checks each
 `symphony@<project>.service` via `systemctl --user`, and queries each reachable instance's
-`/api/v1/state`. Stopped, failed, or unreachable instances are rendered as per-instance health
-states and do not block the rest of the overview. The fleet summary also shows an
+`/api/v1/state`. The page renders its operator shell first, then loads the instance overview in a
+bounded background refresh so slow probes do not block the first screen. Stopped, failed, slow, or
+unreachable instances are rendered as per-instance health states and do not block the rest of the
+overview. The fleet summary also shows an
 unreachable/unknown instance count so missing state snapshots are not mistaken for zero issue risk.
 The page can create GitHub-backed instances by delegating to
 `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing env files and

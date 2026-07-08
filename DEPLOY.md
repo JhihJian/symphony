@@ -924,6 +924,7 @@ http://127.0.0.1:<port>/api/v1/admin/instances
   和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
   `current_stage` 运行态分布；页面不展示 token、`api_key` 或 env secret 原始值。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
+- 实例总览在页面首屏之后后台加载，并带有总超时和单实例探测隔离；慢实例会显示成该实例自己的不可达/未知健康状态，不会让整个管理页或列表 API 长时间无响应。
 - 页面顶部固定提供“当前实例运行 / 流程配置 / 实例管理”三类入口，并标出当前访问身份是“本机管理员”还是“远程只读”。
 - 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、`TRACKER.yaml`、环境变量、日志目录、workspace root、端口和内存调度账本。
 - 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。

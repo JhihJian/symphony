@@ -7,6 +7,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   alias SymphonyElixirWeb.Endpoint
 
+  @admin_instances_timeout_ms 3_000
+
   @impl true
   def mount(_params, session, socket) do
     local_admin? = local_admin_session?(Map.get(session, "admin_client_ip") || Map.get(session, :admin_client_ip))
@@ -19,15 +21,31 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       |> assign(:create_form, default_create_form())
       |> assign(:create_form_open?, false)
       |> assign(:logs, nil)
+      |> assign(:instances, [])
+      |> assign(:instances_loading?, true)
+      |> assign(:instances_loaded?, false)
+      |> assign(:instances_error, nil)
+      |> assign(:auto_update, auto_update_loading_snapshot())
+      |> assign(:update_timer, update_timer_loading_snapshot())
+      |> assign(:notice, nil)
 
-    {:ok, assign_admin_state(socket, nil)}
+    {:ok, refresh_admin_state(socket, nil)}
+  end
+
+  @impl true
+  def handle_async(:admin_state, {:ok, admin_state}, socket) do
+    {:noreply, apply_admin_state(socket, admin_state)}
+  end
+
+  def handle_async(:admin_state, {:exit, reason}, socket) do
+    {:noreply, assign_instances_error(socket, "实例总览加载失败：#{inspect(reason)}")}
   end
 
   @impl true
   def handle_event("lifecycle", %{"action" => action, "name" => name}, socket) do
     message = guarded(socket, fn -> action_message(run_action(action, name), action) end)
 
-    {:noreply, assign_admin_state(socket, message)}
+    {:noreply, refresh_admin_state(socket, message)}
   end
 
   def handle_event("toggle_create_form", _params, socket) do
@@ -47,7 +65,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       socket
       |> assign(:create_form, form)
       |> assign(:create_form_open?, create_form_open?)
-      |> assign_admin_state(message)
+      |> refresh_admin_state(message)
 
     {:noreply, socket}
   end
@@ -64,7 +82,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     socket =
       socket
       |> assign(:logs, logs)
-      |> assign_admin_state(message)
+      |> refresh_admin_state(message)
 
     {:noreply, socket}
   end
@@ -81,13 +99,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         end
       end)
 
-    {:noreply, assign_admin_state(socket, message, auto_update)}
+    {:noreply, refresh_admin_state(socket, message, auto_update)}
   end
 
   def handle_event("update_timer", %{"action" => action}, socket) do
     message = guarded(socket, fn -> action_message(run_update_timer_action(action), action) end)
 
-    {:noreply, assign_admin_state(socket, message)}
+    {:noreply, refresh_admin_state(socket, message)}
   end
 
   @impl true
@@ -127,7 +145,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </section>
       <% end %>
 
-      <section class="metric-grid fleet-summary">
+      <section :if={@instances_loading? && !@instances_loaded?} class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
+        <strong>正在加载实例总览</strong>
+        <p>页面已可操作；实例 systemd 状态和 `/api/v1/state` 快照会在后台加载，慢实例不会阻塞首屏。</p>
+      </section>
+
+      <section :if={@instances_error} class="notice-banner notice-banner-error" role="alert" aria-live="polite">
+        <strong>实例总览暂不可用</strong>
+        <p><%= @instances_error %></p>
+      </section>
+
+      <section :if={@instances_loaded?} class="metric-grid fleet-summary">
         <article class="metric-card">
           <p class="metric-label">实例总数</p>
           <p class="metric-value numeric"><%= length(@instances) %></p>
@@ -155,159 +183,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </article>
       </section>
 
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">新增实例</h2>
-            <p class="section-copy">通过现有 systemd template 安装脚本生成配置、env、logs 和 workspaces。</p>
-          </div>
-          <div class="instance-actions form-actions">
-            <button
-              class="lifecycle-button lifecycle-button-primary"
-              type="button"
-              phx-click="toggle_create_form"
-              phx-disable-with="切换中..."
-              aria-expanded={if(@create_form_open?, do: "true", else: "false")}
-              aria-controls="create-instance-form"
-            ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
-          </div>
-        </div>
-
-        <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?}>
-          <div class="create-form-layout">
-            <section class="form-section form-section-main">
-              <div class="form-section-header">
-                <div>
-                  <p class="form-section-kicker">Identity</p>
-                  <h3 class="form-section-title">项目与仓库</h3>
-                </div>
-                <span class="form-section-step">1</span>
-              </div>
-
-              <div class="form-grid">
-                <label class="field field-prominent">
-                  <span>Project</span>
-                  <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
-                  <small class="field-hint">生成实例名、配置目录和 systemd unit 后缀。</small>
-                </label>
-
-                <label class="field">
-                  <span>Tracker</span>
-                  <select name="instance[tracker_kind]">
-                    <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
-                  </select>
-                  <small class="field-hint">当前新增实例流程使用 GitHub Project。</small>
-                </label>
-
-                <label class="field">
-                  <span>Owner</span>
-                  <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
-                </label>
-
-                <label class="field">
-                  <span>Repo</span>
-                  <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
-                </label>
-
-                <label class="field">
-                  <span>Project Number</span>
-                  <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
-                </label>
-
-                <label class="field">
-                  <span>Port</span>
-                  <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
-                  <small class="field-hint">留空时由安装脚本分配可用端口。</small>
-                </label>
-              </div>
-            </section>
-
-            <div class="form-side-stack">
-              <section class="form-section">
-                <div class="form-section-header">
-                  <div>
-                    <p class="form-section-kicker">Runtime</p>
-                    <h3 class="form-section-title">运行策略</h3>
-                  </div>
-                  <span class="form-section-step">2</span>
-                </div>
-
-                <div class="form-grid form-grid-single">
-                  <label class="field">
-                    <span>更新策略</span>
-                    <select name="instance[update_strategy]">
-                      <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy_label(strategy) %></option>
-                    </select>
-                    <small class="field-hint field-warning">选择 force_restart 时会强制重启实例，仅适合明确需要抢修的场景。</small>
-                  </label>
-
-                  <label class="field">
-                    <span>Max Agents</span>
-                    <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
-                  </label>
-                </div>
-
-                <div class="form-option-grid">
-                  <label class="form-option">
-                    <input type="hidden" name="instance[start]" value="false" />
-                    <input type="checkbox" name="instance[start]" value="true" checked={@create_form["start"] == "true"} />
-                    <span>
-                      <strong>立即启动</strong>
-                      <small>创建完成后直接启动服务。</small>
-                    </span>
-                  </label>
-                  <label class="form-option">
-                    <input type="hidden" name="instance[auto_update]" value="false" />
-                    <input type="checkbox" name="instance[auto_update]" value="true" checked={@create_form["auto_update"] == "true"} />
-                    <span>
-                      <strong>自动更新 timer</strong>
-                      <small>启用 systemd 自动更新定时器。</small>
-                    </span>
-                  </label>
-                </div>
-              </section>
-
-              <section class="form-section">
-                <div class="form-section-header">
-                  <div>
-                    <p class="form-section-kicker">Auth</p>
-                    <h3 class="form-section-title">访问令牌</h3>
-                  </div>
-                  <span class="form-section-step">3</span>
-                </div>
-
-                <div class="form-grid form-grid-single">
-                  <label class="field">
-                    <span>Token</span>
-                    <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
-                    <small class="field-hint">提交后不会回显 token。</small>
-                  </label>
-
-                  <label class="field">
-                    <span>Token Env</span>
-                    <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
-                    <small class="field-hint">可指定服务环境变量名。</small>
-                  </label>
-                </div>
-              </section>
-            </div>
-          </div>
-
-          <div class="form-submit-strip">
-            <div>
-              <strong>创建后将写入实例配置并刷新总览</strong>
-              <span>本机管理员可提交；远端访问仅能预览当前表单。</span>
-            </div>
-            <button
-              class="lifecycle-button lifecycle-button-primary"
-              type="submit"
-              disabled={!@local_admin?}
-              phx-confirm={create_instance_confirm(@create_form)}
-              phx-disable-with="创建中..."
-            >创建实例</button>
-          </div>
-        </form>
-      </section>
+      <%= instance_overview(assigns) %>
 
       <section class="section-card auto-update-panel">
         <div class="section-header">
@@ -424,6 +300,8 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         <% end %>
       </section>
 
+      <%= create_instance_panel(assigns) %>
+
       <section class="section-card">
         <div class="section-header">
           <div>
@@ -464,151 +342,6 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </div>
       </section>
 
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">实例总览</h2>
-            <p class="section-copy">管理面只展示和触发生命周期操作，不参与 issue 派发或 workspace 隔离。</p>
-          </div>
-        </div>
-
-        <%= if @instances == [] do %>
-          <p class="empty-state">未发现已登记的 Symphony 实例。</p>
-        <% else %>
-          <div class="instance-card-grid">
-            <article :for={instance <- @instances} class="instance-card">
-              <header class="instance-card-header">
-                <div class="instance-identity">
-                  <span class="instance-name"><%= instance.name %></span>
-                  <span class="muted mono"><%= instance.service %></span>
-                </div>
-                <span class={instance_badge_class(instance.status)}><%= instance.status %></span>
-              </header>
-
-              <div class="instance-card-body">
-                <div class="instance-meta-grid">
-                  <section class="instance-panel">
-                    <p class="panel-label">Tracker</p>
-                    <div class="detail-stack">
-                      <span><%= get_in(instance, [:tracker, :kind]) || "unknown" %></span>
-                      <span class="muted"><%= get_in(instance, [:tracker, :scope]) || "未配置范围" %></span>
-                    </div>
-                  </section>
-
-                  <section class="instance-panel pressure-panel">
-                    <p class="panel-label">Issue 压力</p>
-                    <div class="pressure-grid numeric">
-                      <span>运行中 <%= count(instance, :running) %></span>
-                      <span>重试中 <%= count(instance, :retrying) %></span>
-                      <span>阻塞 <%= count(instance, :blocked) %></span>
-                    </div>
-                  </section>
-
-                  <section class="instance-panel health-panel">
-                    <p class="panel-label">健康摘要</p>
-                    <div class="detail-stack">
-                      <span><%= get_in(instance, [:health, :summary]) || "暂无健康摘要" %></span>
-                      <span class="muted"><%= get_in(instance, [:systemd, :enabled]) || "unknown" %> / <%= get_in(instance, [:systemd, :sub]) || "unknown" %></span>
-                      <span :if={get_in(instance, [:health, :error])} class="muted"><%= get_in(instance, [:health, :error]) %></span>
-                    </div>
-                  </section>
-
-                  <section class="instance-panel">
-                    <p class="panel-label">更新策略</p>
-                    <div class="detail-stack">
-                      <span><%= Map.get(instance, :strategy, "idle_restart") %></span>
-                      <span class="muted"><%= strategy_description(Map.get(instance, :strategy, "idle_restart")) %></span>
-                    </div>
-                  </section>
-
-                  <section class="instance-panel">
-                    <p class="panel-label">Dashboard / API</p>
-                    <div class="detail-stack">
-                      <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
-                      <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
-                      <span class="muted">端口 <%= Map.get(instance, :port) || "未知" %></span>
-                      <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
-                    </div>
-                  </section>
-
-                  <section class="instance-panel path-panel">
-                    <p class="panel-label">Config / Runtime</p>
-                    <div class="detail-stack mono">
-                      <span><%= instance.config_path || "workflow 未知" %></span>
-                      <span class="muted"><%= Map.get(instance, :tracker_config_path) || "tracker config 未知" %></span>
-                      <span class="muted"><%= instance.env_path || "env 未知" %></span>
-                      <span><%= instance.workspace_root || "workspace 未知" %></span>
-                      <span class="muted"><%= instance.logs_root || "logs 未知" %></span>
-                    </div>
-                  </section>
-                </div>
-              </div>
-
-              <footer class="instance-actions">
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-primary"
-                  phx-click="lifecycle"
-                  phx-value-action="start"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-confirm={"确认启动 #{instance.service}？此操作会改变用户 systemd 服务状态，并可能开始处理 Issue。"}
-                  phx-disable-with="启动中..."
-                >启动</button>
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-danger"
-                  phx-click="lifecycle"
-                  phx-value-action="stop"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-confirm={"确认停止 #{instance.service}？停止后该实例不会继续派发或处理 Issue。"}
-                  phx-disable-with="停止中..."
-                >停止</button>
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-neutral"
-                  phx-click="lifecycle"
-                  phx-value-action="restart"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-confirm={"确认重启 #{instance.service}？重启期间当前实例会短暂不可用。"}
-                  phx-disable-with="重启中..."
-                >重启</button>
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-neutral"
-                  phx-click="lifecycle"
-                  phx-value-action="enable"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-confirm={"确认启用 #{instance.service}？此操作会改变用户 systemd 开机/登录自启动状态。"}
-                  phx-disable-with="启用中..."
-                >启用</button>
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-neutral"
-                  phx-click="lifecycle"
-                  phx-value-action="disable"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-confirm={"确认禁用 #{instance.service}？禁用后该实例不会随用户 systemd 自动启动。"}
-                  phx-disable-with="禁用中..."
-                >禁用</button>
-                <button
-                  type="button"
-                  class="lifecycle-button lifecycle-button-neutral"
-                  phx-click="logs"
-                  phx-value-name={instance.name}
-                  disabled={!@local_admin?}
-                  phx-disable-with="读取中..."
-                >最近日志</button>
-              </footer>
-            </article>
-          </div>
-        <% end %>
-      </section>
-
       <%= if @logs do %>
         <section class="section-card">
           <div class="section-header">
@@ -624,34 +357,436 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     """
   end
 
-  defp assign_admin_state(socket, notice, auto_update \\ nil) do
-    instances =
-      case registry().list_instances(registry_opts()) do
-        {:ok, instances} ->
-          instances
+  defp instance_overview(assigns) do
+    ~H"""
+    <section class="section-card">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">实例总览</h2>
+          <p class="section-copy">先确认每个实例是否可达、是否有运行压力，再执行创建、更新或 systemd 操作。</p>
+        </div>
+        <span :if={@instances_loading? && @instances_loaded?} class="state-badge state-badge-warning">刷新中</span>
+      </div>
 
-        {:error, reason} ->
-          [
-            %{
-              name: "registry",
-              service: "n/a",
-              status: "unknown",
-              dashboard_url: nil,
-              api_url: nil,
-              tracker: %{kind: nil, scope: nil},
-              counts: %{running: 0, retrying: 0, blocked: 0},
-              health: %{status: "unreachable", summary: "instance registry unavailable", error: inspect(reason)},
-              workspace_root: nil,
-              logs_root: nil
-            }
-          ]
-      end
+      <section :if={@instances_loading? && !@instances_loaded?} class="instance-panel instance-loading-panel" aria-busy="true">
+        <p class="panel-label">正在加载</p>
+        <div class="detail-stack">
+          <span>正在读取已登记实例、systemd 状态和各实例状态快照。</span>
+          <span class="muted">如果某个实例响应慢，只会标记该实例不可达，不会阻塞整个管理页。</span>
+        </div>
+      </section>
 
+      <p :if={@instances_error && !@instances_loaded?} class="empty-state">
+        实例总览加载失败；自动更新和创建实例入口仍可查看，建议先检查本机 systemd 或实例配置目录。
+      </p>
+
+      <p :if={@instances_loaded? && @instances == []} class="empty-state">未发现已登记的 Symphony 实例。</p>
+
+      <div :if={@instances_loaded? && @instances != []} class="instance-card-grid">
+        <article :for={instance <- @instances} class="instance-card">
+          <header class="instance-card-header">
+            <div class="instance-identity">
+              <span class="instance-name"><%= instance.name %></span>
+              <span class="muted mono"><%= instance.service %></span>
+            </div>
+            <span class={instance_badge_class(instance.status)}><%= instance.status %></span>
+          </header>
+
+          <div class="instance-card-body">
+            <div class="instance-meta-grid">
+              <section class="instance-panel">
+                <p class="panel-label">Tracker</p>
+                <div class="detail-stack">
+                  <span><%= get_in(instance, [:tracker, :kind]) || "unknown" %></span>
+                  <span class="muted"><%= get_in(instance, [:tracker, :scope]) || "未配置范围" %></span>
+                </div>
+              </section>
+
+              <section class="instance-panel pressure-panel">
+                <p class="panel-label">Issue 压力</p>
+                <div class="pressure-grid numeric">
+                  <span>运行中 <%= count(instance, :running) %></span>
+                  <span>重试中 <%= count(instance, :retrying) %></span>
+                  <span>阻塞 <%= count(instance, :blocked) %></span>
+                </div>
+              </section>
+
+              <section class="instance-panel health-panel">
+                <p class="panel-label">健康摘要</p>
+                <div class="detail-stack">
+                  <span><%= get_in(instance, [:health, :summary]) || "暂无健康摘要" %></span>
+                  <span class="muted"><%= get_in(instance, [:systemd, :enabled]) || "unknown" %> / <%= get_in(instance, [:systemd, :sub]) || "unknown" %></span>
+                  <span :if={get_in(instance, [:health, :error])} class="muted"><%= get_in(instance, [:health, :error]) %></span>
+                </div>
+              </section>
+
+              <section class="instance-panel">
+                <p class="panel-label">更新策略</p>
+                <div class="detail-stack">
+                  <span><%= Map.get(instance, :strategy, "idle_restart") %></span>
+                  <span class="muted"><%= strategy_description(Map.get(instance, :strategy, "idle_restart")) %></span>
+                </div>
+              </section>
+
+              <section class="instance-panel">
+                <p class="panel-label">Dashboard / API</p>
+                <div class="detail-stack">
+                  <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
+                  <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
+                  <span class="muted">端口 <%= Map.get(instance, :port) || "未知" %></span>
+                  <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
+                </div>
+              </section>
+
+              <section class="instance-panel path-panel">
+                <p class="panel-label">Config / Runtime</p>
+                <div class="detail-stack mono">
+                  <span><%= instance.config_path || "workflow 未知" %></span>
+                  <span class="muted"><%= Map.get(instance, :tracker_config_path) || "tracker config 未知" %></span>
+                  <span class="muted"><%= instance.env_path || "env 未知" %></span>
+                  <span><%= instance.workspace_root || "workspace 未知" %></span>
+                  <span class="muted"><%= instance.logs_root || "logs 未知" %></span>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <footer class="instance-actions">
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-primary"
+              phx-click="lifecycle"
+              phx-value-action="start"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-confirm={"确认启动 #{instance.service}？此操作会改变用户 systemd 服务状态，并可能开始处理 Issue。"}
+              phx-disable-with="启动中..."
+            >启动</button>
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-danger"
+              phx-click="lifecycle"
+              phx-value-action="stop"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-confirm={"确认停止 #{instance.service}？停止后该实例不会继续派发或处理 Issue。"}
+              phx-disable-with="停止中..."
+            >停止</button>
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-neutral"
+              phx-click="lifecycle"
+              phx-value-action="restart"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-confirm={"确认重启 #{instance.service}？重启期间当前实例会短暂不可用。"}
+              phx-disable-with="重启中..."
+            >重启</button>
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-neutral"
+              phx-click="lifecycle"
+              phx-value-action="enable"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-confirm={"确认启用 #{instance.service}？此操作会改变用户 systemd 开机/登录自启动状态。"}
+              phx-disable-with="启用中..."
+            >启用</button>
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-neutral"
+              phx-click="lifecycle"
+              phx-value-action="disable"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-confirm={"确认禁用 #{instance.service}？禁用后该实例不会随用户 systemd 自动启动。"}
+              phx-disable-with="禁用中..."
+            >禁用</button>
+            <button
+              type="button"
+              class="lifecycle-button lifecycle-button-neutral"
+              phx-click="logs"
+              phx-value-name={instance.name}
+              disabled={!@local_admin?}
+              phx-disable-with="读取中..."
+            >最近日志</button>
+          </footer>
+        </article>
+      </div>
+    </section>
+    """
+  end
+
+  defp create_instance_panel(assigns) do
+    ~H"""
+    <section class="section-card">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">新增实例</h2>
+          <p class="section-copy">通过现有 systemd template 安装脚本生成配置、env、logs 和 workspaces。</p>
+        </div>
+        <div class="instance-actions form-actions">
+          <button
+            class="lifecycle-button lifecycle-button-primary"
+            type="button"
+            phx-click="toggle_create_form"
+            phx-disable-with="切换中..."
+            aria-expanded={if(@create_form_open?, do: "true", else: "false")}
+            aria-controls="create-instance-form"
+          ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
+        </div>
+      </div>
+
+      <form id="create-instance-form" phx-submit="create_instance" class="instance-form" hidden={!@create_form_open?}>
+        <div class="create-form-layout">
+          <section class="form-section form-section-main">
+            <div class="form-section-header">
+              <div>
+                <p class="form-section-kicker">Identity</p>
+                <h3 class="form-section-title">项目与仓库</h3>
+              </div>
+              <span class="form-section-step">1</span>
+            </div>
+
+            <div class="form-grid">
+              <label class="field field-prominent">
+                <span>Project</span>
+                <input name="instance[project]" value={@create_form["project"]} placeholder="project-a" required />
+                <small class="field-hint">生成实例名、配置目录和 systemd unit 后缀。</small>
+              </label>
+
+              <label class="field">
+                <span>Tracker</span>
+                <select name="instance[tracker_kind]">
+                  <option value="github" selected={@create_form["tracker_kind"] == "github"}>GitHub</option>
+                </select>
+                <small class="field-hint">当前新增实例流程使用 GitHub Project。</small>
+              </label>
+
+              <label class="field">
+                <span>Owner</span>
+                <input name="instance[owner]" value={@create_form["owner"]} placeholder="owner" required />
+              </label>
+
+              <label class="field">
+                <span>Repo</span>
+                <input name="instance[repo]" value={@create_form["repo"]} placeholder="repo" required />
+              </label>
+
+              <label class="field">
+                <span>Project Number</span>
+                <input name="instance[project_number]" value={@create_form["project_number"]} inputmode="numeric" placeholder="14" required />
+              </label>
+
+              <label class="field">
+                <span>Port</span>
+                <input name="instance[port]" value={@create_form["port"]} inputmode="numeric" placeholder="自动分配" />
+                <small class="field-hint">留空时由安装脚本分配可用端口。</small>
+              </label>
+            </div>
+          </section>
+
+          <div class="form-side-stack">
+            <section class="form-section">
+              <div class="form-section-header">
+                <div>
+                  <p class="form-section-kicker">Runtime</p>
+                  <h3 class="form-section-title">运行策略</h3>
+                </div>
+                <span class="form-section-step">2</span>
+              </div>
+
+              <div class="form-grid form-grid-single">
+                <label class="field">
+                  <span>更新策略</span>
+                  <select name="instance[update_strategy]">
+                    <option :for={strategy <- update_strategies()} value={strategy} selected={@create_form["update_strategy"] == strategy}><%= strategy_label(strategy) %></option>
+                  </select>
+                  <small class="field-hint field-warning">选择 force_restart 时会强制重启实例，仅适合明确需要抢修的场景。</small>
+                </label>
+
+                <label class="field">
+                  <span>Max Agents</span>
+                  <input name="instance[max_agents]" value={@create_form["max_agents"]} inputmode="numeric" />
+                </label>
+              </div>
+
+              <div class="form-option-grid">
+                <label class="form-option">
+                  <input type="hidden" name="instance[start]" value="false" />
+                  <input type="checkbox" name="instance[start]" value="true" checked={@create_form["start"] == "true"} />
+                  <span>
+                    <strong>立即启动</strong>
+                    <small>创建完成后直接启动服务。</small>
+                  </span>
+                </label>
+                <label class="form-option">
+                  <input type="hidden" name="instance[auto_update]" value="false" />
+                  <input type="checkbox" name="instance[auto_update]" value="true" checked={@create_form["auto_update"] == "true"} />
+                  <span>
+                    <strong>自动更新 timer</strong>
+                    <small>启用 systemd 自动更新定时器。</small>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section class="form-section">
+              <div class="form-section-header">
+                <div>
+                  <p class="form-section-kicker">Auth</p>
+                  <h3 class="form-section-title">访问令牌</h3>
+                </div>
+                <span class="form-section-step">3</span>
+              </div>
+
+              <div class="form-grid form-grid-single">
+                <label class="field">
+                  <span>Token</span>
+                  <input name="instance[token]" type="password" value="" autocomplete="off" placeholder="留空则复用环境或已有 env" />
+                  <small class="field-hint">提交后不会回显 token。</small>
+                </label>
+
+                <label class="field">
+                  <span>Token Env</span>
+                  <input name="instance[token_env]" value={@create_form["token_env"]} placeholder="GITHUB_TOKEN" />
+                  <small class="field-hint">可指定服务环境变量名。</small>
+                </label>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="form-submit-strip">
+          <div>
+            <strong>创建后将写入实例配置并刷新总览</strong>
+            <span>本机管理员可提交；远端访问仅能预览当前表单。</span>
+          </div>
+          <button
+            class="lifecycle-button lifecycle-button-primary"
+            type="submit"
+            disabled={!@local_admin?}
+            phx-confirm={create_instance_confirm(@create_form)}
+            phx-disable-with="创建中..."
+          >创建实例</button>
+        </div>
+      </form>
+    </section>
+    """
+  end
+
+  defp refresh_admin_state(socket, notice, auto_update \\ nil) do
+    socket =
+      socket
+      |> assign(:notice, notice)
+      |> assign(:instances_loading?, true)
+      |> assign(:instances_error, nil)
+      |> maybe_assign_auto_update(auto_update)
+
+    if connected?(socket) do
+      start_async(socket, :admin_state, fn -> admin_state_snapshot(auto_update) end)
+    else
+      socket
+    end
+  end
+
+  defp admin_state_snapshot(auto_update) do
+    %{
+      instances: list_instances_with_timeout(),
+      auto_update: auto_update || auto_update_snapshot(),
+      update_timer: update_timer_snapshot()
+    }
+  end
+
+  defp apply_admin_state(socket, %{instances: {:ok, instances}, auto_update: auto_update, update_timer: update_timer}) do
     socket
     |> assign(:instances, instances)
-    |> assign(:auto_update, auto_update || auto_update_snapshot())
-    |> assign(:update_timer, update_timer_snapshot())
-    |> assign(:notice, notice)
+    |> assign(:instances_loading?, false)
+    |> assign(:instances_loaded?, true)
+    |> assign(:instances_error, nil)
+    |> assign(:auto_update, auto_update)
+    |> assign(:update_timer, update_timer)
+  end
+
+  defp apply_admin_state(socket, %{instances: {:error, reason}, auto_update: auto_update, update_timer: update_timer}) do
+    socket
+    |> assign(:auto_update, auto_update)
+    |> assign(:update_timer, update_timer)
+    |> assign_instances_error("实例总览加载失败：#{format_registry_error(reason)}")
+  end
+
+  defp assign_instances_error(socket, message) do
+    socket
+    |> assign(:instances_loading?, false)
+    |> assign(:instances_error, message)
+  end
+
+  defp maybe_assign_auto_update(socket, nil), do: socket
+  defp maybe_assign_auto_update(socket, auto_update), do: assign(socket, :auto_update, auto_update)
+
+  defp list_instances_with_timeout do
+    timeout_ms = admin_instances_timeout_ms()
+    task = Task.async(fn -> registry().list_instances(registry_opts()) end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:instance_registry_exit, reason}}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:instance_registry_timeout, timeout_ms}}
+    end
+  end
+
+  defp admin_instances_timeout_ms do
+    case Endpoint.config(:admin_instances_timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _timeout_ms -> @admin_instances_timeout_ms
+    end
+  end
+
+  defp format_registry_error({:instance_registry_timeout, timeout_ms}), do: "超过 #{timeout_ms}ms 未返回"
+  defp format_registry_error({:instance_registry_exit, reason}), do: inspect(reason)
+  defp format_registry_error(reason), do: inspect(reason)
+
+  defp auto_update_loading_snapshot do
+    %{
+      repo: "unknown",
+      branch: "main",
+      source_root: nil,
+      poll_interval_ms: 0,
+      current_sha: nil,
+      remote_sha: nil,
+      pending_update?: false,
+      next_check_at: nil,
+      last_check: %{status: "loading", checked_at: nil, etag: nil, error: nil, rate_limit: %{}},
+      last_update: %{
+        status: "idle",
+        started_at: nil,
+        finished_at: nil,
+        from_sha: nil,
+        to_sha: nil,
+        error: nil,
+        instance_results: []
+      }
+    }
+  end
+
+  defp update_timer_loading_snapshot do
+    %{
+      timer: "symphony-update.timer",
+      service: "symphony-update.service",
+      active: "loading",
+      sub: "loading",
+      enabled: "loading",
+      next_run: nil,
+      last_trigger: nil,
+      service_active: "loading",
+      service_sub: "loading"
+    }
   end
 
   defp run_action("start", name), do: registry().start_instance(name, registry_opts())
@@ -857,6 +992,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     error = Map.get(last_check, :error) || Map.get(last_check, "error")
 
     cond do
+      status == "loading" ->
+        :loading
+
       status in ["unavailable", "unknown"] or error not in [nil, ""] ->
         :unavailable
 
@@ -873,6 +1011,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   defp update_state_text(snapshot) do
     case auto_update_state(snapshot) do
+      :loading -> "正在加载"
       :pending -> "有可用更新"
       :up_to_date -> "已是最新"
       :unavailable -> "无法判断/不可用"
@@ -881,6 +1020,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   defp update_badge_class(snapshot) do
     case auto_update_state(snapshot) do
+      :loading -> "state-badge state-badge-muted"
       :pending -> "state-badge state-badge-blocked"
       :up_to_date -> "state-badge state-badge-active"
       :unavailable -> "state-badge state-badge-warning"

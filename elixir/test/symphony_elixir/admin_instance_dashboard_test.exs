@@ -122,6 +122,24 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
   end
 
+  defmodule SlowInstanceRegistry do
+    def list_instances(opts) do
+      send(owner(opts), {:slow_list_instances, opts})
+      Process.sleep(:infinity)
+    end
+
+    def update_timer_status(opts), do: FakeInstanceRegistry.update_timer_status(opts)
+    def start_instance(name, opts), do: FakeInstanceRegistry.start_instance(name, opts)
+    def stop_instance(name, opts), do: FakeInstanceRegistry.stop_instance(name, opts)
+    def restart_instance(name, opts), do: FakeInstanceRegistry.restart_instance(name, opts)
+    def enable_instance(name, opts), do: FakeInstanceRegistry.enable_instance(name, opts)
+    def disable_instance(name, opts), do: FakeInstanceRegistry.disable_instance(name, opts)
+    def create_instance(params, opts), do: FakeInstanceRegistry.create_instance(params, opts)
+    def latest_logs(name, opts), do: FakeInstanceRegistry.latest_logs(name, opts)
+
+    defp owner(opts), do: Keyword.fetch!(opts, :owner)
+  end
+
   defmodule FakeAutoUpdate do
     @moduledoc false
 
@@ -270,6 +288,42 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
            }
   end
 
+  test "admin instances API returns a timeout instead of waiting on a blocked registry" do
+    use_slow_registry!(25)
+
+    response = get(build_conn(), "/api/v1/admin/instances")
+
+    assert_receive {:slow_list_instances, opts}
+    assert Keyword.fetch!(opts, :owner) == self()
+
+    assert json_response(response, 503) == %{
+             "error" => %{
+               "code" => "instance_registry_timeout",
+               "message" => "Instance registry did not respond within 25ms."
+             }
+           }
+  end
+
+  test "admin dashboard renders the shell before slow instance aggregation finishes" do
+    use_slow_registry!(25)
+
+    {duration_us, {:ok, view, html}} =
+      :timer.tc(fn ->
+        live(build_conn(), "/admin/instances")
+      end)
+
+    assert duration_us < 500_000
+    assert html =~ "正在加载实例总览"
+    assert html =~ "慢实例不会阻塞首屏"
+    assert_receive {:slow_list_instances, _opts}
+
+    html = render_async(view, 1_000)
+
+    assert html =~ "实例总览暂不可用"
+    assert html =~ "超过 25ms 未返回"
+    assert html =~ "GitHub main 自动更新"
+  end
+
   test "admin instances API runs lifecycle actions and returns readable errors" do
     response = post(build_conn(), "/api/v1/admin/instances/project-a/restart", %{})
     assert json_response(response, 202) == %{"action" => "restart", "service" => "symphony@project-a.service"}
@@ -354,7 +408,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
   test "admin dashboard makes remote clients visibly read-only" do
     conn = Map.put(build_conn(), :remote_ip, {192, 0, 2, 10})
 
-    {:ok, _view, html} = live(conn, "/admin/instances")
+    {:ok, view, _html} = live(conn, "/admin/instances")
+    html = render_async(view, 1_000)
     {:ok, document} = Floki.parse_document(html)
 
     assert html =~ "远程只读"
@@ -425,7 +480,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])
 
-    {:ok, _view, html} = live(build_conn(), "/admin/instances")
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
 
     assert html =~ "GitHub main 自动更新"
     assert html =~ "unavailable"
@@ -447,7 +503,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
   end
 
   test "admin dashboard renders multi-instance overview and links" do
-    {:ok, _view, html} = live(build_conn(), "/admin/instances")
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
 
     assert html =~ "Symphony 实例管理"
     assert html =~ "实例管理工作台"
@@ -517,10 +574,15 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "立即检查"
     assert html =~ "执行更新"
     assert html =~ "空闲自动重启"
+
+    assert_order(html, "实例总览", "GitHub main 自动更新")
+    assert_order(html, "GitHub main 自动更新", "新增实例")
+    assert_order(html, "新增实例", "systemd 自动更新 timer")
   end
 
   test "admin dashboard marks dangerous actions and slow requests" do
-    {:ok, _view, html} = live(build_conn(), "/admin/instances")
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
     {:ok, document} = Floki.parse_document(html)
 
     assert html =~ ~s(phx-confirm="确认执行 GitHub main 更新)
@@ -581,6 +643,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard creates instances and reads recent logs without exposing tokens" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    render_async(view, 1_000)
 
     view
     |> element("button", "新建实例")
@@ -655,6 +718,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard controls update timer" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    render_async(view, 1_000)
 
     html =
       view
@@ -682,7 +746,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
   end
 
   test "admin dashboard check now button refreshes visible check details" do
-    {:ok, view, html} = live(build_conn(), "/admin/instances")
+    {:ok, view, _html} = live(build_conn(), "/admin/instances")
+    html = render_async(view, 1_000)
 
     assert html =~ "最近检查：ok"
     refute html =~ "检查时间：2026-06-10T02:10:00Z"
@@ -715,8 +780,30 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".lifecycle-button-danger"
     assert css =~ ".workspace-nav"
     assert css =~ ".notice-banner"
+    assert css =~ ".operator-attention-card"
     assert css =~ ".phx-click-loading"
     assert css =~ "@media (prefers-reduced-motion: reduce)"
     assert css =~ "@media (max-width: 720px)"
+  end
+
+  defp use_slow_registry!(timeout_ms) do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+
+    endpoint_config =
+      endpoint_config
+      |> Keyword.put(:instance_registry, SlowInstanceRegistry)
+      |> Keyword.put(:admin_instances_timeout_ms, timeout_ms)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])
+  end
+
+  defp assert_order(html, first, second) do
+    first_match = :binary.match(html, first)
+    second_match = :binary.match(html, second)
+
+    assert first_match != :nomatch
+    assert second_match != :nomatch
+    assert elem(first_match, 0) < elem(second_match, 0)
   end
 end
