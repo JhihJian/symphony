@@ -3,7 +3,7 @@ defmodule SymphonyElixir.HttpServer do
   Compatibility facade that starts the Phoenix observability endpoint when enabled.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator}
+  alias SymphonyElixir.{Config, Hub.Runtime, Orchestrator}
   alias SymphonyElixirWeb.Endpoint
 
   @secret_key_bytes 48
@@ -18,9 +18,9 @@ defmodule SymphonyElixir.HttpServer do
 
   @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(opts \\ []) do
-    case Keyword.get(opts, :port, Config.server_port()) do
+    case server_port(opts) do
       port when is_integer(port) and port >= 0 ->
-        host = Keyword.get(opts, :host, Config.settings!().server.host)
+        host = Keyword.get_lazy(opts, :host, &server_host/0)
         orchestrator = Keyword.get(opts, :orchestrator, Orchestrator)
         snapshot_timeout_ms = Keyword.get(opts, :snapshot_timeout_ms, 15_000)
 
@@ -81,6 +81,23 @@ defmodule SymphonyElixir.HttpServer do
   defp normalize_host(host) when host in ["", nil], do: "127.0.0.1"
   defp normalize_host(host) when is_binary(host), do: host
   defp normalize_host(host), do: to_string(host)
+
+  defp server_port(opts) do
+    case Keyword.fetch(opts, :port) do
+      {:ok, port} ->
+        port
+
+      :error ->
+        case Application.get_env(:symphony_elixir, :server_port_override) do
+          port when is_integer(port) and port >= 0 -> port
+          _ -> if(Runtime.hub_mode?(), do: nil, else: Config.server_port())
+        end
+    end
+  end
+
+  defp server_host do
+    Config.settings!().server.host
+  end
 
   defp secret_key_base do
     Base.encode64(:crypto.strong_rand_bytes(@secret_key_bytes), padding: false)

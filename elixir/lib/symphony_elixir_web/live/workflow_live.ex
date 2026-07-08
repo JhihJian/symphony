@@ -434,7 +434,6 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
 
   defp default_selected_stage_id(%{workflow: %{start_stage: start_stage}}) when is_binary(start_stage), do: start_stage
-  defp default_selected_stage_id(%{stages: [%{id: stage_id} | _stages]}), do: stage_id
   defp default_selected_stage_id(_projection), do: nil
 
   defp stage_exists?(%{stages: stages}, stage_id) when is_binary(stage_id) do
@@ -444,8 +443,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp stage_exists?(_projection, _stage_id), do: false
 
   defp selected_stage(%{stages: stages} = projection, selected_stage_id) do
-    Enum.find(stages, &(&1.id == selected_stage_id)) ||
-      Enum.find(stages, &(&1.id == default_selected_stage_id(projection)))
+    Enum.find(stages, &(&1.id == selected_stage_id || &1.id == default_selected_stage_id(projection)))
   end
 
   defp mobile_flow_stages(%{stages: stages, workflow: %{start_stage: start_stage}}) do

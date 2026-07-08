@@ -124,6 +124,518 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
         </section>
 
+        <%= if hub_device?(@payload) do %>
+          <section class="section-card hub-device-overview">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Hub 设备总览</h2>
+                <p class="section-copy">显式 Hub mode 的设备级运行、安全阻断和下一轮 tick 状态。</p>
+              </div>
+              <span class={hub_scheduler_badge_class(@payload.hub_device_observability.overview.scheduler.status)}>
+                <%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %>
+              </span>
+            </div>
+
+            <div class="hub-overview-grid">
+              <article class="hub-summary-panel">
+                <p class="metric-label">Scheduler / Tick</p>
+                <p class="metric-value"><%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %></p>
+                <p class="metric-detail">
+                  下一轮 <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_reason || "暂无" %></span>
+                  · <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_tick_at || "暂无" %></span>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">项目状态</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.device.project_count %></p>
+                <p class="metric-detail">
+                  ready <%= hub_status_count(@payload, :ready_to_poll) %> · managed <%= hub_migration_count(@payload, "hub_managed") %> · blocked <%= hub_status_count(@payload, :blocked) %> · manual <%= hub_status_count(@payload, :manual_attention) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Migration Readiness</p>
+                <p class="metric-value"><%= hub_readiness_status(@payload) %></p>
+                <p class="metric-detail">
+                  dry-run <%= hub_readiness_count(@payload, :ready_for_dry_run) %> · hub-ready <%= hub_readiness_count(@payload, :ready_for_hub_management) %> · blocked <%= hub_readiness_count(@payload, :blocked) %> · unknown <%= hub_readiness_count(@payload, :unknown_manual_attention) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  blocking risks <%= hub_global_risk_count(@payload, :global_blocking_risks) %> · advisory <%= hub_global_risk_count(@payload, :global_advisory_risks) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Provider 压力</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.provider_governance.queue_pressure_count %></p>
+                <p class="metric-detail">
+                  backoff <%= @payload.hub_device_observability.overview.provider_governance.quota_backoff_count %> · circuit <%= @payload.hub_device_observability.overview.provider_governance.circuit_open_count %> · failure <%= @payload.hub_device_observability.overview.provider_governance.recent_failure_count %>
+                </p>
+                <p class="metric-detail event-meta"><%= hub_recent_provider_failures(@payload.hub_device_observability.overview.provider_governance) %></p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Capacity / Workspace</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.capacity_workspace.active_attempt_count %></p>
+                <p class="metric-detail">
+                  start intents <%= @payload.hub_device_observability.overview.capacity_workspace.pending_start_intent_count %> · leases <%= @payload.hub_device_observability.overview.capacity_workspace.workspace_lease_count %> · waiting capacity <%= @payload.hub_device_observability.overview.capacity_workspace.waiting_capacity_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Writeback / Manual</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.writeback.manual_attention_count %></p>
+                <p class="metric-detail">
+                  unknown <%= @payload.hub_device_observability.overview.writeback.counts.unknown %> · conflict <%= @payload.hub_device_observability.overview.writeback.intent_conflict_count %> · lookup <%= @payload.hub_device_observability.overview.writeback.provider_lookup_required_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Activation / Lifecycle</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.activation_preflight.blocked_project_count %></p>
+                <p class="metric-detail">
+                  unknown preflight <%= @payload.hub_device_observability.overview.activation_preflight.unknown_project_count %> · lifecycle unknown <%= @payload.hub_device_observability.overview.lifecycle.unresolved_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Activation Plan / Ack</p>
+                <p class="metric-value"><%= hub_activation_plan_status(@payload) %></p>
+                <p class="metric-detail">
+                  plan-ready <%= hub_activation_plan_count(@payload, :plan_ready) %> · ack-required <%= hub_activation_plan_count(@payload, :ack_required) %> · stale <%= hub_activation_plan_count(@payload, :ack_stale) %> · conflict <%= hub_activation_plan_count(@payload, :ack_conflict) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  accepted <%= hub_activation_ack_count(@payload, :accepted) %> · missing <%= hub_activation_ack_count(@payload, :missing) %> · malformed <%= hub_activation_ack_count(@payload, :malformed) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Cutover Gate</p>
+                <p class="metric-value"><%= hub_cutover_status(@payload) %></p>
+                <p class="metric-detail">
+                  allowed <%= hub_cutover_count(@payload, :allowed_count) %> · staged <%= hub_cutover_count(@payload, :staged_ready_count) %> · blocked <%= hub_cutover_count(@payload, :blocked_count) %> · manual <%= hub_cutover_count(@payload, :manual_attention_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  records <%= hub_cutover_count(@payload, :staged_ownership_record_count) %> · ops <%= hub_cutover_allowed_ops(@payload) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Cutover Audit</p>
+                <p class="metric-value"><%= hub_cutover_audit_status(@payload) %></p>
+                <p class="metric-detail">
+                  requests <%= hub_cutover_audit_count(@payload, :request_count) %> · ready <%= hub_cutover_audit_count(@payload, :dry_run_ready_count) %> · blocked <%= hub_cutover_audit_count(@payload, :blocked_count) %> · manual <%= hub_cutover_audit_count(@payload, :manual_attention_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  none <%= hub_cutover_audit_count(@payload, :no_request_count) %> · unsupported <%= hub_cutover_audit_count(@payload, :unsupported_count) %> · dry-run only
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Audit History / Closeout</p>
+                <p class="metric-value"><%= hub_cutover_history_status(@payload) %></p>
+                <p class="metric-detail">
+                  history <%= hub_cutover_history_count(@payload, :history_entry_count) %> · unresolved <%= hub_cutover_history_count(@payload, :unresolved_manual_attention_count) %> · closed <%= hub_cutover_history_count(@payload, :closed_count) %> · stale <%= hub_cutover_history_count(@payload, :stale_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  conflict <%= hub_cutover_history_count(@payload, :conflict_count) %> · malformed <%= hub_cutover_history_count(@payload, :malformed_count) %> · unsupported <%= hub_cutover_history_count(@payload, :unsupported_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Execution Permit</p>
+                <p class="metric-value"><%= hub_cutover_permit_status(@payload) %></p>
+                <p class="metric-detail">
+                  permits <%= hub_cutover_permit_count(@payload, :permit_count) %> · ready <%= hub_cutover_permit_count(@payload, :ready_count) %> · blocked <%= hub_cutover_permit_count(@payload, :blocked_count) %> · stale <%= hub_cutover_permit_count(@payload, :stale_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  manual <%= hub_cutover_permit_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_permit_count(@payload, :malformed_count) %> · unsupported <%= hub_cutover_permit_count(@payload, :unsupported_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Execution Authorization</p>
+                <p class="metric-value"><%= hub_cutover_authorization_status(@payload) %></p>
+                <p class="metric-detail">
+                  requests <%= hub_cutover_authorization_count(@payload, :authorization_request_count) %> · records <%= hub_cutover_authorization_count(@payload, :record_count) %> · authorized <%= hub_cutover_authorization_count(@payload, :authorized_count) %> · blocked <%= hub_cutover_authorization_count(@payload, :blocked_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_authorization_count(@payload, :stale_count) %> · manual <%= hub_cutover_authorization_count(@payload, :manual_attention_count) %> · no ready permit <%= hub_cutover_authorization_count(@payload, :no_ready_permit_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Authorization Consumption</p>
+                <p class="metric-value"><%= hub_cutover_consumption_status(@payload) %></p>
+                <p class="metric-detail">
+                  allowed <%= hub_cutover_consumption_count(@payload, :allowed_count) %> · blocked <%= hub_cutover_consumption_count(@payload, :blocked_count) %> · no auth <%= hub_cutover_consumption_count(@payload, :no_authorization_count) %> · stale <%= hub_cutover_consumption_count(@payload, :stale_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  manual <%= hub_cutover_consumption_count(@payload, :manual_attention_count) %> · unsupported <%= hub_cutover_consumption_count(@payload, :unsupported_count) %> · malformed <%= hub_cutover_consumption_count(@payload, :malformed_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Execution Outcome</p>
+                <p class="metric-value"><%= hub_cutover_outcome_status(@payload) %></p>
+                <p class="metric-detail">
+                  succeeded <%= hub_cutover_outcome_count(@payload, :succeeded_count) %> · unknown <%= hub_cutover_outcome_count(@payload, :unknown_count) %> · manual <%= hub_cutover_outcome_count(@payload, :manual_attention_count) %> · failed <%= hub_cutover_outcome_count(@payload, :failed_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  entered <%= hub_cutover_outcome_count(@payload, :side_effect_entered_count) %> · not entered <%= hub_cutover_outcome_count(@payload, :side_effect_not_entered_count) %> · unresolved <%= hub_cutover_outcome_count(@payload, :unresolved_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Outcome Closeout</p>
+                <p class="metric-value"><%= hub_cutover_outcome_closeout_status(@payload) %></p>
+                <p class="metric-detail">
+                  unresolved <%= hub_cutover_outcome_closeout_count(@payload, :unresolved_outcome_count) %> · resolved <%= hub_cutover_outcome_closeout_count(@payload, :resolved_count) %> · stale <%= hub_cutover_outcome_closeout_count(@payload, :stale_count) %> · conflict <%= hub_cutover_outcome_closeout_count(@payload, :conflict_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  retry consideration <%= hub_cutover_outcome_closeout_count(@payload, :allow_explicit_retry_consideration_count) %> · manual <%= hub_cutover_outcome_closeout_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_outcome_closeout_count(@payload, :malformed_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Replay Decision</p>
+                <p class="metric-value"><%= hub_cutover_replay_decision_status(@payload) %></p>
+                <p class="metric-detail">
+                  blocked <%= hub_cutover_replay_decision_count(@payload, :unresolved_outcome_blocked_count) %> · retry allowed <%= hub_cutover_replay_decision_count(@payload, :retry_consideration_allowed_count) %> · denied <%= hub_cutover_replay_decision_count(@payload, :retry_consideration_denied_count) %> · no unresolved <%= hub_cutover_replay_decision_count(@payload, :no_unresolved_outcome_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_replay_decision_count(@payload, :stale_closeout_count) %> · conflict <%= hub_cutover_replay_decision_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_decision_count(@payload, :manual_attention_count) %> · malformed <%= hub_cutover_replay_decision_count(@payload, :malformed_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Replay Request</p>
+                <p class="metric-value"><%= hub_cutover_replay_request_audit_status(@payload) %></p>
+                <p class="metric-detail">
+                  requests <%= hub_cutover_replay_request_audit_count(@payload, :request_count) %> · allow <%= hub_cutover_replay_request_audit_count(@payload, :allow_count) %> · block <%= hub_cutover_replay_request_audit_count(@payload, :block_count) %> · no request <%= hub_cutover_replay_request_audit_count(@payload, :no_request_count) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_replay_request_audit_count(@payload, :stale_count) %> · conflict <%= hub_cutover_replay_request_audit_count(@payload, :conflict_count) %> · manual <%= hub_cutover_replay_request_audit_count(@payload, :manual_attention_count) %> · outcome recorded <%= hub_cutover_replay_request_audit_count(@payload, :linked_outcome_recorded_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Chain</p>
+                <p class="metric-value"><%= hub_cutover_closure_chain_status(@payload) %></p>
+                <p class="metric-detail">
+                  closed <%= hub_cutover_closure_chain_count(@payload, :closed_succeeded) %> · no-side <%= hub_cutover_closure_chain_count(@payload, :closed_no_side_effect) %> · retryable <%= hub_cutover_closure_chain_count(@payload, :open_retryable) %> · manual <%= hub_cutover_closure_chain_count(@payload, :open_manual_attention) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  stale <%= hub_cutover_closure_chain_count(@payload, :stale) %> · conflict <%= hub_cutover_closure_chain_count(@payload, :conflict) %> · malformed <%= hub_cutover_closure_chain_count(@payload, :malformed) %> · unsupported <%= hub_cutover_closure_chain_count(@payload, :unsupported) %> · no chain <%= hub_cutover_closure_chain_count(@payload, :no_chain) %> · no request <%= hub_cutover_closure_chain_count(@payload, :no_request) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  closeout refs current <%= hub_cutover_closure_chain_ref_count(@payload, :closeout, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :closeout, :missing) %> · replay decision refs current <%= hub_cutover_closure_chain_ref_count(@payload, :replay_decision, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :replay_decision, :missing) %> · request audit refs current <%= hub_cutover_closure_chain_ref_count(@payload, :replay_request_audit, :current) %> / missing <%= hub_cutover_closure_chain_ref_count(@payload, :replay_request_audit, :missing) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  reason <%= hub_cutover_closure_chain_recent_codes(@payload, :reason) %> · action <%= hub_cutover_closure_chain_recent_codes(@payload, :action) %> · fp <%= hub_cutover_closure_chain_recent_fingerprints(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_chain_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_chain_flag(@payload, :no_side_effects) %> · auto replay allowed <%= hub_cutover_closure_chain_flag(@payload, :auto_replay_allowed) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Conclusion</p>
+                <p class="metric-value"><%= hub_cutover_closure_conclusion(@payload) %></p>
+                <p class="metric-detail">
+                  severity <%= hub_cutover_closure_conclusion_value(@payload, :severity, "none") %> · attention <%= hub_cutover_closure_conclusion_value(@payload, :attention_level, "none") %>
+                </p>
+                <p class="metric-detail event-meta">
+                  summary <%= hub_cutover_closure_conclusion_value(@payload, :summary_code, "closure_no_chain") %> · actions <%= hub_cutover_closure_conclusion_list(@payload, :required_action_codes) %> · blocked <%= hub_cutover_closure_conclusion_blocked_by(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  evidence <%= hub_cutover_closure_conclusion_evidence(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_conclusion_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_conclusion_flag(@payload, :no_side_effects) %> · auto retry allowed <%= hub_cutover_closure_conclusion_flag(@payload, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_conclusion_flag(@payload, :auto_replay_allowed) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  pending execution <%= hub_cutover_closure_conclusion_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_flag(@payload, :legacy_takeover) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Closure Report Packet</p>
+                <p class="metric-value"><%= hub_cutover_closure_report_packet_status(@payload) %></p>
+                <p class="metric-detail">
+                  conclusion <%= hub_cutover_closure_report_packet_value(@payload, :operator_conclusion, "no_explicit_closure_chain") %> · severity <%= hub_cutover_closure_report_packet_value(@payload, :severity, "none") %> · attention <%= hub_cutover_closure_report_packet_value(@payload, :attention_level, "none") %>
+                </p>
+                <p class="metric-detail event-meta">
+                  actions <%= hub_cutover_closure_report_packet_list(@payload, :required_action_codes) %> (<%= hub_cutover_closure_report_packet_count(@payload, :required_action_count) %>) · blocked <%= hub_cutover_closure_report_packet_blocked_by(@payload) %> (<%= hub_cutover_closure_report_packet_count(@payload, :blocked_by_count) %>)
+                </p>
+                <p class="metric-detail event-meta">
+                  sections <%= hub_cutover_closure_report_packet_section_statuses(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  chain <%= hub_cutover_closure_report_packet_chain_status(@payload) %> · status <%= hub_cutover_closure_report_packet_chain_status_counts(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  evidence <%= hub_cutover_closure_report_packet_evidence(@payload) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  read-only <%= hub_cutover_closure_report_packet_flag(@payload, :read_only) %> · no side effects <%= hub_cutover_closure_report_packet_flag(@payload, :no_side_effects) %> · advisory <%= hub_cutover_closure_report_packet_flag(@payload, :actions_are_advisory) %> · auto retry allowed <%= hub_cutover_closure_report_packet_flag(@payload, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_report_packet_flag(@payload, :auto_replay_allowed) %>
+                </p>
+                <p class="metric-detail event-meta">
+                  pending execution <%= hub_cutover_closure_report_packet_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_report_packet_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_report_packet_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_report_packet_flag(@payload, :legacy_takeover) %>
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section class="section-card hub-project-details">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Hub 项目明细</h2>
+                <p class="section-copy">每个 Hub project 的 ownership、preflight、poll、dispatch、start、lifecycle 和 writeback 当前状态。</p>
+              </div>
+            </div>
+
+            <div class="table-wrap">
+              <table class="data-table hub-project-table">
+                <thead>
+                  <tr>
+                    <th>Project</th>
+                    <th>状态</th>
+                    <th>Poll / Preflight</th>
+                    <th>Dispatch / Start</th>
+                    <th>Lifecycle / Writeback</th>
+                    <th>需要处理</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={project <- @payload.hub_device_observability.projects}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= project.project_id %></span>
+                        <span class="muted event-meta"><%= project.name || project.detail.identity.provider_scope_key || "unknown scope" %></span>
+                        <span class="muted event-meta mono"><%= project.detail.config.config_fingerprint || "no fingerprint" %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
+                        <span class={hub_readiness_badge_class(project.migration_readiness && project.migration_readiness.decision)}>
+                          <%= hub_readiness_project_status(project.migration_readiness) %>
+                        </span>
+                        <span class={hub_activation_plan_badge_class(project.activation_plan && project.activation_plan.status)}>
+                          plan <%= hub_activation_project_status(project.activation_plan) %>
+                        </span>
+                        <span class={hub_activation_ack_badge_class(project.activation_plan && project.activation_plan.operator_acknowledgement && project.activation_plan.operator_acknowledgement.status)}>
+                          ack <%= hub_activation_ack_status(project.activation_plan) %>
+                        </span>
+                        <span class={hub_cutover_badge_class(project.cutover_gate && project.cutover_gate.decision)}>
+                          gate <%= hub_cutover_project_status(project.cutover_gate) %>
+                        </span>
+                        <span class={hub_cutover_audit_badge_class(project.cutover_operation_audit && project.cutover_operation_audit.status)}>
+                          audit <%= hub_cutover_audit_project_status(project.cutover_operation_audit) %>
+                        </span>
+                        <span class={hub_cutover_history_badge_class(project.cutover_audit_history && project.cutover_audit_history.status)}>
+                          history <%= hub_cutover_history_project_status(project.cutover_audit_history) %>
+                        </span>
+                        <span class={hub_cutover_permit_badge_class(project.cutover_readiness_permit && project.cutover_readiness_permit.status)}>
+                          permit <%= hub_cutover_permit_project_status(project.cutover_readiness_permit) %>
+                        </span>
+                        <span class={hub_cutover_authorization_badge_class(project.cutover_execution_authorization_ledger && project.cutover_execution_authorization_ledger.status)}>
+                          auth <%= hub_cutover_authorization_project_status(project.cutover_execution_authorization_ledger) %>
+                        </span>
+                        <span class={hub_cutover_consumption_badge_class(project.cutover_authorization_consumption_guard && project.cutover_authorization_consumption_guard.status)}>
+                          consume <%= hub_cutover_consumption_project_status(project.cutover_authorization_consumption_guard) %>
+                        </span>
+                        <span class={hub_cutover_outcome_badge_class(project.cutover_execution_outcome_ledger && project.cutover_execution_outcome_ledger.status)}>
+                          outcome <%= hub_cutover_outcome_project_status(project.cutover_execution_outcome_ledger) %>
+                        </span>
+                        <span class={hub_cutover_outcome_closeout_badge_class(project.cutover_execution_outcome_closeout && project.cutover_execution_outcome_closeout.status)}>
+                          closeout <%= hub_cutover_outcome_closeout_project_status(project.cutover_execution_outcome_closeout) %>
+                        </span>
+                        <span class={hub_cutover_replay_decision_badge_class(project.cutover_replay_decision && project.cutover_replay_decision.status)}>
+                          replay <%= hub_cutover_replay_decision_project_status(project.cutover_replay_decision) %>
+                        </span>
+                        <span class={hub_cutover_replay_request_audit_badge_class(project.cutover_replay_request_audit && project.cutover_replay_request_audit.status)}>
+                          replay request <%= hub_cutover_replay_request_audit_project_status(project.cutover_replay_request_audit) %>
+                        </span>
+                        <span class={hub_cutover_closure_chain_badge_class(project.cutover_closure_chain && project.cutover_closure_chain.status)}>
+                          closure <%= hub_cutover_closure_chain_project_status(project.cutover_closure_chain) %>
+                        </span>
+                        <span class={hub_cutover_closure_conclusion_badge_class(project.cutover_closure_conclusion && project.cutover_closure_conclusion.conclusion)}>
+                          conclusion <%= hub_cutover_closure_conclusion_project_status(project.cutover_closure_conclusion) %>
+                        </span>
+                        <span class={hub_cutover_closure_report_packet_badge_class(hub_cutover_closure_report_packet_project_status(project))}>
+                          report <%= hub_cutover_closure_report_packet_project_status(project) %>
+                        </span>
+                        <span class="muted event-meta"><%= project.migration_state %></span>
+                        <span :if={project.summary_error} class="muted event-meta">summary error <%= project.summary_error.code %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= hub_poll_text(project.detail.poll_eligibility) %></span>
+                        <span class="muted event-meta">
+                          preflight <%= hub_preflight_text(project.activation_preflight) %>
+                        </span>
+                        <span class="muted event-meta mono"><%= project.detail.poll_eligibility.next_due_at || project.detail.poll_eligibility.backoff_until || "暂无" %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span>intake <%= hub_count(project.detail.candidate_intake.counts, "candidate_count") %> / planned <%= hub_count(project.detail.dispatch_planning.counts, "planned_count") %></span>
+                        <span class="muted event-meta">applied <%= hub_count(project.detail.dispatch_application.counts, "applied_count") %> · start unknown <%= hub_count(project.detail.worker_start.counts, "unknown_count") %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span>running <%= project.detail.lifecycle.counts.running %> · unknown <%= project.detail.lifecycle.counts.unknown %></span>
+                        <span class="muted event-meta">writeback pending <%= project.detail.writeback.counts.pending %> · unknown <%= project.detail.writeback.counts.unknown %> · manual <%= project.detail.writeback.counts.manual_attention %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span><%= hub_attention_text(project) %></span>
+                        <span :if={project.activation_plan} class="muted event-meta mono">
+                          plan <%= hub_short_plan_id(project.activation_plan) %>
+                        </span>
+                        <span :for={action <- hub_required_acknowledgements(project)} class="muted event-meta">
+                          ack <%= action.code %>
+                        </span>
+                        <span :for={action <- hub_required_actions(project)} class="muted event-meta">
+                          action <%= action.code %>
+                        </span>
+                        <span :if={project.cutover_operation_audit && project.cutover_operation_audit.request} class="muted event-meta mono">
+                          request <%= hub_short_request_id(project.cutover_operation_audit.request) %>
+                        </span>
+                        <span :for={reason <- hub_cutover_audit_reasons(project)} class="muted event-meta">
+                          audit <%= reason %>
+                        </span>
+                        <span :if={project.cutover_audit_history} class="muted event-meta">
+                          unresolved <%= hub_cutover_history_project_count(project, :unresolved_manual_attention_count) %> · closed <%= hub_cutover_history_project_count(project, :closed_count) %> · stale <%= hub_cutover_history_project_count(project, :stale_count) %>
+                        </span>
+                        <span :for={item <- hub_unresolved_cutover_items(project)} class="muted event-meta">
+                          cutover <%= item.operation %> <%= item.reason_code %> / <%= item.required_operator_action_code %>
+                        </span>
+                        <span :if={project.cutover_readiness_permit} class="muted event-meta">
+                          permit ready <%= hub_cutover_permit_project_count(project, :ready_count) %> · blocked <%= hub_cutover_permit_project_count(project, :blocked_count) %> · stale <%= hub_cutover_permit_project_count(project, :stale_count) %>
+                        </span>
+                        <span :for={permit <- hub_cutover_project_permits(project)} class="muted event-meta">
+                          permit <%= permit.operation %> <%= permit.decision %>
+                        </span>
+                        <span :if={project.cutover_execution_authorization_ledger} class="muted event-meta">
+                          auth authorized <%= hub_cutover_authorization_project_count(project, :authorized_count) %> · blocked <%= hub_cutover_authorization_project_count(project, :blocked_count) %> · stale <%= hub_cutover_authorization_project_count(project, :stale_count) %>
+                        </span>
+                        <span :for={record <- hub_cutover_project_authorizations(project)} class="muted event-meta">
+                          auth <%= record.operation %> <%= record.status %>
+                        </span>
+                        <span :if={project.cutover_authorization_consumption_guard} class="muted event-meta">
+                          consume allowed <%= hub_cutover_consumption_project_count(project, :allowed_count) %> · blocked <%= hub_cutover_consumption_project_count(project, :blocked_count) %> · no auth <%= hub_cutover_consumption_project_count(project, :no_authorization_count) %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_consumption_blocks(project)} class="muted event-meta">
+                          consume <%= blocked.side_effect_source %> <%= blocked.decision %> / <%= blocked.reason_code %>
+                        </span>
+                        <span :if={project.cutover_execution_outcome_ledger} class="muted event-meta">
+                          outcome ok <%= hub_cutover_outcome_project_count(project, :succeeded_count) %> · unknown <%= hub_cutover_outcome_project_count(project, :unknown_count) %> · manual <%= hub_cutover_outcome_project_count(project, :manual_attention_count) %> · no side effects <%= hub_cutover_outcome_project_count(project, :side_effect_not_entered_count) %>
+                        </span>
+                        <span :for={outcome <- hub_cutover_project_unresolved_outcomes(project)} class="muted event-meta">
+                          outcome <%= outcome.side_effect_source %> <%= outcome.status %> / <%= outcome.reason_code %>
+                        </span>
+                        <span :if={project.cutover_execution_outcome_closeout} class="muted event-meta">
+                          closeout resolved <%= hub_cutover_outcome_closeout_project_count(project, :resolved_count) %> · stale <%= hub_cutover_outcome_closeout_project_count(project, :stale_count) %> · conflict <%= hub_cutover_outcome_closeout_project_count(project, :conflict_count) %>
+                        </span>
+                        <span :for={closeout <- hub_cutover_project_outcome_closeouts(project)} class="muted event-meta">
+                          closeout <%= closeout.side_effect_source %> <%= closeout.status %> / <%= closeout.resolution_code %>
+                        </span>
+                        <span :if={project.cutover_replay_decision} class="muted event-meta">
+                          replay blocked <%= hub_cutover_replay_decision_project_count(project, :unresolved_outcome_blocked_count) %> · retry allowed <%= hub_cutover_replay_decision_project_count(project, :retry_consideration_allowed_count) %> · stale <%= hub_cutover_replay_decision_project_count(project, :stale_closeout_count) %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_blocked_replay(project)} class="muted event-meta">
+                          replay <%= blocked.side_effect_source %> <%= blocked.decision %> / <%= blocked.reason_code %>
+                        </span>
+                        <span :for={reason <- hub_cutover_project_replay_reason_codes(project)} class="muted event-meta">
+                          replay reason <%= reason %>
+                        </span>
+                        <span :if={project.cutover_replay_request_audit} class="muted event-meta">
+                          replay request allow <%= hub_cutover_replay_request_audit_project_count(project, :allow_count) %> · block <%= hub_cutover_replay_request_audit_project_count(project, :block_count) %> · linked <%= hub_cutover_replay_request_audit_project_count(project, :linked_outcome_recorded_count) %>
+                        </span>
+                        <span :for={request <- hub_cutover_project_replay_requests(project)} class="muted event-meta">
+                          replay request <%= request.side_effect_source %> <%= request.status %> / <%= request.outcome_link_status %>
+                        </span>
+                        <span :if={project.cutover_closure_chain} class="muted event-meta">
+                          closure closed <%= hub_cutover_closure_chain_project_count(project, :closed_succeeded) %> · retryable <%= hub_cutover_closure_chain_project_count(project, :open_retryable) %> · manual <%= hub_cutover_closure_chain_project_count(project, :open_manual_attention) %> · no request <%= hub_cutover_closure_chain_project_count(project, :no_request) %>
+                        </span>
+                        <span :if={project.cutover_closure_chain} class="muted event-meta">
+                          closure refs closeout current <%= hub_cutover_closure_chain_project_ref_count(project, :closeout, :current) %> · replay decision current <%= hub_cutover_closure_chain_project_ref_count(project, :replay_decision, :current) %> · request audit current <%= hub_cutover_closure_chain_project_ref_count(project, :replay_request_audit, :current) %>
+                        </span>
+                        <span :for={reason <- hub_cutover_project_closure_reason_codes(project)} class="muted event-meta">
+                          closure reason <%= reason %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_action_codes(project)} class="muted event-meta">
+                          closure action <%= action %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_fingerprints(project)} class="muted event-meta mono">
+                          closure fp <%= fingerprint %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion summary <%= hub_cutover_closure_conclusion_project_value(project, :summary_code, "closure_no_chain") %> · severity <%= hub_cutover_closure_conclusion_project_value(project, :severity, "none") %> · attention <%= hub_cutover_closure_conclusion_project_value(project, :attention_level, "none") %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_conclusion_actions(project)} class="muted event-meta">
+                          conclusion action <%= action %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_closure_conclusion_blockers(project)} class="muted event-meta">
+                          conclusion blocked <%= blocked %>
+                        </span>
+                        <span :for={evidence <- hub_cutover_project_closure_conclusion_evidence(project)} class="muted event-meta">
+                          conclusion evidence <%= evidence %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_conclusion_fingerprints(project)} class="muted event-meta mono">
+                          conclusion fp <%= fingerprint %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion read-only <%= hub_cutover_closure_conclusion_project_flag(project, :read_only) %> · no side effects <%= hub_cutover_closure_conclusion_project_flag(project, :no_side_effects) %> · auto retry allowed <%= hub_cutover_closure_conclusion_project_flag(project, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_conclusion_project_flag(project, :auto_replay_allowed) %>
+                        </span>
+                        <span :if={project.cutover_closure_conclusion} class="muted event-meta">
+                          conclusion pending execution <%= hub_cutover_closure_conclusion_project_flag(project, :pending_execution) %> · pending retry <%= hub_cutover_closure_conclusion_project_flag(project, :pending_retry) %> · queued replay <%= hub_cutover_closure_conclusion_project_flag(project, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_conclusion_project_flag(project, :legacy_takeover) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report status <%= hub_cutover_closure_report_packet_project_status(project) %> · conclusion <%= hub_cutover_closure_report_packet_project_value(project, :operator_conclusion, "no_explicit_closure_chain") %> · scope <%= hub_cutover_closure_report_packet_project_scope(project) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report section <%= hub_cutover_closure_report_packet_project_section_statuses(project) %>
+                        </span>
+                        <span :for={action <- hub_cutover_project_closure_report_packet_actions(project)} class="muted event-meta">
+                          report action <%= action %>
+                        </span>
+                        <span :for={blocked <- hub_cutover_project_closure_report_packet_blockers(project)} class="muted event-meta">
+                          report blocked <%= blocked %>
+                        </span>
+                        <span :for={evidence <- hub_cutover_project_closure_report_packet_evidence(project)} class="muted event-meta">
+                          report evidence <%= evidence %>
+                        </span>
+                        <span :for={fingerprint <- hub_cutover_project_closure_report_packet_fingerprints(project)} class="muted event-meta mono">
+                          report fp <%= fingerprint %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report read-only <%= hub_cutover_closure_report_packet_project_flag(project, :read_only) %> · no side effects <%= hub_cutover_closure_report_packet_project_flag(project, :no_side_effects) %> · advisory <%= hub_cutover_closure_report_packet_project_flag(project, :actions_are_advisory) %> · auto retry allowed <%= hub_cutover_closure_report_packet_project_flag(project, :auto_retry_allowed) %> · auto replay allowed <%= hub_cutover_closure_report_packet_project_flag(project, :auto_replay_allowed) %>
+                        </span>
+                        <span :if={hub_project_closure_report_packet?(project)} class="muted event-meta">
+                          report pending execution <%= hub_cutover_closure_report_packet_project_flag(project, :pending_execution) %> · pending retry <%= hub_cutover_closure_report_packet_project_flag(project, :pending_retry) %> · queued replay <%= hub_cutover_closure_report_packet_project_flag(project, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_report_packet_project_flag(project, :legacy_takeover) %>
+                        </span>
+                        <span :for={reason <- Enum.take(project.backpressure_reasons, 3)} class="muted event-meta">
+                          <%= reason.reason %><%= if reason.detail, do: " · #{reason.detail}", else: "" %>
+                        </span>
+                        <span :for={reason <- hub_readiness_reasons(project)} class="muted event-meta">
+                          readiness <%= reason.code %>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <% end %>
+
         <section class="section-card">
           <div class="section-header">
             <div>
@@ -239,6 +751,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>状态</th>
                     <th>会话</th>
+                    <th>恢复证据</th>
                     <th>阻塞时间</th>
                     <th>最近更新</th>
                     <th>错误</th>
@@ -279,6 +792,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <% else %>
                         <span class="muted">暂无</span>
                       <% end %>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class="mono event-text" title={recovery_artifact_path(entry.recovery_artifact)}>
+                          <%= recovery_artifact_path(entry.recovery_artifact) || entry.workspace_path || "暂无" %>
+                        </span>
+                        <span :if={entry.recovery_artifact && entry.recovery_artifact.available? == false} class="muted event-meta">
+                          <%= entry.recovery_artifact.error || "workspace retained" %>
+                        </span>
+                      </div>
                     </td>
                     <td class="mono"><%= entry.blocked_at || "暂无" %></td>
                     <td>
@@ -447,6 +970,1344 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
+  defp hub_device?(payload) do
+    is_map(payload) and is_map(Map.get(payload, :hub_device_observability))
+  end
+
+  defp hub_scheduler_badge_class("scheduled"), do: "state-badge state-badge-warning"
+  defp hub_scheduler_badge_class("running"), do: "state-badge state-badge-active"
+  defp hub_scheduler_badge_class("coalesced"), do: "state-badge state-badge-warning"
+  defp hub_scheduler_badge_class("failed"), do: "state-badge state-badge-danger"
+  defp hub_scheduler_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_scheduler_status(%{enabled: false}), do: "scheduler disabled"
+  defp hub_scheduler_status(%{status: status}) when is_binary(status), do: "scheduler #{status}"
+  defp hub_scheduler_status(_scheduler), do: "scheduler unknown"
+
+  defp hub_status_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :project_status_counts, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_migration_count(payload, migration_state) do
+    payload
+    |> get_in([:hub_device_observability, :projects])
+    |> List.wrap()
+    |> Enum.count(&(Map.get(&1, :migration_state) == migration_state))
+  end
+
+  defp hub_readiness_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "unknown"
+    end
+  end
+
+  defp hub_readiness_count(payload, decision) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, :counts, :decisions, decision])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_activation_plan_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "unknown_manual_attention"
+    end
+  end
+
+  defp hub_activation_plan_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :counts, :plan_statuses, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_activation_ack_count(payload, status) do
+    payload
+    |> get_in([:hub_device_observability, :activation_plan, :counts, :acknowledgement_statuses, status])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "not_applicable"
+    end
+  end
+
+  defp hub_cutover_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_allowed_ops(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_gate, :projects])
+    |> case do
+      projects when is_list(projects) ->
+        projects
+        |> Enum.flat_map(&(Map.get(&1, :allowed_operations) || []))
+        |> Enum.uniq()
+        |> Enum.sort()
+        |> case do
+          [] -> "none"
+          ops -> Enum.join(ops, ", ")
+        end
+
+      _projects ->
+        "none"
+    end
+  end
+
+  defp hub_cutover_audit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_operation_audit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_audit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_operation_audit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_history_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_audit_history, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_history"
+    end
+  end
+
+  defp hub_cutover_history_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_audit_history, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_permit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_readiness_permit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_permit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_readiness_permit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_authorization_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_authorization_ledger, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_ready_permit"
+    end
+  end
+
+  defp hub_cutover_authorization_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_authorization_ledger, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_consumption_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_authorization_consumption_guard, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_consumption"
+    end
+  end
+
+  defp hub_cutover_consumption_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_authorization_consumption_guard, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_outcome_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_ledger, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_outcome"
+    end
+  end
+
+  defp hub_cutover_outcome_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_ledger, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_outcome_closeout_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_closeout, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_outcome"
+    end
+  end
+
+  defp hub_cutover_outcome_closeout_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_execution_outcome_closeout, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_replay_decision_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_decision, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_replay_decision"
+    end
+  end
+
+  defp hub_cutover_replay_decision_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_decision, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_replay_request_audit_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_request_audit, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_request"
+    end
+  end
+
+  defp hub_cutover_replay_request_audit_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :cutover_replay_request_audit, :counts, key])
+    |> case do
+      value when is_integer(value) -> value
+      _value -> 0
+    end
+  end
+
+  defp hub_cutover_closure_chain_status(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :status])
+    |> case do
+      status when is_binary(status) -> status
+      _status -> "no_chain"
+    end
+  end
+
+  defp hub_cutover_closure_chain_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :closure_status_counts])
+    |> hub_count(Atom.to_string(key))
+  end
+
+  defp hub_cutover_closure_chain_ref_count(payload, reference_type, status) do
+    payload
+    |> get_in([
+      :hub_device_observability,
+      :overview,
+      :cutover_closure_chain,
+      closure_chain_reference_count_key(reference_type)
+    ])
+    |> hub_count(Atom.to_string(status))
+  end
+
+  defp hub_cutover_closure_chain_recent_codes(payload, :reason) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_reason_codes])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_recent_codes(payload, :action) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_action_codes])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_recent_fingerprints(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, :recent_evidence_fingerprints])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_chain_flag(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_chain, key])
+    |> case do
+      true -> "true"
+      false -> "false"
+      _value -> "false"
+    end
+  end
+
+  defp hub_cutover_closure_conclusion(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :conclusion])
+    |> case do
+      conclusion when is_binary(conclusion) -> conclusion
+      _conclusion -> "no_explicit_closure_chain"
+    end
+  end
+
+  defp hub_cutover_closure_conclusion_value(payload, key, default) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_conclusion_list(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_conclusion_blocked_by(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :blocked_by])
+    |> format_blockers()
+  end
+
+  defp hub_cutover_closure_conclusion_evidence(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, :evidence_references])
+    |> format_evidence_references()
+  end
+
+  defp hub_cutover_closure_conclusion_flag(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_conclusion, key])
+    |> format_boolean_flag()
+  end
+
+  defp hub_cutover_closure_report_packet_status(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(:report_status)
+    |> string_or_default("no_chain")
+  end
+
+  defp hub_cutover_closure_report_packet_value(payload, key, default) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_report_packet_count(payload, count_key) do
+    packet = closure_report_packet_from_payload(payload)
+
+    case value_from_map(packet, count_key) do
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      _value ->
+        packet
+        |> value_from_map(packet_count_source_key(count_key))
+        |> short_values()
+        |> length()
+    end
+  end
+
+  defp hub_cutover_closure_report_packet_list(payload, key) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(key)
+    |> format_short_list()
+  end
+
+  defp hub_cutover_closure_report_packet_blocked_by(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> value_from_map(:blocked_by)
+    |> format_blockers()
+  end
+
+  defp hub_cutover_closure_report_packet_section_statuses(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_section_statuses()
+  end
+
+  defp hub_cutover_closure_report_packet_chain_status(payload) do
+    packet = closure_report_packet_from_payload(payload)
+    closure_chain = report_packet_closure_chain(packet)
+
+    (value_from_map(closure_chain, :status) || value_from_map(packet, :closure_chain_status))
+    |> string_or_default("no_chain")
+  end
+
+  defp hub_cutover_closure_report_packet_chain_status_counts(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_closure_chain()
+    |> value_from_map(:closure_status_counts)
+    |> format_count_map()
+  end
+
+  defp hub_cutover_closure_report_packet_evidence(payload) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_evidence_values()
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, ", ")
+    end
+  end
+
+  defp hub_cutover_closure_report_packet_flag(payload, key) do
+    payload
+    |> closure_report_packet_from_payload()
+    |> report_packet_flag(key)
+    |> format_boolean_flag()
+  end
+
+  defp hub_global_risk_count(payload, key) do
+    payload
+    |> get_in([:hub_device_observability, :migration_readiness, key])
+    |> List.wrap()
+    |> length()
+  end
+
+  defp hub_project_badge_class(status) do
+    case status do
+      "running" -> "state-badge state-badge-active"
+      "ready_to_poll" -> "state-badge state-badge-active"
+      "backoff" -> "state-badge state-badge-warning"
+      "blocked" -> "state-badge state-badge-danger"
+      "manual_attention" -> "state-badge state-badge-danger"
+      "config_invalid" -> "state-badge state-badge-danger"
+      "legacy_only" -> "state-badge state-badge-muted"
+      _status -> "state-badge state-badge-muted"
+    end
+  end
+
+  defp hub_readiness_badge_class("ready_for_dry_run"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("ready_for_hub_management"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("already_hub_managed"), do: "state-badge state-badge-active"
+  defp hub_readiness_badge_class("legacy_only"), do: "state-badge state-badge-muted"
+  defp hub_readiness_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_readiness_badge_class("unknown_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_readiness_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_activation_plan_badge_class("plan_ready"), do: "state-badge state-badge-active"
+  defp hub_activation_plan_badge_class("already_managed"), do: "state-badge state-badge-active"
+  defp hub_activation_plan_badge_class("ack_required"), do: "state-badge state-badge-warning"
+  defp hub_activation_plan_badge_class("ack_stale"), do: "state-badge state-badge-warning"
+  defp hub_activation_plan_badge_class("ack_conflict"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class("unknown_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_activation_plan_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_activation_ack_badge_class("accepted"), do: "state-badge state-badge-active"
+  defp hub_activation_ack_badge_class("missing"), do: "state-badge state-badge-warning"
+  defp hub_activation_ack_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_activation_ack_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_activation_ack_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_badge_class("allowed"), do: "state-badge state-badge-active"
+  defp hub_cutover_badge_class("staged_ready"), do: "state-badge state-badge-active"
+  defp hub_cutover_badge_class("not_applicable"), do: "state-badge state-badge-muted"
+  defp hub_cutover_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_audit_badge_class("dry_run_ready"), do: "state-badge state-badge-active"
+  defp hub_cutover_audit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_audit_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_audit_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_history_badge_class("history_ready"), do: "state-badge state-badge-active"
+  defp hub_cutover_history_badge_class("closed"), do: "state-badge state-badge-active"
+  defp hub_cutover_history_badge_class("no_history"), do: "state-badge state-badge-muted"
+  defp hub_cutover_history_badge_class("deferred"), do: "state-badge state-badge-warning"
+  defp hub_cutover_history_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_history_badge_class("unresolved_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_history_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_history_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_history_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_history_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_history_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_permit_badge_class("ready_for_execution_consideration"), do: "state-badge state-badge-active"
+  defp hub_cutover_permit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_permit_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_permit_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_permit_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_authorization_badge_class("authorized_for_explicit_execution"), do: "state-badge state-badge-active"
+  defp hub_cutover_authorization_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_authorization_badge_class("no_ready_permit"), do: "state-badge state-badge-muted"
+  defp hub_cutover_authorization_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_authorization_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_authorization_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_authorization_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_authorization_badge_class("summary_error"), do: "state-badge state-badge-danger"
+  defp hub_cutover_authorization_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_consumption_badge_class("allowed"), do: "state-badge state-badge-active"
+  defp hub_cutover_consumption_badge_class("no_consumption"), do: "state-badge state-badge-muted"
+  defp hub_cutover_consumption_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_consumption_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_consumption_badge_class("no_authorization"), do: "state-badge state-badge-danger"
+  defp hub_cutover_consumption_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_consumption_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_consumption_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_consumption_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_outcome_badge_class("succeeded"), do: "state-badge state-badge-active"
+  defp hub_cutover_outcome_badge_class("not_executed"), do: "state-badge state-badge-muted"
+  defp hub_cutover_outcome_badge_class("no_outcome"), do: "state-badge state-badge-muted"
+  defp hub_cutover_outcome_badge_class("retryable"), do: "state-badge state-badge-warning"
+  defp hub_cutover_outcome_badge_class("unknown"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class("failed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_outcome_closeout_badge_class("resolved"), do: "state-badge state-badge-active"
+  defp hub_cutover_outcome_closeout_badge_class("no_outcome"), do: "state-badge state-badge-muted"
+  defp hub_cutover_outcome_closeout_badge_class("no_closeout"), do: "state-badge state-badge-warning"
+  defp hub_cutover_outcome_closeout_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_outcome_closeout_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_outcome_closeout_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_replay_decision_badge_class("no_replay_decision"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_decision_badge_class("no_unresolved_outcome"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_decision_badge_class("retry_consideration_allowed"), do: "state-badge state-badge-active"
+  defp hub_cutover_replay_decision_badge_class("retry_consideration_denied"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_decision_badge_class("stale_closeout"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_decision_badge_class("blocked_unresolved_outcome"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_decision_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_replay_request_audit_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_replay_request_audit_badge_class("would_allow_retry_consideration"), do: "state-badge state-badge-active"
+  defp hub_cutover_replay_request_audit_badge_class("would_block"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_request_audit_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_replay_request_audit_badge_class("manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_replay_request_audit_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_closure_chain_badge_class("closed_succeeded"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_chain_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_chain_badge_class("no_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_chain_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_chain_badge_class("open_retryable"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_chain_badge_class("stale"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_chain_badge_class("open_manual_attention"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("conflict"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class("unsupported"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_chain_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_closure_conclusion_badge_class("closed_succeeded"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_conclusion_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("no_explicit_cutover_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("no_explicit_closure_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_conclusion_badge_class("waiting_explicit_retry_consideration"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("evidence_stale_reaudit_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("unsupported_closure_report_slice"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_conclusion_badge_class("manual_attention_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class("evidence_conflict_reaudit_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class("input_malformed"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_conclusion_badge_class(_conclusion), do: "state-badge state-badge-muted"
+
+  defp hub_cutover_closure_report_packet_badge_class("fully_closed"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_report_packet_badge_class("closed_succeeded_review"), do: "state-badge state-badge-active"
+  defp hub_cutover_closure_report_packet_badge_class("closed_no_side_effect"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("no_request"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("no_chain"), do: "state-badge state-badge-muted"
+  defp hub_cutover_closure_report_packet_badge_class("retry_consideration_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("stale_evidence_review_required"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("unsupported_report_slice"), do: "state-badge state-badge-warning"
+  defp hub_cutover_closure_report_packet_badge_class("manual_attention_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class("conflict_review_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class("malformed_input_review_required"), do: "state-badge state-badge-danger"
+  defp hub_cutover_closure_report_packet_badge_class(_status), do: "state-badge state-badge-muted"
+
+  defp hub_readiness_project_status(%{decision: decision}) when is_binary(decision), do: decision
+  defp hub_readiness_project_status(_readiness), do: "readiness unknown"
+
+  defp hub_activation_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_activation_project_status(_plan), do: "unknown"
+
+  defp hub_activation_ack_status(%{operator_acknowledgement: %{status: status}}) when is_binary(status), do: status
+  defp hub_activation_ack_status(_plan), do: "missing"
+
+  defp hub_cutover_project_status(%{decision: decision}) when is_binary(decision), do: decision
+  defp hub_cutover_project_status(_gate), do: "unknown"
+
+  defp hub_cutover_audit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_audit_project_status(_audit), do: "no_request"
+
+  defp hub_cutover_history_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_history_project_status(_history), do: "no_history"
+
+  defp hub_cutover_permit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_permit_project_status(_permit), do: "no_request"
+
+  defp hub_cutover_authorization_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_authorization_project_status(_ledger), do: "no_ready_permit"
+
+  defp hub_cutover_consumption_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_consumption_project_status(_guard), do: "no_consumption"
+
+  defp hub_cutover_outcome_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_outcome_project_status(_ledger), do: "no_outcome"
+
+  defp hub_cutover_outcome_closeout_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_outcome_closeout_project_status(_closeout), do: "no_outcome"
+
+  defp hub_cutover_replay_decision_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_replay_decision_project_status(_decision), do: "no_replay_decision"
+
+  defp hub_cutover_replay_request_audit_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_replay_request_audit_project_status(_audit), do: "no_request"
+
+  defp hub_cutover_closure_chain_project_status(%{status: status}) when is_binary(status), do: status
+  defp hub_cutover_closure_chain_project_status(_closure_chain), do: "no_chain"
+
+  defp hub_cutover_closure_conclusion_project_status(%{conclusion: conclusion}) when is_binary(conclusion), do: conclusion
+  defp hub_cutover_closure_conclusion_project_status(_conclusion), do: "no_explicit_closure_chain"
+
+  defp hub_cutover_closure_report_packet_project_status(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:report_status)
+    |> string_or_default("no_chain")
+  end
+
+  defp hub_project_status("ready_to_poll"), do: "ready"
+  defp hub_project_status("manual_attention"), do: "manual attention"
+  defp hub_project_status("config_invalid"), do: "config error"
+  defp hub_project_status("legacy_only"), do: "legacy-only"
+  defp hub_project_status(status) when is_binary(status), do: status
+  defp hub_project_status(_status), do: "unknown"
+
+  defp hub_recent_provider_failures(%{recent_failure_classes: failures}) when is_list(failures) and failures != [] do
+    failures
+    |> Enum.take(3)
+    |> Enum.join(", ")
+  end
+
+  defp hub_recent_provider_failures(_governance), do: "暂无 recent provider failure"
+
+  defp hub_poll_text(%{allow_poll: true}), do: "poll ready"
+
+  defp hub_poll_text(%{reason: reason}) when is_binary(reason) and reason != "" do
+    "poll #{reason}"
+  end
+
+  defp hub_poll_text(_poll), do: "poll unknown"
+
+  defp hub_preflight_text(nil), do: "not checked"
+  defp hub_preflight_text(%{status: status}) when is_binary(status), do: status
+  defp hub_preflight_text(_preflight), do: "unknown"
+
+  defp hub_count(counts, key) when is_map(counts) do
+    Map.get(counts, key) || hub_count_atom_key(counts, key) || 0
+  end
+
+  defp hub_count(_counts, _key), do: 0
+
+  defp hub_count_atom_key(counts, key) do
+    Map.get(counts, String.to_existing_atom(key))
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp hub_short_request_id(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
+    String.slice(request_id, 0, 12)
+  end
+
+  defp hub_short_request_id(%{request_fingerprint: fingerprint}) when is_binary(fingerprint) and fingerprint != "" do
+    String.slice(fingerprint, 0, 12)
+  end
+
+  defp hub_short_request_id(_request), do: "unknown"
+
+  defp hub_cutover_audit_reasons(%{cutover_operation_audit: %{reason_codes: reasons}}) when is_list(reasons) do
+    Enum.take(reasons, 3)
+  end
+
+  defp hub_cutover_audit_reasons(_project), do: []
+
+  defp hub_cutover_history_project_count(%{cutover_audit_history: %{counts: counts}}, key), do: hub_count(counts, Atom.to_string(key))
+  defp hub_cutover_history_project_count(_project, _key), do: 0
+
+  defp hub_unresolved_cutover_items(%{cutover_audit_history: %{unresolved_manual_attention: items}}) when is_list(items) do
+    Enum.take(items, 3)
+  end
+
+  defp hub_unresolved_cutover_items(_project), do: []
+
+  defp hub_cutover_permit_project_count(%{cutover_readiness_permit: %{permits: permits}}, key) when is_list(permits) do
+    decisions = %{
+      ready_count: "ready_for_execution_consideration",
+      blocked_count: "blocked",
+      stale_count: "stale",
+      manual_attention_count: "manual_attention",
+      unsupported_count: "unsupported",
+      malformed_count: "malformed"
+    }
+
+    case Map.fetch(decisions, key) do
+      {:ok, decision} -> Enum.count(permits, &(&1.decision == decision))
+      :error -> 0
+    end
+  end
+
+  defp hub_cutover_permit_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_permits(%{cutover_readiness_permit: %{permits: permits}}) when is_list(permits) do
+    Enum.take(permits, 3)
+  end
+
+  defp hub_cutover_project_permits(_project), do: []
+
+  defp hub_cutover_authorization_project_count(%{cutover_execution_authorization_ledger: %{records: records}}, key) when is_list(records) do
+    statuses = %{
+      authorized_count: "authorized_for_explicit_execution",
+      blocked_count: "blocked",
+      stale_count: "stale",
+      manual_attention_count: "manual_attention",
+      unsupported_count: "unsupported",
+      malformed_count: "malformed",
+      no_ready_permit_count: "no_ready_permit"
+    }
+
+    case Map.fetch(statuses, key) do
+      {:ok, status} -> Enum.count(records, &(&1.status == status))
+      :error -> 0
+    end
+  end
+
+  defp hub_cutover_authorization_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_authorizations(%{cutover_execution_authorization_ledger: %{records: records}}) when is_list(records) do
+    Enum.take(records, 3)
+  end
+
+  defp hub_cutover_project_authorizations(_project), do: []
+
+  defp hub_cutover_consumption_project_count(%{cutover_authorization_consumption_guard: %{counts: counts}}, key), do: hub_count(counts, Atom.to_string(key))
+  defp hub_cutover_consumption_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_consumption_blocks(%{cutover_authorization_consumption_guard: %{blocked_sources: blocked_sources}})
+       when is_list(blocked_sources) do
+    Enum.take(blocked_sources, 3)
+  end
+
+  defp hub_cutover_project_consumption_blocks(_project), do: []
+
+  defp hub_cutover_outcome_project_count(%{cutover_execution_outcome_ledger: %{counts: counts}}, key), do: hub_count(counts, Atom.to_string(key))
+  defp hub_cutover_outcome_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_unresolved_outcomes(%{cutover_execution_outcome_ledger: %{unresolved_outcomes: outcomes}})
+       when is_list(outcomes) do
+    Enum.take(outcomes, 3)
+  end
+
+  defp hub_cutover_project_unresolved_outcomes(_project), do: []
+
+  defp hub_cutover_outcome_closeout_project_count(%{cutover_execution_outcome_closeout: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_outcome_closeout_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_outcome_closeouts(%{cutover_execution_outcome_closeout: %{closeouts: closeouts}})
+       when is_list(closeouts) do
+    Enum.take(closeouts, 3)
+  end
+
+  defp hub_cutover_project_outcome_closeouts(_project), do: []
+
+  defp hub_cutover_replay_decision_project_count(%{cutover_replay_decision: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_replay_decision_project_count(_project, _key), do: 0
+
+  defp hub_cutover_replay_request_audit_project_count(%{cutover_replay_request_audit: %{counts: counts}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_replay_request_audit_project_count(_project, _key), do: 0
+
+  defp hub_cutover_project_replay_requests(%{cutover_replay_request_audit: %{requests: requests}})
+       when is_list(requests) do
+    Enum.take(requests, 3)
+  end
+
+  defp hub_cutover_project_replay_requests(_project), do: []
+
+  defp hub_cutover_project_blocked_replay(%{cutover_replay_decision: %{blocked_replay: blocked_replay}})
+       when is_list(blocked_replay) do
+    Enum.take(blocked_replay, 3)
+  end
+
+  defp hub_cutover_project_blocked_replay(_project), do: []
+
+  defp hub_cutover_project_replay_reason_codes(%{cutover_replay_decision: %{recent_reason_codes: reason_codes}})
+       when is_list(reason_codes) do
+    Enum.take(reason_codes, 3)
+  end
+
+  defp hub_cutover_project_replay_reason_codes(_project), do: []
+
+  defp hub_cutover_closure_chain_project_count(%{detail: %{closure_chain: %{closure_status_counts: counts}}}, key) do
+    hub_count(counts, Atom.to_string(key))
+  end
+
+  defp hub_cutover_closure_chain_project_count(_project, _key), do: 0
+
+  defp hub_cutover_closure_chain_project_ref_count(%{detail: %{closure_chain: closure_chain}}, reference_type, status)
+       when is_map(closure_chain) do
+    closure_chain
+    |> Map.get(closure_chain_reference_count_key(reference_type), %{})
+    |> hub_count(Atom.to_string(status))
+  end
+
+  defp hub_cutover_closure_chain_project_ref_count(_project, _reference_type, _status), do: 0
+
+  defp hub_cutover_project_closure_reason_codes(%{detail: %{closure_chain: %{recent_reason_codes: reason_codes}}})
+       when is_list(reason_codes) do
+    Enum.take(reason_codes, 3)
+  end
+
+  defp hub_cutover_project_closure_reason_codes(_project), do: []
+
+  defp hub_cutover_project_closure_action_codes(%{detail: %{closure_chain: %{recent_action_codes: action_codes}}})
+       when is_list(action_codes) do
+    Enum.take(action_codes, 3)
+  end
+
+  defp hub_cutover_project_closure_action_codes(_project), do: []
+
+  defp hub_cutover_project_closure_fingerprints(%{detail: %{closure_chain: %{safe_evidence_fingerprints: fingerprints}}})
+       when is_map(fingerprints) do
+    fingerprints
+    |> Enum.map(fn {key, value} -> "#{key}=#{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, "="))
+    |> Enum.sort()
+    |> Enum.take(3)
+  end
+
+  defp hub_cutover_project_closure_fingerprints(_project), do: []
+
+  defp hub_cutover_closure_conclusion_project_value(project, key, default) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_conclusion_project_flag(project, key) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(key)
+    |> format_boolean_flag()
+  end
+
+  defp hub_cutover_project_closure_conclusion_actions(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:required_action_codes)
+    |> short_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_blockers(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:blocked_by)
+    |> blocker_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_evidence(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:evidence_references)
+    |> evidence_reference_values()
+  end
+
+  defp hub_cutover_project_closure_conclusion_fingerprints(project) do
+    project
+    |> closure_conclusion_from_project()
+    |> value_from_map(:safe_evidence_fingerprints)
+    |> fingerprint_values()
+  end
+
+  defp hub_project_closure_report_packet?(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> map_size() > 0
+  end
+
+  defp hub_cutover_closure_report_packet_project_value(project, key, default) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(key)
+    |> string_or_default(default)
+  end
+
+  defp hub_cutover_closure_report_packet_project_scope(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:provider_scope)
+    |> format_provider_scope()
+  end
+
+  defp hub_cutover_closure_report_packet_project_section_statuses(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_section_statuses()
+  end
+
+  defp hub_cutover_project_closure_report_packet_actions(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:required_action_codes)
+    |> short_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_blockers(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> value_from_map(:blocked_by)
+    |> blocker_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_evidence(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_evidence_values()
+  end
+
+  defp hub_cutover_project_closure_report_packet_fingerprints(project) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_fingerprint_values()
+  end
+
+  defp hub_cutover_closure_report_packet_project_flag(project, key) do
+    project
+    |> closure_report_packet_from_project()
+    |> report_packet_flag(key)
+    |> format_boolean_flag()
+  end
+
+  defp closure_chain_reference_count_key(:closeout), do: :closeout_reference_status_counts
+  defp closure_chain_reference_count_key(:replay_decision), do: :replay_decision_reference_status_counts
+  defp closure_chain_reference_count_key(:replay_request_audit), do: :replay_request_audit_reference_status_counts
+
+  defp format_short_list(values) when is_list(values) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+    |> case do
+      [] -> "none"
+      items -> Enum.join(items, ", ")
+    end
+  end
+
+  defp format_short_list(_values), do: "none"
+
+  defp short_values(values) when is_list(values) do
+    values
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&to_string/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp short_values(_values), do: []
+
+  defp format_blockers(values) do
+    values
+    |> blocker_values()
+    |> case do
+      [] -> "none"
+      blockers -> Enum.join(blockers, ", ")
+    end
+  end
+
+  defp blocker_values(values) when is_list(values) do
+    values
+    |> Enum.map(&blocker_text/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp blocker_values(_values), do: []
+
+  defp blocker_text(value) when is_map(value) do
+    code = value |> value_from_map(:code) |> string_or_default("")
+    closure_status = value |> value_from_map(:closure_chain_status) |> string_or_default("")
+    reference_type = value |> value_from_map(:reference_type) |> string_or_default("")
+    reference_status = value |> value_from_map(:reference_status) |> string_or_default("")
+
+    cond do
+      code != "" and closure_status != "" -> "#{code}/#{closure_status}"
+      code != "" and reference_type != "" and reference_status != "" -> "#{code}/#{reference_type}:#{reference_status}"
+      code != "" -> code
+      true -> ""
+    end
+  end
+
+  defp blocker_text(value) when is_binary(value), do: value
+  defp blocker_text(_value), do: ""
+
+  defp format_evidence_references(values) do
+    values
+    |> evidence_reference_values()
+    |> case do
+      [] -> "none"
+      evidence -> Enum.join(evidence, ", ")
+    end
+  end
+
+  defp evidence_reference_values(values) when is_list(values) do
+    values
+    |> Enum.flat_map(&evidence_reference_texts/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(3)
+  end
+
+  defp evidence_reference_values(_values), do: []
+
+  defp evidence_reference_texts(reference) when is_map(reference) do
+    [
+      evidence_reference_status_text(reference),
+      reference |> value_from_map(:safe_evidence_fingerprints) |> fingerprint_values() |> Enum.join(", ")
+    ]
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp evidence_reference_texts(_reference), do: []
+
+  defp evidence_reference_status_text(reference) do
+    type = reference |> value_from_map(:type) |> string_or_default("")
+    status = reference |> value_from_map(:closure_chain_status) |> string_or_default("")
+    summary = reference |> value_from_map(:summary_code) |> string_or_default("")
+
+    [type, status, summary]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("/")
+  end
+
+  defp fingerprint_values(fingerprints) when is_map(fingerprints) do
+    fingerprints
+    |> Enum.map(fn {key, value} -> "#{key}=#{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, "="))
+    |> Enum.sort()
+    |> Enum.take(3)
+  end
+
+  defp fingerprint_values(_fingerprints), do: []
+
+  defp closure_conclusion_from_project(%{detail: %{closure_conclusion: conclusion}}) when is_map(conclusion) do
+    conclusion
+  end
+
+  defp closure_conclusion_from_project(%{cutover_closure_conclusion: conclusion}) when is_map(conclusion) do
+    conclusion
+  end
+
+  defp closure_conclusion_from_project(_project), do: %{}
+
+  defp closure_report_packet_from_payload(payload) do
+    payload
+    |> get_in([:hub_device_observability, :overview, :cutover_closure_report_packet])
+    |> case do
+      packet when is_map(packet) -> if usable_report_packet?(packet), do: packet, else: %{}
+      _packet -> %{}
+    end
+  end
+
+  defp closure_report_packet_from_project(%{detail: %{closure_report_packet: packet}}) when is_map(packet) do
+    if usable_report_packet?(packet), do: packet, else: %{}
+  end
+
+  defp closure_report_packet_from_project(%{cutover_closure_report_packet: packet}) when is_map(packet) do
+    if usable_report_packet?(packet), do: packet, else: %{}
+  end
+
+  defp closure_report_packet_from_project(_project), do: %{}
+
+  defp usable_report_packet?(packet) when is_map(packet) do
+    not is_nil(value_from_map(packet, :report_status)) or
+      not is_nil(value_from_map(packet, :operator_conclusion)) or
+      not is_nil(value_from_map(packet, :summary_code)) or
+      is_map(value_from_map(packet, :closure_chain)) or
+      is_map(value_from_map(packet, :section_statuses)) or
+      is_list(value_from_map(packet, :required_action_codes)) or
+      is_list(value_from_map(packet, :evidence_references))
+  end
+
+  defp packet_count_source_key(:required_action_count), do: :required_action_codes
+  defp packet_count_source_key(:blocked_by_count), do: :blocked_by
+
+  defp report_packet_closure_chain(packet) when is_map(packet) do
+    case value_from_map(packet, :closure_chain) do
+      chain when is_map(chain) -> chain
+      _chain -> %{}
+    end
+  end
+
+  defp report_packet_section_statuses(packet) when is_map(packet) do
+    packet
+    |> value_from_map(:section_statuses)
+    |> case do
+      statuses when is_map(statuses) and map_size(statuses) > 0 ->
+        statuses
+
+      _statuses ->
+        %{
+          closure_chain:
+            value_from_map(packet, :closure_chain_status) ||
+              value_from_map(report_packet_closure_chain(packet), :status) ||
+              "no_chain",
+          operator_conclusion:
+            value_from_map(packet, :operator_conclusion) ||
+              "no_explicit_closure_chain"
+        }
+    end
+    |> format_status_map()
+  end
+
+  defp report_packet_evidence_values(packet) when is_map(packet) do
+    evidence =
+      packet
+      |> value_from_map(:evidence_references)
+      |> evidence_reference_values()
+
+    (evidence ++ report_packet_fingerprint_values(packet))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.take(6)
+  end
+
+  defp report_packet_fingerprint_values(packet) when is_map(packet) do
+    closure_chain = report_packet_closure_chain(packet)
+
+    direct_fingerprint =
+      packet
+      |> value_from_map(:safe_evidence_fingerprint)
+      |> case do
+        fingerprint when is_binary(fingerprint) and fingerprint != "" -> ["packet=#{fingerprint}"]
+        _fingerprint -> []
+      end
+
+    chain_fingerprint =
+      closure_chain
+      |> value_from_map(:safe_evidence_fingerprint)
+      |> case do
+        fingerprint when is_binary(fingerprint) and fingerprint != "" -> ["chain=#{fingerprint}"]
+        _fingerprint -> []
+      end
+
+    (direct_fingerprint ++
+       fingerprint_values(value_from_map(packet, :safe_evidence_fingerprints)) ++
+       chain_fingerprint ++
+       fingerprint_values(value_from_map(closure_chain, :safe_evidence_fingerprints)))
+    |> Enum.uniq()
+    |> Enum.take(6)
+  end
+
+  defp report_packet_flag(packet, key) when is_map(packet) do
+    boundary = value_from_map(packet, :boundary_flags) || value_from_map(packet, :read_only_boundary) || %{}
+
+    case value_from_map(packet, key) do
+      value when is_boolean(value) -> value
+      _value -> boundary_flag_or_default(boundary, key)
+    end
+  end
+
+  defp boundary_flag_or_default(boundary, key) when is_map(boundary) do
+    case value_from_map(boundary, key) do
+      value when is_boolean(value) -> value
+      _value -> default_report_packet_flag(key)
+    end
+  end
+
+  defp default_report_packet_flag(key) when key in [:read_only, :no_side_effects, :actions_are_advisory], do: true
+  defp default_report_packet_flag(_key), do: false
+
+  defp format_provider_scope(scope) when is_map(scope) do
+    key =
+      scope
+      |> value_from_map(:provider_scope_key)
+      |> string_or_default("")
+      |> case do
+        "" -> scope |> value_from_map(:key) |> string_or_default("")
+        value -> value
+      end
+
+    kind = scope |> value_from_map(:kind) |> string_or_default("")
+    nested_scope = value_from_map(scope, :scope)
+    owner = if is_map(nested_scope), do: nested_scope |> value_from_map(:owner) |> string_or_default(""), else: ""
+    repo = if is_map(nested_scope), do: nested_scope |> value_from_map(:repo) |> string_or_default(""), else: ""
+
+    cond do
+      key != "" -> key
+      kind != "" and owner != "" and repo != "" -> "#{kind}:#{owner}/#{repo}"
+      kind != "" -> kind
+      true -> "unknown scope"
+    end
+  end
+
+  defp format_provider_scope(_scope), do: "unknown scope"
+
+  defp format_status_map(statuses) when is_map(statuses) do
+    statuses
+    |> Enum.map(fn {key, value} -> "#{key} #{value}" end)
+    |> Enum.reject(&String.ends_with?(&1, " "))
+    |> Enum.sort()
+    |> Enum.take(4)
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, " · ")
+    end
+  end
+
+  defp format_count_map(counts) when is_map(counts) do
+    counts
+    |> Enum.filter(fn {_key, value} -> is_integer(value) and value > 0 end)
+    |> Enum.map(fn {key, value} -> "#{key} #{value}" end)
+    |> Enum.sort()
+    |> Enum.take(4)
+    |> case do
+      [] -> "none"
+      values -> Enum.join(values, " · ")
+    end
+  end
+
+  defp format_count_map(_counts), do: "none"
+
+  defp value_from_map(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp string_or_default(value, _default) when is_binary(value) and value != "", do: value
+  defp string_or_default(_value, default), do: default
+
+  defp format_boolean_flag(value) do
+    if value == true, do: "true", else: "false"
+  end
+
+  defp hub_attention_text(%{summary_error: %{code: code}}), do: "summary error #{code}"
+  defp hub_attention_text(%{status: "manual_attention"}), do: "manual attention"
+  defp hub_attention_text(%{status: "blocked"}), do: "blocked"
+  defp hub_attention_text(%{status: "backoff"}), do: "backoff"
+  defp hub_attention_text(_project), do: "暂无"
+
+  defp hub_required_actions(%{migration_readiness: %{required_operator_actions: actions}}) when is_list(actions) do
+    Enum.take(actions, 4)
+  end
+
+  defp hub_required_actions(_project), do: []
+
+  defp hub_required_acknowledgements(%{activation_plan: %{required_acknowledgements: actions}}) when is_list(actions) do
+    Enum.take(actions, 4)
+  end
+
+  defp hub_required_acknowledgements(_project), do: []
+
+  defp hub_short_plan_id(%{plan_id: plan_id}) when is_binary(plan_id), do: String.slice(plan_id, 0, 12)
+  defp hub_short_plan_id(_plan), do: "unknown"
+
+  defp hub_readiness_reasons(%{migration_readiness: %{blocking_reasons: blocking, advisory_reasons: advisory}})
+       when is_list(blocking) and is_list(advisory) do
+    Enum.take(blocking ++ advisory, 3)
+  end
+
+  defp hub_readiness_reasons(_project), do: []
+
   defp stage_conflict_text(%{local_stage: local_stage, provider_stage: provider_stage}) do
     "#{local_stage || "unknown"} -> #{provider_stage || "unknown"}"
   end
@@ -456,6 +2317,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp stage_conflict_text(conflict), do: inspect(conflict, pretty: true)
+
+  defp recovery_artifact_path(%{artifact_dir: artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp recovery_artifact_path(%{"artifact_dir" => artifact_dir}) when is_binary(artifact_dir), do: artifact_dir
+  defp recovery_artifact_path(_artifact), do: nil
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

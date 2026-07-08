@@ -68,7 +68,7 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
       tracker_project_number: 7,
       tracker_project_status_field_name: "Status",
       tracker_active_states: ["Todo", "In Progress"],
-      tracker_terminal_states: ["Done", "Closed"]
+      tracker_terminal_states: ["Done", "Blocked"]
     )
 
     graphql_fun = fn query, variables ->
@@ -96,7 +96,8 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
                              "id" => "field-1",
                              "options" => [
                                %{"id" => "opt-todo", "name" => "Todo"},
-                               %{"id" => "opt-review", "name" => "In Progress"}
+                               %{"id" => "opt-review", "name" => "In Progress"},
+                               %{"id" => "opt-blocked", "name" => "Blocked"}
                              ]
                            }
                          }
@@ -139,6 +140,17 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
     assert mutation_variables.optionId == "opt-review"
 
     assert_receive {:github_project_rest, :patch, "/repos/openai/symphony/issues/42", %{state: "open"}}
+
+    assert :ok = GitHubClient.update_issue_state_for_test("42", "Blocked", graphql_fun, rest_fun)
+
+    assert_receive {:github_project_graphql, issue_query, issue_variables}
+    assert issue_query =~ "query SymphonyGitHubIssueByNumber"
+    assert issue_variables.issueNumber == 42
+
+    assert_receive {:github_project_graphql, mutation, mutation_variables}
+    assert mutation =~ "mutation SymphonyUpdateGitHubProjectStatus"
+    assert mutation_variables.optionId == "opt-blocked"
+    refute_receive {:github_project_rest, :patch, "/repos/openai/symphony/issues/42", %{state: "closed"}}, 100
   end
 
   test "GitLab contract pages candidates, refreshes IDs, comments, and maps active and terminal updates" do
@@ -206,6 +218,7 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
 
     assert :ok = GitLabClient.create_comment_for_test("gitlab:platform/symphony#7", "hello", request_fun)
     assert :ok = GitLabClient.update_issue_state_for_test("gitlab:platform/symphony#7", "Done", request_fun)
+    assert :ok = GitLabClient.update_issue_state_for_test("gitlab:platform/symphony#7", "Closed", request_fun)
     assert :ok = GitLabClient.update_issue_state_for_test("gitlab:platform/symphony#7", "Todo", request_fun)
 
     assert_receive {:gitlab_request, comment_request}
@@ -214,6 +227,9 @@ defmodule SymphonyElixir.ProviderContractE2ETest do
 
     assert_receive {:gitlab_request, close_request}
     assert close_request[:json] == %{state_event: "close"}
+
+    assert_receive {:gitlab_request, blocked_request}
+    assert blocked_request[:json] == %{state_event: "reopen"}
 
     assert_receive {:gitlab_request, reopen_request}
     assert reopen_request[:json] == %{state_event: "reopen"}

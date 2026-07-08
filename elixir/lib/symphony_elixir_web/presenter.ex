@@ -5,25 +5,79 @@ defmodule SymphonyElixirWeb.Presenter do
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
 
+  alias SymphonyElixir.Hub.{
+    ActivationPreflight,
+    CandidateIntake,
+    CutoverAuditHistory,
+    CutoverAuthorizationConsumptionGuard,
+    CutoverClosureChain,
+    CutoverClosureConclusion,
+    CutoverClosureReportPacket,
+    CutoverExecutionAuthorization,
+    CutoverExecutionOutcomeCloseout,
+    CutoverExecutionOutcomeLedger,
+    CutoverGate,
+    CutoverOperationAudit,
+    CutoverReadinessPermit,
+    CutoverReplayDecision,
+    CutoverReplayRequestAudit,
+    DeviceObservability,
+    DispatchPlanApplication,
+    DispatchPlanning,
+    PollCoordinator,
+    RuntimeLedger,
+    WorkerLifecycleReconciliation,
+    WorkerStartHandoff
+  }
+
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running = list_field(snapshot, :running)
+        retrying = list_field(snapshot, :retrying)
+        blocked = list_field(snapshot, :blocked)
+
         %{
           generated_at: generated_at,
           counts: %{
-            running: length(snapshot.running),
-            retrying: length(snapshot.retrying),
-            blocked: length(Map.get(snapshot, :blocked, []))
+            running: length(running),
+            retrying: length(retrying),
+            blocked: length(blocked)
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
-          codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          running: Enum.map(running, &running_entry_payload/1),
+          retrying: Enum.map(retrying, &retry_entry_payload/1),
+          blocked: Enum.map(blocked, &blocked_entry_payload/1),
+          codex_totals: map_field(snapshot, :codex_totals),
+          rate_limits: field(snapshot, :rate_limits)
         }
+        |> maybe_put_hub_runtime(snapshot)
+        |> maybe_put_hub_scheduler(snapshot)
+        |> maybe_put_hub_activation_preflight(snapshot)
+        |> maybe_put_hub_cutover_gate(snapshot)
+        |> maybe_put_hub_cutover_operation_audit(snapshot)
+        |> maybe_put_hub_cutover_audit_history(snapshot)
+        |> maybe_put_hub_cutover_readiness_permit(snapshot)
+        |> maybe_put_hub_cutover_execution_authorization_ledger(snapshot)
+        |> maybe_put_hub_cutover_authorization_consumption_guard(snapshot)
+        |> maybe_put_hub_cutover_execution_outcome_ledger(snapshot)
+        |> maybe_put_hub_cutover_execution_outcome_closeout(snapshot)
+        |> maybe_put_hub_cutover_replay_decision(snapshot)
+        |> maybe_put_hub_cutover_replay_request_audit(snapshot)
+        |> maybe_put_hub_cutover_closure_chain(snapshot)
+        |> maybe_put_hub_cutover_closure_conclusion(snapshot)
+        |> maybe_put_hub_cutover_closure_report_packet(snapshot)
+        |> maybe_put_hub_project_registry(snapshot)
+        |> maybe_put_hub_device_observability(snapshot)
+        |> maybe_put_hub_poll_coordination(snapshot)
+        |> maybe_put_hub_candidate_intake(snapshot)
+        |> maybe_put_hub_dispatch_planning(snapshot)
+        |> maybe_put_hub_dispatch_plan_application(snapshot)
+        |> maybe_put_hub_worker_start_handoff(snapshot)
+        |> maybe_put_hub_worker_lifecycle_reconciliation(snapshot)
+        |> maybe_put_hub_dispatch_boundary(snapshot)
 
       :timeout ->
         %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
@@ -59,7 +113,307 @@ defmodule SymphonyElixirWeb.Presenter do
         {:error, :unavailable}
 
       payload ->
-        {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+        {:ok, stringify_datetimes(payload)}
+    end
+  end
+
+  defp maybe_put_hub_scheduler(payload, snapshot) do
+    hub_scheduler =
+      Map.get(snapshot, :hub_scheduler) ||
+        Map.get(snapshot, "hub_scheduler")
+
+    case safe_map(hub_scheduler) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_scheduler, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_activation_preflight(payload, snapshot) do
+    hub_activation_preflight =
+      Map.get(snapshot, :hub_activation_preflight) ||
+        Map.get(snapshot, "hub_activation_preflight")
+
+    case ActivationPreflight.observability_snapshot(hub_activation_preflight) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_activation_preflight, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_gate(payload, snapshot) do
+    hub_cutover_gate =
+      Map.get(snapshot, :hub_cutover_gate) ||
+        Map.get(snapshot, "hub_cutover_gate")
+
+    case CutoverGate.observability_snapshot(hub_cutover_gate) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_gate, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_operation_audit(payload, snapshot) do
+    hub_cutover_operation_audit =
+      Map.get(snapshot, :hub_cutover_operation_audit) ||
+        Map.get(snapshot, "hub_cutover_operation_audit")
+
+    case CutoverOperationAudit.observability_snapshot(hub_cutover_operation_audit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_operation_audit, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_audit_history(payload, snapshot) do
+    hub_cutover_audit_history =
+      Map.get(snapshot, :hub_cutover_audit_history) ||
+        Map.get(snapshot, "hub_cutover_audit_history")
+
+    case CutoverAuditHistory.observability_snapshot(hub_cutover_audit_history) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_audit_history, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_readiness_permit(payload, snapshot) do
+    hub_cutover_readiness_permit =
+      Map.get(snapshot, :hub_cutover_readiness_permit) ||
+        Map.get(snapshot, "hub_cutover_readiness_permit")
+
+    case CutoverReadinessPermit.observability_snapshot(hub_cutover_readiness_permit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_readiness_permit, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_execution_authorization_ledger(payload, snapshot) do
+    hub_cutover_execution_authorization_ledger =
+      Map.get(snapshot, :hub_cutover_execution_authorization_ledger) ||
+        Map.get(snapshot, "hub_cutover_execution_authorization_ledger")
+
+    case CutoverExecutionAuthorization.observability_snapshot(hub_cutover_execution_authorization_ledger) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_execution_authorization_ledger, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_authorization_consumption_guard(payload, snapshot) do
+    hub_cutover_authorization_consumption_guard =
+      Map.get(snapshot, :hub_cutover_authorization_consumption_guard) ||
+        Map.get(snapshot, "hub_cutover_authorization_consumption_guard")
+
+    case CutoverAuthorizationConsumptionGuard.observability_snapshot(hub_cutover_authorization_consumption_guard) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_authorization_consumption_guard, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_execution_outcome_ledger(payload, snapshot) do
+    hub_cutover_execution_outcome_ledger =
+      Map.get(snapshot, :hub_cutover_execution_outcome_ledger) ||
+        Map.get(snapshot, "hub_cutover_execution_outcome_ledger")
+
+    case CutoverExecutionOutcomeLedger.observability_snapshot(hub_cutover_execution_outcome_ledger) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_execution_outcome_ledger, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_execution_outcome_closeout(payload, snapshot) do
+    hub_cutover_execution_outcome_closeout =
+      Map.get(snapshot, :hub_cutover_execution_outcome_closeout) ||
+        Map.get(snapshot, "hub_cutover_execution_outcome_closeout")
+
+    case CutoverExecutionOutcomeCloseout.observability_snapshot(hub_cutover_execution_outcome_closeout) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_execution_outcome_closeout, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_replay_decision(payload, snapshot) do
+    hub_cutover_replay_decision =
+      Map.get(snapshot, :hub_cutover_replay_decision) ||
+        Map.get(snapshot, "hub_cutover_replay_decision")
+
+    case CutoverReplayDecision.observability_snapshot(hub_cutover_replay_decision) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_replay_decision, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_replay_request_audit(payload, snapshot) do
+    hub_cutover_replay_request_audit =
+      Map.get(snapshot, :hub_cutover_replay_request_audit) ||
+        Map.get(snapshot, "hub_cutover_replay_request_audit")
+
+    case CutoverReplayRequestAudit.observability_snapshot(hub_cutover_replay_request_audit) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_replay_request_audit, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_closure_chain(payload, snapshot) do
+    hub_cutover_closure_chain =
+      Map.get(snapshot, :hub_cutover_closure_chain) ||
+        Map.get(snapshot, "hub_cutover_closure_chain")
+
+    case CutoverClosureChain.observability_snapshot(hub_cutover_closure_chain) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_closure_chain, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_closure_conclusion(payload, snapshot) do
+    hub_cutover_closure_conclusion =
+      Map.get(snapshot, :hub_cutover_closure_conclusion) ||
+        Map.get(snapshot, "hub_cutover_closure_conclusion") ||
+        Map.get(snapshot, :hub_cutover_closure_chain) ||
+        Map.get(snapshot, "hub_cutover_closure_chain")
+
+    case CutoverClosureConclusion.observability_snapshot(hub_cutover_closure_conclusion) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_closure_conclusion, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_cutover_closure_report_packet(payload, snapshot) do
+    hub_cutover_closure_report_packet =
+      Map.get(snapshot, :hub_cutover_closure_report_packet) ||
+        Map.get(snapshot, "hub_cutover_closure_report_packet")
+
+    hub_cutover_closure_chain =
+      Map.get(snapshot, :hub_cutover_closure_chain) ||
+        Map.get(snapshot, "hub_cutover_closure_chain")
+
+    hub_cutover_closure_conclusion =
+      Map.get(snapshot, :hub_cutover_closure_conclusion) ||
+        Map.get(snapshot, "hub_cutover_closure_conclusion")
+
+    source =
+      cond do
+        is_map(hub_cutover_closure_report_packet) ->
+          hub_cutover_closure_report_packet
+
+        is_map(hub_cutover_closure_chain) or is_map(hub_cutover_closure_conclusion) ->
+          %{
+            hub_cutover_closure_chain: hub_cutover_closure_chain,
+            hub_cutover_closure_conclusion: hub_cutover_closure_conclusion
+          }
+
+        true ->
+          nil
+      end
+
+    case CutoverClosureReportPacket.observability_snapshot(source) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_cutover_closure_report_packet, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_poll_coordination(payload, snapshot) do
+    hub_poll_coordination =
+      Map.get(snapshot, :hub_poll_coordination) ||
+        Map.get(snapshot, "hub_poll_coordination")
+
+    case PollCoordinator.observability_snapshot(hub_poll_coordination) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_poll_coordination, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_candidate_intake(payload, snapshot) do
+    hub_candidate_intake =
+      Map.get(snapshot, :hub_candidate_intake) ||
+        Map.get(snapshot, "hub_candidate_intake")
+
+    case CandidateIntake.observability_snapshot(hub_candidate_intake) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_candidate_intake, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_dispatch_planning(payload, snapshot) do
+    hub_dispatch_planning =
+      Map.get(snapshot, :hub_dispatch_planning) ||
+        Map.get(snapshot, "hub_dispatch_planning")
+
+    case DispatchPlanning.observability_snapshot(hub_dispatch_planning) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_dispatch_planning, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_dispatch_plan_application(payload, snapshot) do
+    hub_dispatch_plan_application =
+      Map.get(snapshot, :hub_dispatch_plan_application) ||
+        Map.get(snapshot, "hub_dispatch_plan_application")
+
+    case DispatchPlanApplication.observability_snapshot(hub_dispatch_plan_application) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_dispatch_plan_application, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_worker_start_handoff(payload, snapshot) do
+    hub_worker_start_handoff =
+      Map.get(snapshot, :hub_worker_start_handoff) ||
+        Map.get(snapshot, "hub_worker_start_handoff")
+
+    case WorkerStartHandoff.observability_snapshot(hub_worker_start_handoff) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_worker_start_handoff, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_worker_lifecycle_reconciliation(payload, snapshot) do
+    hub_worker_lifecycle_reconciliation =
+      Map.get(snapshot, :hub_worker_lifecycle_reconciliation) ||
+        Map.get(snapshot, "hub_worker_lifecycle_reconciliation")
+
+    case WorkerLifecycleReconciliation.observability_snapshot(hub_worker_lifecycle_reconciliation) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_worker_lifecycle_reconciliation, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_runtime(payload, snapshot) do
+    hub_runtime =
+      Map.get(snapshot, :hub_runtime) ||
+        Map.get(snapshot, "hub_runtime")
+
+    case safe_map(hub_runtime) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_runtime, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_project_registry(payload, snapshot) do
+    hub_project_registry =
+      Map.get(snapshot, :hub_project_registry) ||
+        Map.get(snapshot, "hub_project_registry")
+
+    case safe_map(hub_project_registry) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_project_registry, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_device_observability(payload, snapshot) do
+    hub_device_observability =
+      Map.get(snapshot, :hub_device_observability) ||
+        Map.get(snapshot, "hub_device_observability")
+
+    case DeviceObservability.observability_snapshot(hub_device_observability) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_device_observability, safe_snapshot)
+    end
+  end
+
+  defp maybe_put_hub_dispatch_boundary(payload, snapshot) do
+    hub_dispatch_boundary =
+      Map.get(snapshot, :hub_dispatch_boundary) ||
+        Map.get(snapshot, "hub_dispatch_boundary")
+
+    case RuntimeLedger.observability_snapshot(hub_dispatch_boundary) do
+      nil -> payload
+      safe_snapshot -> Map.put(payload, :hub_dispatch_boundary, safe_snapshot)
     end
   end
 
@@ -72,6 +426,7 @@ defmodule SymphonyElixirWeb.Presenter do
         path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry, blocked)
       },
+      recovery: blocked && Map.get(blocked, :recovery_artifact),
       attempts: %{
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
@@ -143,6 +498,7 @@ defmodule SymphonyElixirWeb.Presenter do
       current_stage: Map.get(entry, :current_stage),
       stage_conflict: Map.get(entry, :stage_conflict),
       error: entry.error,
+      recovery_artifact: Map.get(entry, :recovery_artifact),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -194,6 +550,7 @@ defmodule SymphonyElixirWeb.Presenter do
       current_stage: Map.get(blocked, :current_stage),
       stage_conflict: Map.get(blocked, :stage_conflict),
       error: blocked.error,
+      recovery_artifact: Map.get(blocked, :recovery_artifact),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
@@ -229,6 +586,36 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp safe_map(value) when is_map(value), do: value
+  defp safe_map(_value), do: nil
+
+  defp stringify_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp stringify_datetimes(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {key, stringify_datetimes(nested_value)} end)
+  end
+
+  defp stringify_datetimes(value) when is_list(value), do: Enum.map(value, &stringify_datetimes/1)
+  defp stringify_datetimes(value), do: value
+
+  defp list_field(snapshot, key) do
+    case field(snapshot, key) do
+      values when is_list(values) -> values
+      _ -> []
+    end
+  end
+
+  defp map_field(snapshot, key) do
+    case field(snapshot, key) do
+      value when is_map(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp field(snapshot, key) when is_map(snapshot) and is_atom(key) do
+    Map.get(snapshot, key) || Map.get(snapshot, Atom.to_string(key))
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

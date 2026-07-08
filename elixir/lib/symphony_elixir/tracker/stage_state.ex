@@ -91,9 +91,13 @@ defmodule SymphonyElixir.Tracker.StageState do
   @spec stage_for_provider_state(term()) :: {:ok, Tracker.stage_id()} | {:error, term()}
   def stage_for_provider_state(provider_state) when is_binary(provider_state) do
     normalized_state = normalize_state(provider_state)
+    states = stage_states()
 
-    stage_states()
-    |> Enum.find_value(fn {stage_id, %{"state" => mapped_provider_state}} ->
+    states
+    |> ordered_stage_ids()
+    |> Enum.find_value(fn stage_id ->
+      mapped_provider_state = states |> Map.fetch!(stage_id) |> Map.fetch!("state")
+
       if normalize_state(mapped_provider_state) == normalized_state, do: stage_id
     end)
     |> case do
@@ -123,6 +127,34 @@ defmodule SymphonyElixir.Tracker.StageState do
   end
 
   def terminal_provider_state?(_provider_state), do: false
+
+  @spec completion_stage?(Tracker.stage_id()) :: boolean()
+  def completion_stage?(stage_id) when is_binary(stage_id) do
+    normalized_stage = normalize_state(stage_id)
+
+    terminal_stage?(stage_id) and
+      completion_stage_name?(normalized_stage) and
+      not blocked_stage_name?(normalized_stage)
+  end
+
+  def completion_stage?(_stage_id), do: false
+
+  @spec completion_provider_state?(term()) :: boolean()
+  def completion_provider_state?(provider_state) when is_binary(provider_state) do
+    case stage_for_provider_state(provider_state) do
+      {:ok, stage_id} -> completion_stage?(stage_id)
+      {:error, _reason} -> false
+    end
+  end
+
+  def completion_provider_state?(_provider_state), do: false
+
+  @spec workflow_provider_state?(term()) :: boolean()
+  def workflow_provider_state?(provider_state) when is_binary(provider_state) do
+    match?({:ok, _stage_id}, stage_for_provider_state(provider_state))
+  end
+
+  def workflow_provider_state?(_provider_state), do: false
 
   @spec start_provider_states() :: [String.t()]
   def start_provider_states do
@@ -260,5 +292,24 @@ defmodule SymphonyElixir.Tracker.StageState do
     state
     |> String.trim()
     |> String.downcase()
+  end
+
+  defp completion_stage_name?(stage_id) do
+    stage_id in ["done", "complete", "completed", "merged", "closed", "resolved", "delivered"] or
+      String.contains?(stage_id, ["done", "complete", "merged", "resolved", "delivered"])
+  end
+
+  defp blocked_stage_name?(stage_id) do
+    String.contains?(stage_id, [
+      "blocked",
+      "protocol",
+      "rework",
+      "review",
+      "fail",
+      "error",
+      "cancel",
+      "duplicate",
+      "invalid"
+    ])
   end
 end

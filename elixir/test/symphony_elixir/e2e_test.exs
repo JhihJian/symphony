@@ -182,10 +182,18 @@ defmodule SymphonyElixir.E2ETest do
       assert_eventually(
         fn ->
           snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
-          snapshot.running == [] and snapshot.retrying == [] and snapshot.blocked == []
+
+          snapshot.running == [] and snapshot.retrying == [] and
+            match?([%{identifier: "MEM-STAGE-BLOCKED", current_stage: "blocked"}], snapshot.blocked)
         end,
         3_000
       )
+
+      snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert [%{workspace_path: blocked_workspace, recovery_artifact: recovery_artifact}] = snapshot.blocked
+      assert File.dir?(blocked_workspace)
+      assert %{available?: true, artifact_dir: artifact_dir} = recovery_artifact
+      assert File.dir?(artifact_dir)
 
       trace = File.read!(trace_file)
       assert_runner_session_counts(trace, 1)
@@ -227,10 +235,21 @@ defmodule SymphonyElixir.E2ETest do
       assert_eventually(
         fn ->
           snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
-          snapshot.running == [] and snapshot.retrying == [] and snapshot.blocked == []
+
+          snapshot.running == [] and snapshot.retrying == [] and
+            match?(
+              [%{identifier: "MEM-STAGE-PROTOCOL-BLOCKED", current_stage: "protocol_blocked"}],
+              snapshot.blocked
+            )
         end,
         3_000
       )
+
+      snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+      assert [%{workspace_path: blocked_workspace, recovery_artifact: recovery_artifact}] = snapshot.blocked
+      assert File.dir?(blocked_workspace)
+      assert %{available?: true, artifact_dir: artifact_dir} = recovery_artifact
+      assert File.dir?(artifact_dir)
 
       trace = File.read!(trace_file)
       assert_runner_session_counts(trace, 2)

@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Tracker.StageState
 
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
@@ -219,12 +220,7 @@ defmodule SymphonyElixir.Orchestrator do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
     else
-      Logger.info("Workflow-stage agent task completed for issue_id=#{issue_id} session_id=#{session_id}; releasing claim")
-
-      state
-      |> complete_issue(issue_id)
-      |> cleanup_terminal_workflow_stage_issue(running_entry)
-      |> release_issue_claim(issue_id)
+      handle_normal_agent_completion(state, issue_id, running_entry, session_id)
     end
   end
 
@@ -250,12 +246,45 @@ defmodule SymphonyElixir.Orchestrator do
     next_attempt = next_retry_attempt_from_running(running_entry)
 
     schedule_issue_retry(state, issue_id, next_attempt, %{
+      retry_kind: :running,
       identifier: running_entry.identifier,
       error: "agent exited: #{inspect(reason)}",
       current_stage: Map.get(running_entry, :current_stage),
       worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
+      workspace_path: Map.get(running_entry, :workspace_path),
+      session_id: running_entry_session_id(running_entry),
+      last_codex_message: Map.get(running_entry, :last_codex_message),
+      last_codex_event: Map.get(running_entry, :last_codex_event),
+      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
     })
+  end
+
+  defp handle_normal_agent_completion(state, issue_id, running_entry, session_id) do
+    case workflow_terminal_stage_kind(Map.get(running_entry, :current_stage)) do
+      :completion ->
+        Logger.info("Workflow-stage agent task completed for issue_id=#{issue_id} session_id=#{session_id}; releasing claim")
+
+        state
+        |> complete_issue(issue_id)
+        |> cleanup_completion_workflow_stage_issue(running_entry)
+        |> release_issue_claim(issue_id)
+
+      {:blocked, stage_id} ->
+        error = "workflow stage #{stage_id} is terminal but not a completion stage"
+
+        Logger.warning(
+          "Workflow-stage agent task ended blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id} stage=#{stage_id}; preserving claim and workspace"
+        )
+
+        block_issue_from_entry(state, issue_id, running_entry, error)
+
+      :non_terminal ->
+        Logger.warning(
+          "Workflow-stage agent task exited normally before a terminal stage for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}; scheduling retry"
+        )
+
+        retry_agent_down(state, issue_id, running_entry, session_id, :normal_non_terminal_exit)
+    end
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -490,19 +519,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stage_issue_state(%Issue{} = issue, state) do
-    cond do
-      stage_terminal_issue?(issue) ->
-        Logger.info("Issue moved to terminal workflow stage: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+    case issue_terminal_stage_kind(issue) do
+      :completion ->
+        Logger.info("Issue moved to completion workflow stage: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
         terminate_running_issue(state, issue.id, true)
 
-      !issue_routable?(issue) ->
-        Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
+      {:blocked, stage_id} ->
+        Logger.info("Issue moved to blocked workflow stage: #{issue_context(issue)} stage=#{stage_id} state=#{issue.state}; stopping active agent and preserving workspace")
 
-        terminate_running_issue(state, issue.id, false)
+        stop_and_block_running_terminal_issue(state, issue, stage_id)
 
-      true ->
-        reconcile_running_stage_conflict(state, issue)
+      :non_terminal ->
+        if issue_routable?(issue) do
+          reconcile_running_stage_conflict(state, issue)
+        else
+          Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
+
+          terminate_running_issue(state, issue.id, false)
+        end
     end
   end
 
@@ -538,18 +573,22 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stage_blocked_issue_state(%Issue{} = issue, state) do
-    cond do
-      stage_terminal_issue?(issue) ->
-        Logger.info("Blocked issue moved to terminal workflow stage: #{issue_context(issue)} state=#{issue.state}; releasing block")
+    case issue_terminal_stage_kind(issue) do
+      :completion ->
+        Logger.info("Blocked issue moved to completion workflow stage: #{issue_context(issue)} state=#{issue.state}; releasing block")
         cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
         release_issue_claim(state, issue.id)
 
-      !issue_routable?(issue) ->
-        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
-        release_issue_claim(state, issue.id)
-
-      true ->
+      {:blocked, _stage_id} ->
         refresh_or_mark_blocked_stage_conflict(state, issue)
+
+      :non_terminal ->
+        if issue_routable?(issue) do
+          refresh_or_mark_blocked_stage_conflict(state, issue)
+        else
+          Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
+          release_issue_claim(state, issue.id)
+        end
     end
   end
 
@@ -714,8 +753,16 @@ defmodule SymphonyElixir.Orchestrator do
         state
         |> terminate_running_issue(issue_id, false)
         |> schedule_issue_retry(issue_id, next_attempt, %{
+          retry_kind: :running,
           identifier: identifier,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
+          error: "stalled for #{elapsed_ms}ms without codex activity",
+          current_stage: Map.get(running_entry, :current_stage),
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path),
+          session_id: session_id,
+          last_codex_message: Map.get(running_entry, :last_codex_message),
+          last_codex_event: Map.get(running_entry, :last_codex_event),
+          last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
         })
       end
     else
@@ -838,7 +885,26 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, error)
   end
 
+  defp stop_and_block_running_terminal_issue(%State{} = state, %Issue{id: issue_id} = issue, stage_id) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        state
+
+      running_entry ->
+        running_entry =
+          running_entry
+          |> Map.put(:issue, issue)
+          |> Map.put(:current_stage, stage_id)
+
+        state
+        |> record_session_completion_totals(running_entry)
+        |> stop_and_block_issue(issue_id, running_entry, "provider workflow stage #{stage_id} is blocked terminal")
+    end
+  end
+
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    recovery_artifact = blocked_recovery_artifact(running_entry, issue_id, error)
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -849,6 +915,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
       error: error,
+      recovery_artifact: recovery_artifact,
       blocked_at: DateTime.utc_now(),
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
@@ -862,6 +929,23 @@ defmodule SymphonyElixir.Orchestrator do
         claimed: MapSet.put(state.claimed, issue_id),
         blocked: Map.put(state.blocked, issue_id, blocked_entry)
     }
+  end
+
+  defp blocked_recovery_artifact(metadata, issue_id, error) when is_map(metadata) do
+    workspace_path = Map.get(metadata, :workspace_path)
+    worker_host = Map.get(metadata, :worker_host)
+
+    Workspace.preserve_blocked_artifacts(workspace_path, worker_host, %{
+      issue_id: issue_id,
+      identifier: Map.get(metadata, :identifier, issue_id),
+      current_stage: Map.get(metadata, :current_stage),
+      session_id: Map.get(metadata, :session_id),
+      error: error
+    })
+  end
+
+  defp blocked_recovery_artifact(_metadata, issue_id, error) do
+    Workspace.preserve_blocked_artifacts(nil, nil, %{issue_id: issue_id, error: error})
   end
 
   defp choose_issues(issues, state) do
@@ -999,6 +1083,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+    do_dispatch_issue(state, issue, attempt, preferred_worker_host, nil)
+  end
+
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, current_stage) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -1007,11 +1095,11 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, current_stage)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, current_stage) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
@@ -1029,6 +1117,7 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
+            current_stage: current_stage,
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
@@ -1056,12 +1145,17 @@ defmodule SymphonyElixir.Orchestrator do
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
         schedule_issue_retry(state, issue.id, next_attempt, %{
+          retry_kind: retry_kind_for_current_stage(current_stage),
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}",
+          current_stage: current_stage,
           worker_host: worker_host
         })
     end
   end
+
+  defp retry_kind_for_current_stage(stage) when is_binary(stage), do: :running
+  defp retry_kind_for_current_stage(_stage), do: :dispatch
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
@@ -1092,17 +1186,15 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp cleanup_terminal_workflow_stage_issue(%State{} = state, running_entry) when is_map(running_entry) do
+  defp cleanup_completion_workflow_stage_issue(%State{} = state, running_entry) when is_map(running_entry) do
     current_stage = Map.get(running_entry, :current_stage)
 
-    if is_binary(current_stage) and current_stage in workflow_terminal_stages() do
+    if completion_workflow_stage?(current_stage) do
       cleanup_issue_workspace(Map.get(running_entry, :identifier), Map.get(running_entry, :worker_host))
     end
 
     state
   end
-
-  defp cleanup_terminal_workflow_stage_issue(%State{} = state, _running_entry), do: state
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
@@ -1117,6 +1209,11 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     current_stage = metadata[:current_stage] || Map.get(previous_retry, :current_stage)
+    retry_kind = metadata[:retry_kind] || Map.get(previous_retry, :retry_kind) || :dispatch
+    session_id = metadata[:session_id] || Map.get(previous_retry, :session_id)
+    last_codex_message = metadata[:last_codex_message] || Map.get(previous_retry, :last_codex_message)
+    last_codex_event = metadata[:last_codex_event] || Map.get(previous_retry, :last_codex_event)
+    last_codex_timestamp = metadata[:last_codex_timestamp] || Map.get(previous_retry, :last_codex_timestamp)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1136,11 +1233,16 @@ defmodule SymphonyElixir.Orchestrator do
             timer_ref: timer_ref,
             retry_token: retry_token,
             due_at_ms: due_at_ms,
+            retry_kind: retry_kind,
             identifier: identifier,
             current_stage: current_stage,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            session_id: session_id,
+            last_codex_message: last_codex_message,
+            last_codex_event: last_codex_event,
+            last_codex_timestamp: last_codex_timestamp
           })
     }
   end
@@ -1149,11 +1251,16 @@ defmodule SymphonyElixir.Orchestrator do
     case Map.get(state.retry_attempts, issue_id) do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
         metadata = %{
+          retry_kind: Map.get(retry_entry, :retry_kind),
           identifier: Map.get(retry_entry, :identifier),
           current_stage: Map.get(retry_entry, :current_stage),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          session_id: Map.get(retry_entry, :session_id),
+          last_codex_message: Map.get(retry_entry, :last_codex_message),
+          last_codex_event: Map.get(retry_entry, :last_codex_event),
+          last_codex_timestamp: Map.get(retry_entry, :last_codex_timestamp)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1190,27 +1297,140 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
-    cond do
-      terminal_retry_issue?(issue) ->
-        Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
-
-        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
-        {:noreply, release_issue_claim(state, issue_id)}
-
-      retry_candidate_issue?(issue) ->
-        handle_active_retry(state, issue, attempt, metadata)
-
-      true ->
-        Logger.debug("Issue is not retry-dispatch eligible, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{inspect(issue.state)}")
-
-        {:noreply, release_issue_claim(state, issue_id)}
+    if metadata[:retry_kind] == :running do
+      handle_running_retry_issue_lookup(issue, state, issue_id, attempt, metadata)
+    else
+      handle_dispatch_retry_issue_lookup(issue, state, issue_id, attempt, metadata)
     end
+  end
+
+  defp handle_retry_issue_lookup(nil, state, issue_id, attempt, %{retry_kind: :running} = metadata) do
+    Logger.warning("Running retry issue no longer visible; keeping claim blocked issue_id=#{issue_id}")
+    {:noreply, block_issue_from_retry(state, issue_id, nil, attempt, metadata, :issue_not_found, nil)}
   end
 
   defp handle_retry_issue_lookup(nil, state, issue_id, _attempt, _metadata) do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, release_issue_claim(state, issue_id)}
   end
+
+  defp handle_dispatch_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
+    case issue_terminal_stage_kind(issue) do
+      :completion ->
+        Logger.info("Issue state is completion terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
+
+        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      {:blocked, stage_id} ->
+        Logger.warning(
+          "Issue state is blocked terminal during dispatch retry: issue_id=#{issue_id} issue_identifier=#{issue.identifier} stage=#{stage_id} state=#{issue.state}; preserving claim and workspace"
+        )
+
+        {:noreply,
+         block_issue_from_retry(
+           state,
+           issue_id,
+           issue,
+           attempt,
+           metadata,
+           {:terminal_blocked_stage, stage_id},
+           nil
+         )}
+
+      :non_terminal ->
+        if retry_candidate_issue?(issue) do
+          handle_active_retry(state, issue, attempt, metadata)
+        else
+          Logger.debug("Issue is not retry-dispatch eligible, removing claim issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{inspect(issue.state)}")
+
+          {:noreply, release_issue_claim(state, issue_id)}
+        end
+    end
+  end
+
+  defp handle_running_retry_issue_lookup(%Issue{} = issue, state, issue_id, attempt, metadata) do
+    case classify_running_retry_issue(issue, metadata) do
+      {:completion_terminal, provider_stage} ->
+        Logger.info(
+          "Running retry reached completion workflow stage: issue_id=#{issue_id} issue_identifier=#{issue.identifier} stage=#{provider_stage} state=#{issue.state}; removing associated workspace"
+        )
+
+        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      {:blocked_terminal, provider_stage} ->
+        reason = {:terminal_blocked_stage, provider_stage}
+
+        Logger.warning(
+          "Running retry reached blocked workflow stage: issue_id=#{issue_id} issue_identifier=#{issue.identifier} stage=#{provider_stage} state=#{issue.state}; preserving claim and workspace"
+        )
+
+        {:noreply, block_issue_from_retry(state, issue_id, issue, attempt, metadata, reason, nil)}
+
+      {:recoverable, provider_stage} ->
+        handle_active_running_retry(state, issue, attempt, metadata, provider_stage)
+
+      {:blocked, reason, stage_conflict} ->
+        Logger.warning("Running retry cannot be safely recovered: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{inspect(issue.state)} reason=#{inspect(reason)}")
+
+        {:noreply, block_issue_from_retry(state, issue_id, issue, attempt, metadata, reason, stage_conflict)}
+    end
+  end
+
+  defp classify_running_retry_issue(%Issue{} = issue, metadata) when is_map(metadata) do
+    cond do
+      !issue_routable?(issue) ->
+        {:blocked, :issue_not_routable, nil}
+
+      blocked_by_unresolved_issue?(issue) ->
+        {:blocked, :blocked_by_unresolved_issue, nil}
+
+      true ->
+        classify_running_retry_stage(issue, metadata)
+    end
+  end
+
+  defp classify_running_retry_stage(%Issue{} = issue, metadata) when is_map(metadata) do
+    case Tracker.read_issue_stage(issue) do
+      {:ok, provider_stage} ->
+        cond do
+          completion_workflow_stage?(provider_stage) ->
+            {:completion_terminal, provider_stage}
+
+          provider_stage in workflow_terminal_stages() ->
+            {:blocked_terminal, provider_stage}
+
+          running_retry_stage_conflict?(metadata[:current_stage], provider_stage) ->
+            {:blocked, {:workflow_stage_conflict, metadata[:current_stage], provider_stage},
+             stage_conflict(
+               :running_retry,
+               metadata[:current_stage],
+               provider_stage,
+               issue
+             )}
+
+          true ->
+            {:recoverable, provider_stage}
+        end
+
+      {:error, reason} ->
+        {:blocked, {:unreadable_workflow_stage, reason},
+         stage_conflict(
+           :running_retry,
+           metadata[:current_stage],
+           {:error, reason},
+           issue
+         )}
+    end
+  end
+
+  defp running_retry_stage_conflict?(expected_stage, provider_stage)
+       when is_binary(expected_stage) and is_binary(provider_stage) do
+    expected_stage != provider_stage
+  end
+
+  defp running_retry_stage_conflict?(_expected_stage, _provider_stage), do: false
 
   defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
     Workspace.remove_issue_workspaces(identifier, worker_host)
@@ -1250,6 +1470,81 @@ defmodule SymphonyElixir.Orchestrator do
            error: "no available orchestrator slots"
          })
        )}
+    end
+  end
+
+  defp handle_active_running_retry(state, issue, attempt, metadata, provider_stage) do
+    if dispatch_slots_available?(issue, state) and
+         worker_slots_available?(state, metadata[:worker_host]) do
+      {:noreply, do_dispatch_issue(state, issue, attempt, metadata[:worker_host], provider_stage)}
+    else
+      Logger.debug("No available slots for running retry #{issue_context(issue)}; retrying again")
+
+      {:noreply,
+       schedule_issue_retry(
+         state,
+         issue.id,
+         attempt + 1,
+         metadata
+         |> Map.merge(%{
+           retry_kind: :running,
+           identifier: issue.identifier,
+           current_stage: provider_stage
+         })
+         |> Map.put_new(:error, "no available orchestrator slots")
+       )}
+    end
+  end
+
+  defp block_issue_from_retry(%State{} = state, issue_id, issue, attempt, metadata, reason, stage_conflict)
+       when is_binary(issue_id) and is_map(metadata) do
+    error = retry_block_error(reason, metadata)
+    recovery_artifact = blocked_recovery_artifact(metadata, issue_id, error)
+
+    blocked_entry = %{
+      issue_id: issue_id,
+      identifier: retry_block_identifier(issue_id, issue, metadata),
+      issue: issue,
+      current_stage: retry_block_current_stage(metadata, stage_conflict),
+      stage_conflict: stage_conflict,
+      worker_host: metadata[:worker_host],
+      workspace_path: metadata[:workspace_path],
+      session_id: metadata[:session_id],
+      error: error,
+      recovery_artifact: recovery_artifact,
+      retry_kind: metadata[:retry_kind],
+      retry_attempt: attempt,
+      blocked_at: DateTime.utc_now(),
+      last_codex_message: metadata[:last_codex_message],
+      last_codex_event: metadata[:last_codex_event],
+      last_codex_timestamp: metadata[:last_codex_timestamp]
+    }
+
+    %{
+      state
+      | running: Map.delete(state.running, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id),
+        claimed: MapSet.put(state.claimed, issue_id),
+        blocked: Map.put(state.blocked, issue_id, blocked_entry)
+    }
+  end
+
+  defp retry_block_identifier(_issue_id, %Issue{identifier: identifier}, _metadata) when is_binary(identifier),
+    do: identifier
+
+  defp retry_block_identifier(issue_id, _issue, metadata), do: metadata[:identifier] || issue_id
+
+  defp retry_block_current_stage(_metadata, %{provider_stage: provider_stage}) when is_binary(provider_stage),
+    do: provider_stage
+
+  defp retry_block_current_stage(metadata, _stage_conflict), do: metadata[:current_stage]
+
+  defp retry_block_error(reason, metadata) do
+    base = inspect(reason)
+
+    case metadata[:error] do
+      previous when is_binary(previous) and previous != "" -> previous <> "; recovery blocked: " <> base
+      _ -> "running retry recovery blocked: " <> base
     end
   end
 
@@ -1320,16 +1615,21 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp stage_terminal_issue?(%Issue{} = issue) do
-    case Tracker.read_issue_stage(issue) do
-      {:ok, stage_id} ->
-        stage_id in workflow_terminal_stages()
-
-      {:error, reason} ->
-        Logger.warning("Unable to read provider workflow stage for terminal reconcile: #{issue_context(issue)} state=#{inspect(issue.state)} reason=#{inspect(reason)}")
-        false
+  defp workflow_terminal_stage_kind(stage_id) when is_binary(stage_id) do
+    cond do
+      completion_workflow_stage?(stage_id) -> :completion
+      stage_id in workflow_terminal_stages() -> {:blocked, stage_id}
+      true -> :non_terminal
     end
   end
+
+  defp workflow_terminal_stage_kind(_stage_id), do: :non_terminal
+
+  defp completion_workflow_stage?(stage_id) when is_binary(stage_id) do
+    StageState.completion_stage?(stage_id)
+  end
+
+  defp completion_workflow_stage?(_stage_id), do: false
 
   defp stage_terminal_provider_state?(provider_state) when is_binary(provider_state) do
     stage_state = %Issue{
@@ -1343,10 +1643,6 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, stage_id} -> stage_id in workflow_terminal_stages()
       {:error, _reason} -> false
     end
-  end
-
-  defp terminal_retry_issue?(%Issue{} = issue) do
-    stage_terminal_issue?(issue)
   end
 
   defp retry_candidate_issue?(%Issue{} = issue) do
@@ -1470,6 +1766,17 @@ defmodule SymphonyElixir.Orchestrator do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
+  defp issue_terminal_stage_kind(%Issue{} = issue) do
+    case Tracker.read_issue_stage(issue) do
+      {:ok, stage_id} ->
+        workflow_terminal_stage_kind(stage_id)
+
+      {:error, reason} ->
+        Logger.warning("Unable to read provider workflow stage for terminal reconcile: #{issue_context(issue)} state=#{inspect(issue.state)} reason=#{inspect(reason)}")
+        :non_terminal
+    end
+  end
+
   defp available_slots(%State{} = state) do
     max(
       (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
@@ -1547,11 +1854,16 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           attempt: attempt,
           due_in_ms: max(0, due_at_ms - now_ms),
+          retry_kind: Map.get(retry, :retry_kind),
           identifier: Map.get(retry, :identifier),
           current_stage: Map.get(retry, :current_stage),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          session_id: Map.get(retry, :session_id),
+          last_codex_timestamp: Map.get(retry, :last_codex_timestamp),
+          last_codex_message: Map.get(retry, :last_codex_message),
+          last_codex_event: Map.get(retry, :last_codex_event)
         }
       end)
 
@@ -1567,7 +1879,10 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
+          retry_kind: Map.get(metadata, :retry_kind),
+          retry_attempt: Map.get(metadata, :retry_attempt),
           error: Map.get(metadata, :error),
+          recovery_artifact: Map.get(metadata, :recovery_artifact),
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
           last_codex_message: Map.get(metadata, :last_codex_message),

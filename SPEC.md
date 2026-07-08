@@ -284,12 +284,560 @@ Fields:
 - `codex_totals` (aggregate tokens + runtime seconds)
 - `codex_rate_limits` (latest rate-limit snapshot from agent events)
 
+#### 4.1.9 Hub Project Snapshot (OPTIONAL)
+
+Implementations that expose Hub mode MAY load several project registrations into a device-level
+project registry. A Hub project snapshot is a safe, observable view of one registered project. It is
+used as a model baseline for future Hub ledgers, provider queues, and device-level status surfaces;
+it does not by itself require a Hub-owned poll loop.
+
+Fields:
+
+- `project_id` (string)
+  - Stable project identity suitable for logs, filesystem keys, and future ledger keys.
+- `name` (string or null)
+  - Human-readable display name.
+- `dispatch_enabled` (boolean)
+  - Whether new dispatch is enabled for this project registration.
+- `paused` (boolean)
+  - True when dispatch is disabled or the project failed to load.
+- `status` (`ready`, `paused`, or `error`)
+- `workflow_path` (absolute path string)
+- `tracker_config_path` (absolute path string)
+- `workflow_summary`
+  - `start_stage`, `terminal_stages`, and sorted `stage_ids`.
+- `tracker_summary`
+  - `kind`, provider scope, provider scope key, and required labels.
+  - MUST NOT contain tokens, API keys, credentials, or raw secret-bearing tracker config.
+- `runtime_summary`
+  - Workspace root, agent concurrency limits, polling interval, and Dashboard/API port if any.
+- `fingerprint`
+  - Stable digest of the non-secret configuration snapshot used to detect project config changes.
+- `loaded_at`
+  - Timestamp of the most recent load attempt.
+- `load_error` (string or null)
+  - Diagnostic error for the project only. One invalid project MUST NOT discard valid snapshots for
+    other projects.
+
+#### 4.1.10 Hub IssueRef (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a provider-neutral issue reference used by future
+ledgers, queues, and cross-project observability.
+
+Fields:
+
+- `project_id`
+- `tracker_kind`
+- `provider_scope`
+  - GitHub: owner/repo, optionally project number.
+  - GitLab: project slug or numeric project ID.
+  - Linear: project/team scope as configured by the adapter.
+  - Memory: namespace.
+- `provider_scope_key`
+  - Stable string form of `tracker_kind + provider_scope`.
+- `provider_issue_id`
+  - Provider issue ID when available.
+- `provider_local_id`
+  - Provider-local number/key when available.
+- `identifier`
+  - Human-readable issue identifier.
+- `url`
+  - Provider URL when available.
+
+The Hub key MUST include `project_id` and provider scope. Provider-local numbers such as GitHub
+`#42` or GitLab `iid=42` MUST NOT be used alone as globally unique Hub identifiers.
+
+#### 4.1.11 Hub Runtime Ledger Snapshot (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a recoverable runtime ledger fact model keyed by
+`project_id + IssueRef`. The ledger is a stable, serializable model for restart/replay diagnostics
+and future Hub coordination. It does not by itself require the implementation to move polling,
+claiming, workspace cleanup, provider requests, or agent dispatch out of the existing
+single-project orchestrator.
+
+Ledger-level fields:
+
+- `version`
+  - Integer snapshot schema version.
+- `generated_at`
+  - Timestamp for initial snapshot creation.
+- `updated_at`
+  - Timestamp for the most recent snapshot update.
+- `projects`
+  - Per-project ledger partitions.
+
+Project ledger fields:
+
+- `project_id`
+  - MUST follow the Project ID rules in section 4.2.
+- `config_fingerprint` or `snapshot_version`
+  - Identifies the safe Hub project configuration snapshot used by the ledger facts.
+- `issues`
+  - Runtime facts for issue scopes keyed by `project_id + IssueRef`.
+- `workspace_leases`
+  - Workspace occupancy facts for active/released/lost leases.
+
+Issue ledger fields:
+
+- `issue_ref`
+  - Provider-neutral Hub `IssueRef`; a bare GitHub/GitLab number MUST NOT be used as the global key.
+- `issue_key`
+  - Stable key derived from `project_id`, provider scope key, and provider issue identity.
+- `claim_status`
+  - Diagnostic status such as `unclaimed`, `claimed`, `running`, `retry_queued`, `blocked`,
+    `released`, or `terminal`.
+- `current_stage`, `claimed_at`, `released_at`, `terminal_reason`
+  - Current workflow-stage and lifecycle summary.
+- `attempts`
+  - Run-attempt facts.
+- `retry_backoff`
+  - Optional retry/backoff fact referencing a known attempt.
+- `writebacks`
+  - Writeback intent/result facts.
+
+Run attempt fields:
+
+- `attempt_id` and `attempt_number`
+  - Stable attempt identity within one issue ledger scope.
+- `status`
+  - Diagnostic attempt status such as `pending`, `running`, `succeeded`, `failed`, `cancelled`, or
+    `lost`.
+- `started_at`, `ended_at`, `terminal_reason`, `current_stage`
+- `worker_host`, `workspace_path`
+- `agent_session`
+  - Compact session summary only: session id, last activity timestamp, and observable statistics
+    such as token counts or turn counts. It MUST NOT contain full prompts or full transcripts.
+
+Workspace lease fields:
+
+- `lease_id`
+- `issue_key`, `attempt_id`
+  - The issue/attempt occupying the workspace.
+- `workspace_path`
+- `status`
+  - `active`, `released`, or `lost`.
+- `acquired_at`, `released_at`, `worker_host`
+
+Retry/backoff fields:
+
+- `attempt_id`
+  - MUST reference an attempt in the same issue ledger scope.
+- `due_at`
+- `error_summary`
+- `preferred_worker_host`, `preferred_workspace_path`
+
+Writeback fields:
+
+- `intent_key`
+  - Stable logical writeback key within the same project/issue scope. It MUST remain stable across
+    retry attempts for the same logical external side effect.
+- `logical_action`, `operation_type`, `target`
+- `replay_policy`
+  - `idempotent` or `non_idempotent`.
+- `result_status`
+  - `pending`, `succeeded`, `failed`, or `unknown`.
+- `attempt_id`
+- `provider_marker`, `external_ref`, `error_summary`
+
+Replay summary behavior:
+
+- Implementations SHOULD replay a ledger snapshot into project-level summaries that include current
+  claimed/running/retry/blocked/released counts.
+- Replay summaries SHOULD list active issues with issue ref, stage, attempt id/number, workspace,
+  worker host, last error, and backoff due time.
+- Replay summaries SHOULD expose conflicts/orphans and manual-attention items, for example active
+  workspace leases that do not reference active attempts or non-idempotent writebacks whose result
+  is `unknown`.
+- A repository MAY keep a deterministic restart/replay acceptance fixture that serializes the same
+  safe runtime ledger facts through snapshot reload, replay summary, device observability, and
+  API/Dashboard-safe payloads. Such a fixture is evidence for explaining recoverable facts after a
+  restart; it MUST NOT be interpreted as a database/WAL, durable execution queue, automatic
+  retry/replay mechanism, provider executor, worker starter, systemd hook, workspace hook, or
+  legacy service takeover.
+
+Safety invariants:
+
+- One `project_id + IssueRef` MUST have at most one active attempt.
+- One workspace path MUST NOT have more than one active lease.
+- `released` or `terminal` issue ledger facts MUST NOT retain active workspace leases.
+- Retry/backoff facts MUST reference recognizable project/issue/attempt facts.
+- Writeback intent keys MUST not change merely because a retry attempt changed.
+- Ledger snapshots MUST NOT contain token values, API keys, credentials, full prompts, full Codex
+  transcripts, or raw secret-bearing provider configuration.
+
+#### 4.1.12 Hub Provider Request Governance (OPTIONAL)
+
+Hub-compatible implementations SHOULD define a provider request governance model as the future
+single Hub-owned exit for external tracker/provider access. This model is a contract for later Hub
+poll coordination, writeback execution, Dashboard/API backpressure reporting, and provider quota
+observation. It does not by itself require existing tracker adapters or single-project orchestrator
+paths to stop calling providers directly.
+
+Provider request fields:
+
+- `request_id` or stable logical key
+  - Stable request identity suitable for logs, queue summaries, and replay diagnostics.
+- `provider_kind`
+  - Provider kind such as `github`, `gitlab`, `linear`, or `memory`.
+- `provider_scope` and `provider_scope_key`
+  - Safe scope summary from the same boundary as Hub project snapshots and `IssueRef`.
+  - MUST NOT be replaced by a bare provider-local issue or repository number.
+- `project_id`
+  - Stable Hub project identity.
+- `config_fingerprint` or `snapshot_version`
+  - Identifies the safe project configuration snapshot used when the request was built.
+- `issue_ref` or `issue_key`
+  - OPTIONAL. When present, MUST use the Hub `IssueRef` boundary or a key derived from
+    `project_id + IssueRef`.
+- `operation_kind`
+  - Examples include `candidate_scan`, `running_reconciliation`, `stage_writeback`,
+    `comment_workpad_upsert`, `pr_lookup`, `pr_create`, `dynamic_tool_provider_call`, and
+    `manual_refresh`.
+- `priority`
+  - Lower numeric values indicate higher scheduling priority unless documented otherwise.
+  - Running reconciliation SHOULD have higher default priority than ordinary candidate scans.
+- `fairness_key`
+  - A key, typically `project_id`, used to avoid one project monopolizing a shared provider scope.
+- `replay_policy`
+  - Should distinguish idempotent requests, marker/upsert requests, non-replayable requests, and
+    requests whose unknown result requires manual attention.
+- `timeout`, `deadline`, or cancellation boundary
+  - Defines when the provider request should stop waiting. Observable snapshots SHOULD expose only
+    the existence of a cancellation boundary, not secret token values.
+- `correlation`
+  - Sanitized metadata for logs, ledgers, and Dashboard/API summaries.
+
+Queue and scheduling behavior:
+
+- Implementations SHOULD provide a testable queue, scheduler model, or in-memory executor API.
+- Higher-priority requests SHOULD be selected before lower-priority requests.
+- Requests within the same provider scope SHOULD execute sequentially or under an explicit
+  controlled-concurrency limit.
+- Equal-priority requests sharing a provider scope SHOULD apply basic fairness across projects or
+  fairness keys.
+- Manual/user-triggered refresh requests SHOULD be observable in queue summaries.
+- Queue summaries SHOULD include pending count, running count, wait/running duration, current
+  running requests, recent safe results, provider-scope state, and backpressure reasons.
+
+Provider-scope availability state:
+
+- Scope state SHOULD be keyed by `provider_scope_key`.
+- Scope state SHOULD record a sanitized quota/rate-limit summary, optional `backoff_until`, circuit
+  state such as `closed`, `half_open`, or `open`, and the latest error class.
+- Error classes SHOULD cover at least auth/config, rate-limited, network timeout, provider 5xx,
+  validation, not found, conflict, and unknown.
+- Blocking conditions such as active rate limit, active backoff, open circuit, or scope concurrency
+  saturation SHOULD delay new matching-scope requests and expose a backpressure reason. Errors that
+  affect only one request SHOULD NOT block unrelated scopes.
+
+Provider result classifications:
+
+- `success`
+  - Contains provider-safe result summary and external reference when available.
+- `retryable_failure`
+  - Contains error class and optional retry/backoff suggestion.
+- `permanent_failure`
+  - Contains diagnostic error class.
+- `rate_limited` or `circuit_open`
+  - Explains provider-scope availability blocking.
+- `canceled` or `timed_out`
+- `unknown_result`
+  - Used when the implementation cannot determine whether a provider side effect happened.
+
+For writeback-like requests, result summaries SHOULD be able to link to the runtime ledger issue key
+or writeback intent key. Unknown results for non-replayable writebacks MUST require manual attention
+and MUST NOT be marked automatically replayable.
+
+Privacy boundary:
+
+- Request snapshots, queue summaries, provider-scope summaries, and result summaries MUST NOT
+  contain provider tokens, API keys, credentials, cookies, raw secret-bearing config, full prompts,
+  full Codex transcripts, or cancellation token values.
+
+#### 4.1.12.1 Hub Provider Tool / Writeback Routing (OPTIONAL)
+
+Hub-compatible implementations MAY add an opt-in provider tool routing boundary for dynamic tools
+and writeback helpers. This boundary connects worker-initiated provider operations to
+`ProviderGovernance` without requiring the legacy single-project runtime to stop calling provider
+clients directly by default.
+
+A routed provider tool call SHOULD:
+
+- Build a `ProviderGovernance` request before provider execution.
+- Carry `project_id`, provider scope, provider scope key, optional `IssueRef`, operation kind,
+  priority, replay policy, and sanitized correlation.
+- Accept an injectable executor or adapter so tests can replace real provider I/O.
+- Classify execution outcomes as `success`, `retryable_failure`, `permanent_failure`,
+  `rate_limited`, `circuit_open`, `timed_out`, `canceled`, or `unknown_result`.
+- Return a payload compatible with the existing dynamic tool response protocol.
+- Expose a sanitized summary that explains project, provider scope, operation type, retryability,
+  manual-attention state, and ledger/writeback linkage.
+
+Structured tools that create this routing boundary SHOULD at least cover:
+
+- GitHub issue operations: get issue, list comments, workpad marker upsert, status set, and label
+  add.
+- GitHub pull request operations: list by branch head, get PR, create PR, list issue comments, list
+  reviews, list review comments, and get check status.
+- Provider-neutral tracker issue operations: create comment and set status.
+
+Operation mapping SHOULD distinguish:
+
+- Workpad upsert as marker/upsert replay semantics using a stable header or marker key.
+- Status set as idempotent replay semantics keyed by target state.
+- PR lookup and comment/review/check reads as idempotent lookup semantics.
+- PR create as non-blind replay semantics keyed by branch/head marker; if the create result is
+  unknown, the implementation MUST NOT create another PR without first checking for an existing PR
+  or requiring manual attention.
+- Ordinary append comments as non-blind replay semantics; unknown results MUST require manual
+  attention because the provider may already have accepted the side effect.
+
+Correlation snapshots MUST be safe. They MAY include run-context identifiers such as attempt id,
+attempt number, session id, current stage, workspace lease id, tool name, and operation. They MUST
+NOT include provider tokens, API keys, authorization headers, cookies, secret env values, full
+prompts, full transcripts, or raw secret-bearing config. Large provider payloads such as comment or
+PR bodies SHOULD be summarized with size and digest rather than copied into governance snapshots.
+
+Raw provider escape hatches such as `linear_graphql` MAY remain outside this boundary until the
+implementation defines a structured GraphQL operation model and scope validator. Implementations
+that leave such a tool direct MUST document that decision and keep its legacy response behavior
+unchanged.
+
+#### 4.1.12.2 Hub Writeback Intent/Result Processing (OPTIONAL)
+
+Hub-compatible implementations MAY add a writeback processing boundary that consumes the safe
+`providerGovernance` summary produced by provider tool/writeback routing and turns it into runtime
+ledger writeback facts. This boundary is a recoverability and decision model only; it does not by
+itself require a Hub scheduler loop, provider writeback executor, database/WAL, distributed lock, or
+legacy provider-client migration.
+
+A writeback processor SHOULD:
+
+- Accept atom-key maps, string-key maps, and dynamic tool payloads containing `providerGovernance`.
+- Preserve `project_id + IssueRef` scope and reject summaries that cannot resolve a provider scope
+  and issue identity.
+- Normalize a stable `intent_key`, logical action, operation type, safe target summary, provider
+  marker, external reference, replay policy, result status, attempt id, and safe run-context
+  correlation into a JSON/YAML-safe runtime ledger writeback fact.
+- Summarize large or side-effect-bearing text such as comment or PR bodies with size and digest
+  rather than copying the full body.
+- Strip token, API key, authorization, cookie, secret env, prompt, transcript, raw provider config,
+  and other secret-bearing fields from request/result/correlation/writeback summaries.
+
+Replay/decision behavior SHOULD distinguish:
+
+- A succeeded idempotent, status-set, or workpad-upsert intent as already complete and reusable
+  without repeating provider writes.
+- Pending or retryable failure facts as retryable only when the replay policy allows retry.
+- Unknown PR create results as not blindly replayable. The decision MUST require a provider-side
+  lookup by stable branch/head target, or manual attention if lookup cannot be performed.
+- Unknown ordinary append-comment results as manual attention, because the provider may already
+  have accepted the side effect.
+- The same logical action using different intent keys across retry attempts as an unstable key
+  conflict.
+- The same intent key pointing to different provider operation or target summaries as a conflict.
+
+Runtime ledger replay/observability SHOULD expose writeback pending, succeeded, failed, unknown,
+manual-attention, and conflict summaries with issue scope, intent key, attempt id, reason, and safe
+target summary. These summaries are intended for future Dashboard/API backpressure and recovery
+views and MUST remain safe for logs and UI snapshots.
+
+#### 4.1.13 Hub Poll Coordination (OPTIONAL)
+
+Hub-compatible implementations MAY define a provider-neutral poll coordination model that plans Hub
+polls across several project snapshots before any provider I/O is performed. This model is the
+bridge between `HUB.yaml` project identity, runtime ledger recovery facts, and provider request
+governance. It does not by itself require the legacy single-project poll loop to be replaced.
+
+Poll plan entries SHOULD include:
+
+- `project_id`, optional display name, project status, config fingerprint or snapshot version.
+- Provider scope kind, safe provider scope summary, and `provider_scope_key`.
+- Workflow/tracker identity such as workflow start stage, terminal stages, tracker kind, and
+  required labels.
+- Effective poll interval, `next_due_at`, optional `backoff_until`, last poll result summary, and a
+  boolean `allow_poll`.
+- Eligibility reason such as `ready`, `not_due`, `paused`, `config_error`, `backoff`,
+  `rate_limited`, `circuit_open`, `scope_concurrency`, or `provider_unavailable`.
+- Governance request metadata proving that poll requests are represented as provider governance
+  requests, commonly with `operation_kind: candidate_scan`, idempotent replay policy, and
+  `project_id` fairness key.
+
+Scheduling behavior:
+
+- A single project's config error, provider backoff, circuit state, quota state, or poll failure MUST
+  NOT make unrelated project snapshots ineligible.
+- When several projects are due at the same time, selection SHOULD be deterministic and SHOULD use a
+  fairness key, typically `project_id`, so one project cannot monopolize a shared provider scope.
+- Scope-level backpressure from provider governance MUST apply only to matching provider scopes.
+- The poll coordinator SHOULD expose the planned poll order separately from blocked or not-yet-due
+  entries.
+- If a Hub activation preflight summary says the project is not safe to manage, the poll
+  coordinator MUST NOT enqueue a real `candidate_scan` provider request for that project. The
+  blocked reason SHOULD identify the preflight source and blocked operation without exposing
+  provider credentials or private path details.
+
+Recoverable facts:
+
+- Poll coordination SHOULD emit or accept recoverable facts for poll plan generation, poll attempts,
+  poll results, and backoff/circuit changes.
+- Result facts SHOULD carry provider governance result classifications such as `success`,
+  `retryable_failure`, `permanent_failure`, `rate_limited`, `circuit_open`, `timed_out`, or
+  `unknown_result`.
+- Restart planning SHOULD replay persisted poll result/backoff facts before deciding eligibility,
+  so restart does not unconditionally poll every registered project at once.
+
+Observability:
+
+- API, snapshot, or dashboard output SHOULD expose a sanitized Hub poll coordination summary:
+  allowed projects, blocked/not-due/error projects, next due time, backoff/circuit state, recent
+  result summary, and provider queue/backpressure summary.
+- Hub runtime summaries SHOULD expose whether a tick is running or recently completed, selected
+  project count, per-project last poll/backoff, and provider scope/queue result summaries.
+- Poll coordination snapshots MUST NOT contain provider tokens, API keys, credentials, cookies, raw
+  secret-bearing config, full prompts, full Codex transcripts, provider response bodies, or
+  cancellation token values.
+
+#### 4.1.14 Hub Device Observability Projection (OPTIONAL)
+
+Hub-compatible implementations MAY define a device-level observability projection that folds the
+safe Hub model summaries from project registry, provider governance, poll coordination, runtime
+ledger replay, dispatch boundary, and writeback processing into one Dashboard/API-safe snapshot.
+This projection is a read model only. It does not implement a Dashboard page, provider executor,
+Hub scheduler loop, database, distributed lock, or migration from legacy services.
+
+Device summary fields SHOULD include:
+
+- project count
+- active agent count
+- max agent capacity
+- provider scope count
+
+Project entries SHOULD include:
+
+- `project_id`, optional display name, and migration state such as `legacy_only`, `hub_ready`, or
+  `hub_managed`
+- a safe project status such as `running`, `idle`, `ready_to_poll`, `backoff`, `paused`, `blocked`,
+  `manual_attention`, `legacy_only`, or `config_invalid`
+- provider kind, provider scope key, and safe provider scope summary
+- provider queue/quota/backoff/circuit summary
+- poll coordination fields such as eligibility, `next_due_at`, `backoff_until`, last poll summary,
+  and governance decision/backpressure
+- runtime ledger replay fields such as active attempts, pending start intents, active workspace
+  leases, retry/backoff, blocked candidates, conflicts, and manual-attention diagnostics
+- writeback pending/succeeded/failed/unknown/manual-attention summary
+- activation preflight status, blocked operations, checked time, probe source, detected legacy
+  ownership summary, and conflict/manual-attention counts when a Hub runtime is evaluating
+  ownership before real Hub actions
+- backpressure reasons for Dashboard/API consumers, including provider rate limit, queue pressure,
+  project paused/backoff, workspace occupied, active attempt exists, writeback unknown, and manual
+  attention
+
+Safety:
+
+- Device projections MUST be safe for logs, APIs, and UI snapshots.
+- Device projections MUST NOT include provider tokens, API keys, authorization headers, cookies,
+  secret env values, raw provider config, full prompts, full transcripts, or full comment/PR body
+  text.
+- Implementations MUST NOT dynamically create atoms from untrusted string-key snapshots while
+  restoring or sanitizing a device projection. Unknown keys SHOULD remain strings or be discarded by
+  an explicit allow-list.
+- Presence of this projection MUST NOT imply that Hub has taken over all provider poll loops or
+  writeback paths. Legacy single-project `symphony@project.service` instances remain compatible
+  unless a later migration explicitly opts into Hub ownership.
+
+#### 4.1.15 Hub Activation Preflight / Legacy Ownership Guardrail (OPTIONAL)
+
+Hub-compatible implementations that execute real Hub-owned poll, dispatch, worker start, or
+provider writeback SHOULD define an activation preflight boundary. The boundary evaluates whether a
+registered project can be safely managed by the Hub path before any real provider I/O, worker
+handoff, or dispatch ledger mutation occurs.
+
+Preflight inputs SHOULD be safe project/registry snapshot fields and injectable host/service probe
+summaries, including:
+
+- `project_id` and optional display name
+- workflow/tracker paths, workspace root, runtime/log/state paths, and Dashboard/API port as safe
+  summaries or fingerprints
+- provider kind and provider scope key
+- migration state such as `legacy_only`, `hub_ready`, or `hub_managed`
+- legacy service active/enabled/unknown state, instance registry observations, provider scope
+  ownership, workspace/path/port ownership, and probe failure/unknown evidence
+
+Implementations MAY provide an explicit read-only local host/service probe, for example
+`--hub-activation-probe host-service`, that generates the injectable summary from local migration
+evidence. Such a probe SHOULD inspect only safe summaries from the user-level
+`symphony@<project>.service` status, legacy project config under
+`~/.config/symphony/projects/<project>/`, `env`, `WORKFLOW.md`, `TRACKER.yaml`,
+runtime/log/state path conventions, and local Dashboard/API listening ports. It MUST NOT call
+service lifecycle operations such as stop, disable, restart, delete, or migrate.
+
+Probe output MUST be safe for snapshots and APIs. It MUST NOT expose raw env files, token or secret
+values, Authorization/Cookie values, raw systemd output, raw provider config/response, full prompts,
+full transcripts, exception stacktraces, or full provider/comment/PR bodies. Paths SHOULD be reduced
+to fingerprints, basenames, or equivalent non-secret summaries before observability exposure.
+
+Probe failure isolation:
+
+- systemd unavailable, command failure, unreadable project config, parse failure, or unavailable port
+  inspection MUST produce `unknown_manual_attention` or equivalent for the affected project.
+- Unknown probe results MUST NOT be treated as safe.
+- One project's probe failure MUST NOT crash a Hub tick or change another project's preflight result.
+
+For a project explicitly marked `hub_managed`, the preflight MUST classify active or enabled
+legacy ownership, matching legacy provider scope ownership, matching workspace/runtime/log/state
+path ownership, matching Dashboard/API port or instance registry ownership, and unknown probe
+results as unsafe unless an implementation provides an explicit documented override. The default
+result for unsafe or unknown ownership MUST block that project's Hub `poll`, `dispatch`,
+`worker_start`, and `writeback` operations. The block is per project: unrelated projects with safe
+preflight results MUST continue to be eligible.
+
+Runtime enforcement:
+
+- Real candidate scan MUST NOT be executed for a preflight-blocked project.
+- Candidate intake, dispatch planning/application, and worker start handoff MUST preserve a
+  skipped or blocked reason instead of advancing the project toward a new worker.
+- Real writeback executors MUST return a governed no-provider-I/O result for a blocked project.
+- Legacy non-Hub runtime behavior and `symphony@project.service` defaults MUST remain unchanged.
+  Activation preflight is a migration guardrail, not an automatic stop, disable, or replacement
+  mechanism for legacy services.
+
+Observability:
+
+- Hub snapshots and APIs SHOULD expose a serializable, sanitized activation preflight summary with
+  statuses such as `safe_to_manage`, `blocked_conflict`, `unknown_manual_attention`, or
+  `not_hub_managed`.
+- Summaries SHOULD include blocked operation types, last checked time, probe source, reason/source
+  codes, detected legacy ownership summaries, and per-project conflict/manual-attention counts.
+- Summaries MUST NOT include provider tokens, API keys, authorization/cookie values, secret env,
+  raw provider config, full prompts/transcripts, full comment/PR/provider bodies, raw provider
+  responses, sensitive hook/app-server output, or unnecessary full private path details.
+- Implementations MUST NOT dynamically create atoms from untrusted string-key preflight snapshots
+  or probe payloads. Unknown fields SHOULD remain strings or be discarded by an explicit allow-list.
+
 ### 4.2 Stable Identifiers and Normalization Rules
 
+- `Project ID`
+  - Use as the Hub project identity and future per-project ledger partition key.
+  - MUST be non-empty and contain only safe key characters such as ASCII letters, digits, `.`, `_`,
+    and `-`.
+  - MUST NOT contain whitespace padding, path separators, path traversal (`..`), newlines, or NUL.
+  - MUST be unique within one Hub registry.
 - `Issue ID`
   - Use for tracker lookups and internal map keys.
 - `Issue Identifier`
   - Use for human-readable logs and workspace naming.
+- `IssueRef`
+  - Use for Hub ledgers and provider queues.
+  - Compose from `project_id`, provider scope, and provider issue identity/local key.
+- `Runtime Ledger Issue Key`
+  - Derive from `project_id`, `IssueRef.provider_scope_key`, and the provider issue identity/local
+    key.
+  - MUST remain stable across process restarts and retry attempts.
+- `Provider Request Key`
+  - Derive from `project_id`, `provider_scope_key`, optional runtime ledger issue key, and the
+    request logical key.
+  - MUST NOT use a bare provider-local issue number as a globally unique provider request key.
 - `Workspace Key`
   - Derive from `issue.identifier` by replacing any character not in `[A-Za-z0-9._-]` with `_`.
   - Use the sanitized value for the workspace directory name.
@@ -477,6 +1025,9 @@ Fields:
   - `strategy: scoped_label` for GitLab scoped labels. `label_prefix` defines the scoped-label group,
     `state_name_format` defaults to `kebab_case`, and `close_on_terminal` lists terminal stage ids
     that should close the GitLab issue.
+  - All runtime stage-state consumers, including candidate discovery, stage prompt recovery, and
+    runner issue context rendering, MUST use the derived mapping as if it were explicit
+    `tracker.stage_states`.
 - `provider_states` (list of strings)
   - OPTIONAL.
   - Declares provider-visible state/status/label names that are valid mapping targets.
@@ -632,6 +1183,895 @@ Dispatch gating behavior:
 - Workflow file read/YAML errors block new dispatches until fixed.
 - Template errors fail only the affected run attempt.
 
+### 5.7 `HUB.yaml` Project Registry (OPTIONAL)
+
+An implementation MAY define `HUB.yaml` as the Hub mode project registry. This registry declares
+several independent projects on one device while preserving each project's own workflow, tracker
+scope, workspace root, and dispatch capacity.
+
+Minimal schema:
+
+```yaml
+projects:
+  - project_id: symphony
+    name: Symphony
+    workflow_path: /path/to/project/WORKFLOW.md
+    tracker_config_path: /path/to/project/TRACKER.yaml
+    dispatch_enabled: true
+  - project_id: docs
+    workflow_path: ./docs/WORKFLOW.md
+    paused: true
+```
+
+Fields:
+
+- `projects` (list)
+  - REQUIRED.
+- `project_id` (string)
+  - REQUIRED.
+  - MUST follow the stable project ID rules in section 4.2.
+- `name` (string)
+  - OPTIONAL.
+- `workflow_path` (path)
+  - REQUIRED.
+  - Relative paths are resolved relative to the `HUB.yaml` file.
+- `tracker_config_path` (path)
+  - OPTIONAL.
+  - If omitted, defaults to `TRACKER.yaml` next to the selected `workflow_path`.
+- `dispatch_enabled` (boolean)
+  - OPTIONAL, default `true`.
+- `enabled` (boolean)
+  - OPTIONAL compatibility alias for `dispatch_enabled`.
+- `paused` (boolean)
+  - OPTIONAL. When `true`, the project snapshot is paused and new dispatch is disabled.
+
+Loading behavior:
+
+- The Hub loader MUST load each project as `WORKFLOW.md + TRACKER.yaml` using the same workflow and
+  tracker/runtime parsing rules as the single-project mode.
+- A single invalid project MUST produce a paused/error project snapshot and MUST NOT discard other
+  valid snapshots.
+- Duplicate or invalid `project_id` values MUST fail registry loading before project snapshots are
+  treated as valid.
+- Snapshots MUST include workflow summary, provider scope summary, workspace root, agent concurrency
+  limits, polling interval, Dashboard/API port when configured, fingerprint, load time, and load
+  error.
+- Snapshot output MUST NOT expose token values, API keys, env secret names, credential fields, or
+  raw secret-bearing config.
+- The Hub loader SHOULD detect shared workspace roots and shared provider scopes as warnings.
+- Shared Dashboard/API ports SHOULD be treated as an error because two live services cannot safely
+  bind the same local port.
+
+Runtime entrypoint:
+
+- Implementations MAY provide an explicit Hub runtime entrypoint such as
+  `--hub-config <path-to-HUB.yaml>`.
+- Hub runtime MUST be opt-in. The presence of `HUB.yaml` alone MUST NOT replace legacy
+  single-project startup.
+- Legacy startup using `--tracker-config <path-to-TRACKER.yaml> <path-to-WORKFLOW.md>` MUST remain
+  compatible.
+- A Hub runtime MAY load the registry, build poll coordination and device observability snapshots,
+  execute a controlled candidate-scan poll tick through a Hub provider request boundary, record poll
+  attempt/result facts, build a candidate intake summary from governed result summaries, and expose
+  those safe summaries through the existing observability API.
+- A Hub runtime MAY provide an explicit opt-in scheduler flag such as `--hub-scheduler`. When
+  enabled, the Hub runtime owns a single in-process tick loop that schedules an initial Hub tick and
+  schedules the next tick after each completed tick from safe Hub summaries: poll-plan
+  `allow_poll`/`next_due_at`, provider backoff/quota/circuit state, and unresolved runtime-ledger
+  state such as pending or unknown start intents, running attempts, retry/backoff, and manual
+  attention.
+- The Hub scheduler MUST be non-reentrant. A manual `/refresh` or equivalent
+  `request_refresh/1` call that arrives while an automatic tick is running or already queued MUST
+  either coalesce with that tick or return another explicit non-concurrent state. The returned
+  summary SHOULD include `queued`, `coalesced`, `requested_at`, `next_tick_at`, current scheduler
+  status, counts, and last/next tick reason fields.
+- Scheduler-triggered ticks MUST reuse the same registry load, poll coordination, provider
+  governance, candidate intake, dispatch planning/application, worker start handoff, worker
+  lifecycle reconciliation, runtime-ledger replay, and device observability boundaries used by
+  manual refresh. Repeated manual or automatic ticks MUST rely on the same ledger/replay
+  idempotency and MUST NOT create duplicate active attempts, workspace leases, or start intents.
+- Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
+  `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
+  status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,
+  coalesced/skipped/error counts, unresolved runtime counts, and per-project due/backoff summaries.
+- A Hub poll tick runtime skeleton MUST route candidate scans through provider governance rather
+  than direct per-project polling. Its default provider executor MAY be a no-legacy-adapter skeleton,
+  but tests SHOULD be able to inject a provider executor that returns governed results.
+- A Hub runtime MAY provide an explicit opt-in real candidate-scan provider executor, for example
+  `--hub-provider-executor real-candidate-scan`. The default without that opt-in MUST remain the
+  skeleton executor, and legacy single-project runtime behavior MUST remain unchanged.
+- A Hub runtime MAY provide an explicit opt-in host/service activation probe flag, for example
+  `--hub-activation-probe host-service`. Without that opt-in or an injected probe, the legacy
+  single-project runtime and existing `symphony@project.service` deployments MUST NOT start local
+  host/service probing or change behavior.
+- A real candidate-scan executor MUST handle only `candidate_scan` or the implementation's
+  equivalent read-only operation. Non-candidate operations such as writeback, status update, comment
+  upsert, PR creation, dynamic tools, or provider writes MUST return unsupported, permanent failure,
+  manual attention, or another explicit non-success result rather than being implemented
+  opportunistically.
+- A real candidate-scan executor MUST resolve the request's `project_id` and provider scope against
+  the Hub registry and load that project's own `WORKFLOW.md` and `TRACKER.yaml` semantics for the
+  read. It MUST NOT rely on a process-global legacy `Config.settings!()` or reuse another project's
+  token, repository/project number, provider scope, label/state mapping, assignee, or required-label
+  configuration.
+- A single project's provider/config failure MUST be mapped to that project's governed result and
+  scope state/backoff/manual-attention summary. It MUST NOT crash the entire Hub tick or contaminate
+  another project/scope.
+- Real candidate-scan results MUST normalize provider issues into safe candidate summaries
+  containing at least `project_id`, provider kind, provider scope key, provider-local issue
+  id/number/key or identifier, URL/title or equivalent safe summary, current provider-visible
+  stage/state, and source request/result/poll correlation. Full issue/comment/PR bodies, raw
+  provider responses, raw GraphQL/REST payloads, credentials, authorization/cookie values, secret
+  env values, and raw config MUST NOT be retained in result summaries or observable snapshots.
+- Real candidate-scan result classification SHOULD map successful reads to `success`, rate limit,
+  quota, or abuse responses to `rate_limited` with retry/backoff data when available, network
+  timeouts and provider 5xx responses to `retryable_failure`, auth/config/not-found/validation
+  problems to `permanent_failure`, and unknown/ambiguous side-effect results to a non-success
+  unknown/manual-attention class.
+- A Hub runtime MAY provide an explicit opt-in real writeback provider executor, for example
+  `--hub-provider-executor real-writeback`. The default without that opt-in MUST remain the
+  skeleton/direct legacy behavior, and legacy single-project runtime behavior MUST remain unchanged.
+- A real writeback executor SHOULD handle only replay-safe or marker-addressed writeback subsets at
+  first, such as workflow stage/status writes, workpad marker upserts, and additive label writes.
+  Unsupported providers or operation kinds MUST return explicit non-success governed results rather
+  than silent success.
+- A real writeback executor MUST perform a ledger-first decision before provider I/O. It MUST reuse
+  already-succeeded intents, block conflicting intent keys or same-key/different-target facts, and
+  avoid blind replay for unknown non-idempotent operations. PR creation and ordinary append comments
+  whose result is unknown SHOULD require provider lookup or manual attention instead of automatic
+  replay.
+- A real writeback executor MUST resolve the request's `project_id` and provider scope against the
+  Hub registry and load that project's own `WORKFLOW.md` and `TRACKER.yaml` semantics for the
+  write. It MUST NOT rely on process-global legacy `Config.settings!()` to choose a project, nor
+  reuse another project's token, repository/project number, provider scope, label/state mapping, or
+  required-label configuration.
+- A single project's writeback provider/config failure MUST be mapped to that project's governed
+  result and scope state/backoff/manual-attention summary. It MUST NOT crash the entire Hub tick or
+  contaminate another project/scope.
+- Real writeback result classification SHOULD map success to `success`, rate limit/quota/abuse to
+  `rate_limited`, network timeouts and provider 5xx responses to `retryable_failure`,
+  auth/config/not-found/validation problems to `permanent_failure`, unsupported operations to
+  `permanent_failure` or manual attention, and uncertain non-idempotent side effects to
+  `unknown_result` with manual attention or provider lookup.
+- A Hub candidate intake boundary SHOULD normalize provider candidate-scan summaries into
+  provider-neutral records keyed by `project_id`, provider scope, IssueRef or equivalent issue key,
+  and source poll request/result correlation. It SHOULD accept atom-key and string-key input, isolate
+  malformed candidates, and avoid exposing raw provider response bodies, provider tokens,
+  authorization/cookie values, full prompts, transcripts, or full comment/PR bodies.
+- Candidate intake MAY perform a lightweight dispatch eligibility precheck against project
+  paused/config-error state, provider backoff/manual attention, runtime-ledger active attempts,
+  unresolved start intents, workspace lease conflicts, retry/backoff, and project/global capacity.
+  This precheck MUST NOT start agents, create workspaces or leases, mutate provider state, or replace
+  the final dispatch transaction.
+- A Hub dispatch planning boundary MAY consume candidate intake summaries and produce safe
+  dispatch-plan or pending start-intent summaries for eligible candidates. Planning records SHOULD
+  include stable `project_id`, provider scope, IssueRef-derived issue key, candidate/poll/intake
+  source correlation, minimal attempt/start-intent identity, planning outcome, and explicit safety
+  flags showing that no worker was started and no provider was written.
+- Dispatch planning MUST be idempotent across refresh/replay: an existing active attempt,
+  unresolved start intent, or previous pending dispatch plan for the same project/provider scope and
+  IssueRef MUST be reported as already planned or blocked rather than producing a duplicate plan.
+- Dispatch planning SHOULD reserve project/global capacity across candidates in the same planning
+  pass, so later eligible candidates are reported as capacity unavailable once the in-memory plan has
+  consumed the available slot. It SHOULD also explain paused/config-error projects, provider/project
+  backoff, manual attention, workspace/lease conflicts, retry backoff, invalid candidates, and active
+  attempts as skipped outcomes.
+- Dispatch planning MUST remain model-only until an explicit Hub scheduler integration is
+  specified. It MUST NOT start agents, create real worker workspaces, write provider comments,
+  update provider statuses, or take ownership of legacy single-project scheduling by itself.
+- A Hub dispatch plan application boundary MAY consume dispatch planning summaries and apply only
+  planned eligible pending intents through the Hub atomic dispatch boundary into runtime-ledger
+  model facts. Application records SHOULD include per-project applied, skipped, blocked,
+  already-applied, already-planned, and manual-attention counts, reason counts, safe pending
+  start-intent summaries, and source poll/intake/planning correlation.
+- Dispatch plan application MUST remain idempotent across refresh/replay. Reapplying a plan,
+  rescanning the same candidate, or encountering an unresolved runtime-ledger start intent for the
+  same `project_id + provider scope + IssueRef` MUST NOT create a second active attempt. It MUST
+  report already applied, already planned, blocked, manual attention, or skipped instead.
+- Dispatch plan application MUST respect the same safety constraints as candidate intake,
+  dispatch planning, and the atomic dispatch boundary: active attempts, unresolved start intents,
+  workspace leases, retry/backoff, project pause/config error, provider backpressure/manual
+  attention, and project/global capacity.
+- Dispatch plan application is a ledger skeleton only. It MUST NOT start Codex, create a real
+  worker workspace, execute workspace hooks, mutate provider state, write provider comments/statuses
+  or PRs, persist a database/WAL transaction, or migrate legacy `symphony@project.service`
+  ownership.
+- A Hub worker start handoff boundary MAY consume runtime-ledger replay summaries and select
+  unresolved pending start intents for a controlled start handoff. Each handoff request summary
+  SHOULD retain safe `project_id`, provider scope, IssueRef, attempt id, start intent id, workspace
+  lease/path, runner/start command summary, and source poll/intake/planning correlation.
+- The handoff boundary MAY call an injectable skeleton starter or pure model function that returns
+  `ack`, `failed`, `unknown`, `manual_attention`, `already_acked`, or `skipped`. The default skeleton
+  MUST NOT start a real agent; it MAY record an unknown result so the pending intent becomes
+  unresolved and observable.
+- A Hub implementation MAY provide an explicit opt-in real worker starter. A real starter MUST take
+  the safe handoff request/run-context summary as input and MUST NOT reconstruct authority from raw
+  provider payloads. It MAY adapt the request into the existing AgentRunner/Workspace/Codex
+  app-server boundary or an equivalent internal worker boundary. It MUST return a normalized
+  `ack`, `failed`, `manual_attention`, `unknown`, or `skipped` result and MUST include only safe
+  worker identity/session/workspace/runtime summaries.
+- A real starter MUST remain opt-in. Legacy single-project startup and Hub mode without this opt-in
+  MUST keep the default no-start behavior.
+- Handoff acknowledgement MUST be applied through the runtime ledger so the start intent becomes
+  acknowledged and the attempt becomes running with a compact safe agent-session/run-context summary.
+  Start failures MUST be able to enter retry/backoff, blocked, released, or manual attention. Unknown
+  and manual-attention results MUST keep an unresolved start intent visible to replay so refresh does
+  not blindly create a second active attempt or workspace lease.
+- Handoff replay MUST be idempotent. Repeating refresh, replaying an already acknowledged/failed
+  intent, or encountering an existing unknown/manual-attention unresolved intent MUST either leave the
+  ledger unchanged or report an observable already-acked/skipped reason.
+- Handoff summaries SHOULD expose selected, acked, failed, unknown, manual-attention, already-acked,
+  skipped, reason counts, pending/unresolved start-intent summaries, worker lifecycle summaries, and
+  runtime-ledger replay summaries. Worker lifecycle summaries SHOULD include safe worker
+  identity/session/workspace summaries, start failure reason counts, and active attempt to
+  acknowledged start-intent associations. They MUST NOT expose provider tokens, authorization/cookie
+  values, secret env values, raw provider config, full prompts/transcripts, full comment/PR/provider
+  bodies, or raw hook/app-server shell output. Except for an explicit opt-in real starter, handoff
+  MUST NOT launch Codex app-server, create real worker workspaces, execute workspace hooks, write
+  provider state, persist durable DB/WAL facts, acquire distributed locks, or take ownership of
+  legacy `symphony@project.service`.
+- A Hub worker lifecycle reconciliation boundary MAY consume acknowledged start intents/running
+  attempts plus controlled worker/session lifecycle summaries. It MUST NOT infer lifecycle state
+  from raw provider payloads. Accepted summaries SHOULD cover still-running activity, succeeded,
+  failed, cancelled, timeout/stopped, heartbeat/session lost, result unknown, and manual-attention
+  outcomes.
+- Lifecycle reconciliation MUST apply recoverable facts to the runtime ledger under the same
+  `project_id + IssueRef + attempt_id + start_intent_id` identity. Repeated refreshes, duplicate
+  terminal results, old-session results, late results after a different terminal result, or
+  mismatched workspace leases MUST NOT create a second active attempt, overwrite an incompatible
+  attempt, or release the wrong workspace.
+- Confirmed terminal lifecycle results SHOULD release the matching workspace lease/capacity unless
+  the implementation explicitly records a retained-workspace reason. Retryable failures SHOULD
+  enter retry/backoff or an equivalent recoverable state. Blocked/manual-attention failures SHOULD
+  remain observable. Lost, unknown, or manual-attention outcomes MUST NOT be silently released and
+  blindly redispatched; they SHOULD retain enough safe evidence for later reconciliation.
+- Lifecycle reconciliation summaries SHOULD expose running attempt to acknowledged start-intent
+  associations, succeeded/failed/cancelled/timeout/stopped/lost/unknown/manual-attention counts,
+  reason counts, workspace released/retained counts, retry/backoff, blocked, released, and
+  manual-attention summaries by project. They MUST NOT expose provider tokens, authorization/cookie
+  values, secret env values, raw provider config, full prompts/transcripts, full comment/PR/provider
+  bodies, or raw hook/app-server output.
+- Candidate identity MUST be bound to the current poll source and registry project. Provider
+  candidate or input_ref fields such as `project_id`, `provider_scope_key`, provider kind, owner/repo,
+  repository, project slug, or equivalent scope identity MAY be present only when they match the poll
+  source; mismatches MUST be treated as invalid/skipped candidates and MUST NOT become
+  ready-for-dispatch-evaluation.
+- This runtime MUST NOT dispatch agents, create workspaces, write provider comments/statuses/PRs, or
+  take ownership of existing legacy poll loops unless an explicit Hub scheduler/migration
+  integration documents that ownership change. The baseline opt-in in-process scheduler loop MUST
+  NOT imply migration of existing `symphony@project.service` instances.
+- `/api/v1/state` or equivalent observability payloads SHOULD expose safe fields such as
+  `hub_runtime`, `hub_scheduler`, `hub_project_registry`, `hub_poll_coordination`, `hub_candidate_intake`,
+  `hub_dispatch_planning`, `hub_dispatch_plan_application`, `hub_worker_start_handoff`,
+  `hub_worker_lifecycle_reconciliation`, `hub_dispatch_boundary`, `hub_cutover_gate`, and
+  `hub_cutover_operation_audit`, `hub_cutover_audit_history`, `hub_cutover_readiness_permit`,
+  `hub_cutover_execution_authorization_ledger`, `hub_cutover_authorization_consumption_guard`,
+  `hub_cutover_execution_outcome_ledger`, `hub_cutover_execution_outcome_closeout`,
+  `hub_cutover_replay_decision`, `hub_cutover_replay_request_audit`,
+  `hub_cutover_closure_chain`, `hub_cutover_closure_conclusion`, and
+  `hub_device_observability` when a Hub snapshot is present. Legacy snapshots without Hub fields
+  SHOULD keep the existing API shape.
+- `hub_device_observability` SHOULD contain a device-level `overview` and per-project `detail`
+  summaries when Hub mode is explicitly enabled. The overview SHOULD summarize scheduler/tick state
+  and wait/coalescing reason, project status counts (`legacy_only`, `hub_ready`/ready,
+  `hub_managed`/managed, blocked, backoff, manual attention, config error), provider governance
+  pressure (queue, quota/backoff/circuit, unsupported provider/operation, recent failure), active
+  attempts, pending start intents, unknown lifecycle results, workspace leases, unreleased capacity,
+  writeback conflicts/unknown non-idempotent/provider lookup/manual attention, activation preflight
+  blocks/unknowns, cutover gate allowed/blocked/manual-attention counts, dry-run audit request
+  counts, audit history/closeout counts, execution readiness permit ready/blocked/stale/manual/
+  unsupported/malformed counts, authorization, consumption, outcome, closeout, replay-decision, and
+  replay-request-audit counts, and per-project summary errors. Each project detail SHOULD expose
+  safe identity, provider scope, migration/ownership status, config snapshot version or fingerprint,
+  activation preflight reason, cutover gate decision, cutover request/audit/history/permit summaries,
+  replay decision, replay request audit, and closure chain summaries, poll eligibility/backoff/capacity/manual-attention/legacy-ownership reason,
+  candidate intake, dispatch planning/application, worker start handoff, lifecycle reconciliation,
+  and writeback completed/retryable/unknown/manual-attention/dangerous-replay state. Dashboard views
+  MAY render this summary, but MUST do so only when explicit Hub mode or a Hub summary is present.
+- `hub_device_observability` SHOULD also expose a read-only `migration_readiness` summary when Hub
+  mode is explicitly enabled. The device-level readiness summary SHOULD include Hub runtime
+  enabled/mode/read-only state, scheduler enabled/status, provider executor mode, writeback executor
+  mode, worker starter mode, activation probe mode, migration-state counts, readiness-decision
+  counts, global blocking risks, and global advisory risks.
+- Each project in the readiness summary SHOULD include a stable serialized decision. Recognized
+  decisions SHOULD include `legacy_only`, `ready_for_dry_run`, `ready_for_hub_management`,
+  `blocked`, `unknown_manual_attention`, and `already_hub_managed`. Decisions MUST be derived from
+  existing safe summaries such as registry migration state, activation preflight, host/service
+  probe result, poll eligibility, provider governance, dispatch/start/lifecycle summaries, and
+  writeback summaries. Implementations MUST NOT re-read tokens, raw provider payloads, raw env, or
+  raw config to build the readiness decision.
+- Project readiness SHOULD include `blocking_reasons`, `advisory_reasons`,
+  `required_operator_actions`, and `evidence`. Blocking reasons SHOULD cover legacy service
+  active/enabled, provider scope owner conflict, workspace/runtime/log/state/port owner conflict,
+  probe missing or unknown, config/auth failure, provider backoff/rate limit/circuit/unavailable,
+  writeback unknown or manual attention, active attempt, unresolved start/lifecycle state,
+  workspace lease/retained workspace, and capacity/workspace conflicts. Advisory reasons SHOULD
+  cover skeleton executor modes, disabled scheduler for dry-run, paused projects, read-only runtime,
+  and recent retryable provider failure when those conditions do not by themselves invalidate a
+  read-only dry-run.
+- Required operator actions SHOULD use short stable codes such as
+  `stop_disable_legacy_service`, `fix_project_config`, `enable_host_service_probe`,
+  `wait_provider_backoff`, `resolve_writeback_manual_attention`, `wait_or_reconcile_lifecycle`,
+  `release_workspace_or_capacity`, `enable_hub_scheduler_before_management`,
+  `confirm_hub_executor_modes`, `run_read_only_dry_run`, and
+  `mark_hub_managed_after_checks`.
+- Readiness evidence MUST reference only safe summary fields, sources, checked times,
+  request/result identifiers, counts, config fingerprints, snapshot versions, or equivalent
+  redacted facts. Evidence MUST NOT include token values, authorization/cookie headers, secret env,
+  raw env/raw config, raw provider bodies/responses, raw systemd output, hook/app-server raw output,
+  full prompt/transcript, full issue/comment/PR/provider body, exception stack traces, or unnecessary
+  private absolute paths.
+- A single project's readiness build failure, missing field, incompatible summary version, or
+  malformed snapshot MUST degrade only that project to `unknown_manual_attention` or `summary_error`.
+  It MUST NOT crash the Hub runtime, Dashboard/API response, or readiness decisions for other
+  projects.
+- `hub_device_observability` SHOULD also expose a read-only `activation_plan` summary derived from
+  the same safe readiness evidence. The device-level summary SHOULD include Hub runtime/scheduler,
+  provider executor, writeback executor, worker starter, and activation probe modes; plan status
+  counts (`plan_ready`, `ack_required`, `ack_stale`, `ack_conflict`, `blocked`,
+  `unknown_manual_attention`, `already_managed`); acknowledgement status counts (`missing`,
+  `accepted`, `stale`, `conflict`, `malformed`, `unsupported`, `manual_attention`); global blocking
+  risks; advisory risks; and the safety gates that still govern Hub-owned actions.
+- Each project activation plan SHOULD include `project_id`, safe provider/tracker scope,
+  migration/readiness decision, stable `plan_id`, proposed next state, required acknowledgement action
+  codes, blocking/advisory reasons, safe evidence, and an `operator_acknowledgement` summary. The
+  `plan_id` SHOULD bind to project scope, migration/readiness state, executor/probe modes,
+  action/reason codes, ownership/provider/writeback/lifecycle evidence facts, and other non-volatile
+  safe evidence. Observation timestamps alone SHOULD NOT rotate the plan id.
+- Operator acknowledgement input MUST be explicit, serialized, testable, and safe. It SHOULD include
+  `project_id`, `plan_id` or equivalent readiness fingerprint, confirmed action/risk codes, source,
+  created timestamp, and optional note summary. Implementations MUST distinguish `missing`,
+  `accepted`, `stale`, `conflict`, `malformed`, `unsupported`, and `manual_attention`. When evidence,
+  executor/probe mode, migration state, provider scope, ownership facts, or action/reason codes
+  change, old acknowledgement MUST NOT be silently treated as accepted.
+- An accepted acknowledgement MUST NOT by itself change ownership or allow automatic migration. It is
+  only an audit boundary for operator confirmation. Hub-owned poll, dispatch, worker start, and real
+  writeback MUST continue to be governed by activation preflight, the legacy ownership guardrail,
+  provider governance, runtime ledger, executor mode, workspace leases, lifecycle reconciliation, and
+  any existing safety checks.
+- Hub-compatible implementations SHOULD expose a serializable cutover gate decision after the
+  activation plan / acknowledgement boundary and before Hub-owned real actions. The gate MUST be
+  per project and safe for Dashboard/API display. It SHOULD include `project_id`, safe
+  provider/tracker scope, migration state, activation plan id/fingerprint, operator acknowledgement
+  status, readiness decision, activation preflight status, probe/source summary, scheduler mode,
+  provider executor mode, writeback executor mode, worker starter mode, allowed operations, blocked
+  operations, blocking/advisory reasons, required operator action codes, safe evidence, and a stable
+  decision such as `not_applicable`, `blocked`, `manual_attention`, `staged_ready`, or `allowed`.
+- Cutover gate allowed operations SHOULD be limited to explicit Hub-owned operation types such as
+  `poll`, `dispatch`, `worker_start`, and `writeback`. A project MUST NOT be allowed for a real
+  operation unless the project is explicitly `hub_managed`, the operator acknowledgement is accepted
+  and matches the current activation plan/fingerprint, migration readiness is consistent with Hub
+  management, activation preflight is safe, legacy ownership conflicts are absent, and the relevant
+  executor/starter mode supports that operation. Missing, stale, conflicting, malformed, or
+  unsupported acknowledgement input; blocked or unknown preflight/probe evidence; provider scope,
+  workspace, runtime path, port, instance owner, or legacy service conflicts; project summary build
+  failure; and executor/starter mode mismatches MUST block or require manual attention for the
+  affected project and operation.
+- When the gate allows one or more operations, implementations SHOULD produce a read-only staged
+  ownership record or equivalent audit summary bound to the current project scope, activation plan
+  fingerprint, acknowledgement, preflight/probe evidence, executor/starter modes, and allowed
+  operation set. The record MUST NOT be a persistent migration transaction and MUST NOT mutate
+  `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, provider state, legacy services, or
+  project configuration. If any bound input changes, a previous staged ownership record MUST NOT be
+  silently reused as evidence for the new input set.
+- Hub-owned side-effect paths MUST consume the cutover gate before real provider reads, dispatch
+  plan application that creates pending start intents, real worker start handoff, and real
+  writeback provider I/O. A gate block MUST prevent the corresponding side effect while preserving a
+  safe blocked/skipped result. The block MUST be isolated to the affected project and MUST NOT crash
+  the Hub tick, Dashboard/API response, safe summaries, or execution of unrelated projects.
+- Hub-compatible implementations SHOULD expose an explicit, serialized cutover operation request /
+  dry-run audit boundary after the activation plan and cutover gate. A request SHOULD bind
+  `project_id`, safe provider/tracker scope, requested operations, activation plan id/fingerprint,
+  cutover gate decision or staged ownership record evidence, request source, requested timestamp,
+  request id/fingerprint, a safe project snapshot, and only safe operator intent codes or note
+  digest. It MUST NOT store full prompts, full provider/comment/PR bodies, credentials, raw config,
+  raw env, or secret-bearing values.
+- The dry-run audit evaluator MUST consume current safe summaries, including migration readiness,
+  activation plan/acknowledgement, activation preflight, host/service probe evidence, cutover gate,
+  executor/starter mode, runtime state, and project snapshot. It SHOULD report each requested
+  operation as `would_allow`, `would_block`, `manual_attention`, or `unsupported`, with stable
+  reason codes, required operator action codes, safe evidence, and an explicit `dry_run_only` flag.
+  A request MUST NOT override the cutover gate; if the current gate blocks an operation, the audit
+  MUST preserve that block and gate reason.
+- Malformed requests, unknown projects, unknown operations, unsupported sources, stale or mismatched
+  activation plan/gate/staged-record evidence, and stale safe project snapshots MUST be blocked,
+  unsupported, or require manual attention instead of being optimistically accepted. Failure to
+  evaluate one project's request MUST NOT affect other project audits, Hub ticks, Dashboard/API
+  responses, or safe summaries.
+- Dry-run audit MUST NOT perform provider I/O, start workers, create runtime ledger pending start
+  intents or attempts, create writeback facts, update provider issues/PRs/comments/status, operate
+  systemd, stop/disable/restart/delete legacy services, or modify `HUB.yaml`, `WORKFLOW.md`,
+  `TRACKER.yaml`, systemd units, or project configuration. Dashboard/API summaries SHOULD expose
+  device-level counts such as `no_request`, `dry_run_ready`, `blocked`, `manual_attention`,
+  `unsupported`, and `summary_error`; projects without an explicit request MUST show a
+  non-misleading no-request state rather than pending migration or execution.
+- Hub-compatible implementations SHOULD expose a bounded cutover audit history / manual attention
+  closeout read model after the dry-run audit. The history summary SHOULD include project identity,
+  safe provider/tracker scope, request id/fingerprint/source/evaluated time, requested operations,
+  activation plan id/fingerprint, cutover gate decision or staged ownership evidence, per-operation
+  dry-run decisions, reason codes, required operator action codes, safe evidence references, and
+  explicit `dry_run_only` / `no_side_effects` markers. Implementations MUST bound or summarize
+  history before exposing it to Dashboard/API and MUST NOT expose full prompts, complete provider
+  issue/comment/PR bodies, raw provider responses, raw systemd/hook/app-server output, raw config,
+  raw env, secrets, tokens, or private absolute paths.
+- A manual attention closeout SHOULD be an explicit record bound to `project_id`, request
+  fingerprint, activation plan fingerprint, cutover gate or staged-record fingerprint, operation,
+  reason code, required operator action code, evidence fingerprint, closeout decision, source,
+  decided timestamp, and an operator note digest or summary. Decisions MAY include
+  `accepted_risk`, `resolved_externally`, `rejected`, `deferred`, `stale`, `conflict`,
+  `malformed`, or `unsupported`. A closeout MUST NOT store full prompt/transcript/provider body,
+  secret-bearing config/env, credentials, or raw local command output.
+- Closeouts MUST NOT override the cutover gate or any Hub-owned side-effect guardrail. If the
+  current cutover gate still blocks an operation, a matching closeout may only report whether the
+  operator has closed, deferred, accepted, or rejected that manual-attention item in the audit
+  summary. It MUST NOT allow candidate scan, dispatch plan application, real worker start,
+  writeback provider I/O, runtime ledger mutation, systemd operation, or project config changes.
+- If request fingerprint, activation plan, operator acknowledgement, cutover gate, preflight,
+  host/service probe, executor/starter mode, project snapshot, or evidence references change, an old
+  closeout MUST be reported as stale, conflicting, malformed, unsupported, or still requiring manual
+  attention rather than silently clearing current unresolved manual attention. Malformed closeouts,
+  unknown project/operation/reason/action codes, unsupported sources, fingerprint mismatches, and
+  missing evidence MUST NOT clear unresolved manual attention. A malformed history or closeout for
+  one project MUST NOT affect other project summaries, Hub ticks, Dashboard/API responses, or
+  execution of unrelated projects.
+- Hub-compatible implementations SHOULD expose a read-only cutover execution readiness permit
+  summary after the cutover gate, dry-run audit, audit history/closeout, and activation
+  acknowledgement summaries. A permit SHOULD be scoped to a current explicit request and requested
+  operation, and SHOULD bind `project_id`, safe provider scope, operation, request fingerprint,
+  activation plan id/fingerprint, acknowledgement status/fingerprint, cutover gate decision and
+  staged ownership/evidence fingerprint, dry-run audit decision, audit history/closeout currentness,
+  executor/starter modes, source, generated/evaluated time, stable permit fingerprint, and safe
+  evidence fingerprints.
+- Permit decisions SHOULD include `ready_for_execution_consideration`, `blocked`, `stale`,
+  `manual_attention`, `unsupported`, and `malformed`, with stable reason/action codes. A permit MUST
+  be ready only when the current cutover gate allows that operation, the dry-run audit is current and
+  would allow it, audit history and closeout state do not show unresolved/stale/conflicting/malformed
+  evidence, manual attention has been safely handled, activation acknowledgement still matches the
+  current plan, the executor/starter mode supports the operation, and the bound evidence
+  fingerprints have not drifted. Missing, expired, stale, conflicting, malformed, unsupported, or
+  mode-incompatible input MUST NOT be treated as ready.
+- A readiness permit MUST NOT bypass the cutover gate, activation preflight, legacy ownership
+  guardrail, provider governance, runtime ledger, worker starter, or writeback executor. Permit
+  generation MUST NOT perform provider I/O, candidate scan, dispatch plan application, worker start,
+  runtime-ledger pending-start/attempt/writeback mutation, provider writeback, systemd operations,
+  legacy service stop/disable/restart/delete, or Hub/project configuration writes. The permit is a
+  read-only pre-execution audit summary for later execution entrypoints to consume.
+- Dashboard/API summaries SHOULD expose device-level permit counts (`permit_count`, ready, blocked,
+  stale, manual attention, unsupported, malformed, no request, summary error) and project-level
+  permit decisions, reason/action codes, evidence fingerprints, source, safe timestamps, and
+  stale/conflict/malformed diagnostics. Projects without an explicit request/permit MUST show a
+  non-misleading `no_request` state rather than pending migration, execution, or legacy takeover.
+  Malformed permit/request/history/closeout/evidence input for one project MUST be isolated to that
+  project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
+  summaries.
+- Hub-compatible implementations SHOULD expose a read-only cutover execution authorization ledger
+  after the readiness permit summary. An authorization request SHOULD be operator-controlled and
+  serializable, and SHOULD bind project identity, safe provider scope, requested operation,
+  authorization request id/source/requested time/fingerprint, the referenced cutover operation
+  request fingerprint, the current readiness permit fingerprint/decision/reason-action codes,
+  activation plan and acknowledgement fingerprints, cutover gate/staged ownership evidence
+  fingerprint, dry-run audit evidence, audit-history/closeout currentness, executor/starter mode,
+  generated/evaluated timestamps, and safe evidence fingerprints.
+- Authorization record statuses SHOULD include `authorized_for_explicit_execution`, `blocked`,
+  `stale`, `manual_attention`, `unsupported`, `malformed`, and `no_ready_permit`, with stable
+  reason/action codes. A record MUST be authorized only when the referenced readiness permit is
+  currently `ready_for_execution_consideration`, the operator request explicitly asks for that
+  operation, and the bound permit/gate/audit/history/closeout/ack/executor evidence still matches.
+  Missing, stale, conflicting, malformed, unsupported, unknown-project/operation, no-ready-permit,
+  mode-incompatible, or evidence-drift input MUST NOT be optimistically authorized.
+- The authorization ledger MUST NOT execute migration work, queue execution, take over legacy
+  services, bypass the cutover gate or readiness permit, or replace activation preflight, legacy
+  ownership guardrails, provider governance, runtime ledger, worker starter, or writeback executor.
+  Building or evaluating the ledger MUST NOT perform provider I/O, candidate scan, dispatch plan
+  application, worker start, runtime-ledger pending-start/attempt/writeback mutation, provider
+  writeback, systemd operations, legacy service stop/disable/restart/delete, or Hub/project config
+  writes.
+- Dashboard/API summaries SHOULD expose device-level authorization request/record counts and
+  authorized, blocked, stale, manual attention, unsupported, malformed, no-ready-permit, and summary
+  error counts, plus project-level operation authorization status, reason/action codes, safe
+  evidence fingerprints, source, and safe timestamps. Projects without an explicit authorization
+  request MUST show request/record count 0 and a non-misleading no-ready-permit/no-request state
+  rather than pending migration, execution, or legacy takeover. Malformed authorization request,
+  record, permit, history, closeout, or evidence input for one project MUST be isolated to that
+  project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other project
+  summaries.
+- Hub-compatible implementations SHOULD expose a cutover authorization consumption guard after the
+  execution authorization ledger. The guard is the shared pre-side-effect authorization boundary for
+  explicit Hub cutover execution paths, and SHOULD accept project identity, provider scope,
+  operation, side-effect source (`candidate_scan`, `dispatch_application`, `worker_start_handoff`,
+  or `writeback_executor`), the current authorization ledger record, current request/permit/gate/
+  activation/audit/history/closeout evidence fingerprints, and executor/starter/writeback mode.
+  It SHOULD return a stable, serializable, sanitized decision summary with `allowed`, `blocked`,
+  `no_authorization`, `stale`, `manual_attention`, `unsupported`, or `malformed`, plus reason/action
+  codes, safe evidence fingerprints, and `no_side_effects: true`.
+- In explicit Hub cutover execution paths, real provider candidate scan, dispatch plan application,
+  real worker start handoff, and real provider writeback MUST consume the same authorization record
+  before provider I/O, runtime-ledger dispatch mutation, worker start, provider writeback, systemd
+  operations, or configuration writes. These real side-effect entrypoints MUST receive a guard
+  context even when the authorization ledger has no requests or records; an empty or missing
+  matching `authorized_for_explicit_execution` record MUST produce `no_authorization` before any
+  external side effect. Operation/scope mismatch, non-ready permits, gate/preflight blocks,
+  dry-run/history/closeout staleness, unresolved manual attention, mode incompatibility,
+  unknown/malformed/unsupported inputs, or evidence fingerprint drift MUST also block before
+  external side effects.
+- The consumption guard MUST NOT execute migration work, queue execution, take over legacy services,
+  bypass or replace the cutover gate, readiness permit, execution authorization ledger, activation
+  preflight, legacy ownership guardrail, provider governance, runtime ledger, worker starter, or
+  writeback executor. Projects without real consumption events MUST show a non-misleading
+  `no_consumption` summary rather than pending migration or pending execution.
+- Dashboard/API summaries SHOULD expose device-level and project-level authorization consumption
+  counts by decision, operation, and side-effect source, recent safe reason/action codes, safe
+  evidence fingerprints, and sources blocked because authorization was missing or mismatched.
+  Malformed consumption input for one project MUST be isolated to that project summary and MUST NOT
+  crash Hub runtime, `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations SHOULD expose a cutover execution outcome ledger after the
+  authorization consumption guard. Each outcome fact SHOULD bind project identity, provider scope,
+  operation, side-effect source, cutover operation request fingerprint, execution authorization
+  request/record fingerprint, readiness permit fingerprint/decision, cutover gate/staged ownership
+  evidence fingerprint, dry-run audit and audit-history/closeout evidence fingerprints, consumption
+  guard decision/fingerprint, executor/starter/writeback mode, safe started/completed timestamps,
+  reason/action codes, and sanitized evidence fingerprints.
+- Outcome status SHOULD distinguish `not_executed`, `blocked`, `succeeded`, `failed`, `retryable`,
+  `unknown`, `manual_attention`, `unsupported`, and `malformed` or implementation-defined
+  equivalent categories. Each fact SHOULD include safe side-effect semantics such as
+  `no_side_effects`, `side_effect_entered`, and `side_effect_may_have_happened`.
+- When the consumption guard blocks, the outcome ledger SHOULD produce a `not_executed`/blocked
+  style outcome with `no_side_effects: true` and MUST NOT call providers, mutate dispatch/runtime
+  ledgers, start workers, write providers, operate systemd, or edit configuration. When the guard
+  allows a real side-effect boundary, the boundary's safe return value SHOULD be normalized into a
+  `succeeded`, `failed`, `retryable`, `unknown`, or `manual_attention` outcome rather than remaining
+  only in executor-private summaries.
+- Unknown, timed-out, provider-lookup-required, ambiguous writeback, uncertain worker-start ack, or
+  otherwise unsafe-to-replay results MUST NOT be treated as success and MUST NOT trigger blind
+  replay. For the same operation request, authorization record, operation, side-effect source, and
+  safe evidence fingerprint, an unresolved `unknown` or `manual_attention` outcome SHOULD block a
+  later tick from repeating the same external side effect.
+- Dashboard/API summaries SHOULD expose device-level and project-level execution outcome counts by
+  operation/source/status, recent safe reason/action codes, unresolved unknown/manual-attention
+  counts, safe side-effect-entered/not-entered counts, and relevant request/permit/gate/guard
+  fingerprints. Projects without outcome facts MUST show a non-misleading `no_outcome` summary
+  rather than pending migration or pending execution.
+- The outcome ledger MUST NOT be a durable execution queue, migration executor, one-click
+  migration, or legacy service takeover, and MUST NOT replace the cutover gate, readiness permit,
+  authorization ledger, consumption guard, activation preflight, provider governance, runtime
+  ledger, worker starter, or writeback executor. Malformed outcome input for one project MUST be
+  isolated to that project summary and MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or
+  other project summaries.
+- Hub-compatible implementations SHOULD expose a cutover execution outcome closeout read model for
+  unresolved `unknown` or `manual_attention` outcomes. A closeout record SHOULD bind project
+  identity, provider scope, operation, side-effect source, outcome replay key, safe outcome
+  evidence fingerprint/status, side-effect-entered/may-have-happened semantics, cutover operation
+  request fingerprint, execution authorization request/record fingerprint, readiness permit
+  fingerprint/decision, cutover gate/staged evidence fingerprint, dry-run audit and audit-history
+  fingerprints, consumption guard fingerprint, safe resolution code, operator request fingerprint,
+  safe created/closed timestamps, and safe reason/action codes.
+- Closeout currentness MUST be evaluated against the current unresolved outcome. Outcome drift,
+  replay-key/fingerprint mismatch, non-unresolved outcome status, cross-project/source references,
+  malformed or missing fields, unsupported resolution codes, missing referenced evidence, and
+  side-effect safety conflicts MUST NOT be displayed as resolved. They SHOULD surface as
+  `stale`, `conflict`, `manual_attention`, `malformed`, or `unsupported` summaries scoped to the
+  affected project/operation.
+- A closeout resolution such as `allow_explicit_retry_consideration` MAY report that a future
+  operator-controlled execution can be considered, but MUST NOT itself call providers, mutate
+  dispatch/runtime ledgers, start workers, write providers, operate systemd, edit configuration,
+  create authorization, consume authorization, or replay an external side effect. Any later explicit
+  execution MUST still pass readiness permit, execution authorization ledger, authorization
+  consumption guard, and existing provider/runtime/writeback guardrails. Unresolved outcomes without
+  a valid closeout, or with stale/conflicting/malformed closeout input, MUST continue to block
+  silent replay.
+- Dashboard/API summaries SHOULD expose device-level and project-level outcome closeout status,
+  unresolved outcome counts, resolved/stale/conflict/manual-attention/malformed/unsupported/
+  `no_closeout` counts, recent safe reason/action codes, relevant replay/authorization/permit/guard
+  fingerprints, whether explicit retry consideration is allowed, and why operator handling is still
+  required. Projects without outcome facts MUST show `no_outcome`; projects with unresolved outcome
+  facts but no valid closeout MUST show `no_closeout`, not pending migration, pending execution, or
+  pending retry. Malformed closeout input for one project MUST NOT crash Hub runtime,
+  `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations SHOULD expose a closeout-aware cutover replay decision summary
+  before real Hub-owned side-effect entrypoints. The summary SHOULD bind project identity, provider
+  scope, operation, side-effect source, outcome replay key, outcome evidence fingerprint/status,
+  side-effect-entered/may-have-happened semantics, matching closeout fingerprint/resolution/operator
+  request/timestamps, current cutover operation request, readiness permit, execution authorization
+  record, authorization consumption guard, and related safe evidence fingerprints.
+- Replay decisions SHOULD distinguish `no_unresolved_outcome`, `blocked_unresolved_outcome`,
+  `retry_consideration_allowed`, `retry_consideration_denied`, `stale_closeout`, `conflict`,
+  `manual_attention`, `malformed`, and `unsupported` or implementation-defined equivalent
+  categories. `no_unresolved_outcome` MUST NOT imply pending migration, pending execution, or
+  pending retry.
+- Real candidate scan, dispatch plan application, real worker start handoff, and real provider
+  writeback SHOULD consume the closeout-aware replay decision before provider I/O, dispatch/runtime
+  mutation, worker start, or writeback. An unresolved `unknown` or `manual_attention` outcome MAY be
+  allowed past the replay block only when the current authorization consumption guard is already
+  `allowed`, a matching current closeout is resolved with `allow_explicit_retry_consideration`, and
+  project/provider scope, operation/source, replay key, outcome fingerprint/status, side-effect
+  safety, and current safe evidence fingerprints still match.
+- `allow_explicit_retry_consideration` MUST NOT create an authorization request or record, consume
+  authorization, call providers, mutate dispatch/runtime ledgers, start workers, write providers,
+  operate systemd, edit configuration, interpret an old authorization/consumption event as current
+  permission, or treat a closeout as external side-effect success. Stale/conflicting/malformed/
+  unsupported closeouts, side-effect safety conflicts, missing authorization/permit/guard evidence,
+  and non-idempotent or may-have-happened writeback paths MUST remain blocked or manual-attention
+  rather than silently replayed.
+- Dashboard/API summaries SHOULD expose device-level and project-level replay decision counts for
+  blocked unresolved outcomes, retry consideration allowed/denied, stale/conflict/manual-attention/
+  malformed/unsupported decisions, recent safe reason/action codes, blocked replay entries, and
+  safe replay/closeout/authorization/permit/guard fingerprints. Malformed replay decision or
+  closeout input for one project MUST NOT crash Hub runtime, `/api/v1/state`, Dashboard, or other
+  project summaries.
+- Hub-compatible implementations SHOULD expose an operator-facing cutover replay request audit
+  summary after the closeout-aware replay decision and before any later explicit execution
+  consideration. Replay request input SHOULD be serializable, testable, and safe. It SHOULD bind
+  `project_id`, safe provider scope, operation, side-effect source, historical outcome replay key,
+  outcome fingerprint/status, side-effect-entered/may-have-happened semantics, matching closeout
+  fingerprint/resolution/operator request, current replay decision fingerprint/status, current
+  cutover operation request, readiness permit, execution authorization record, authorization
+  consumption guard, request source, requested timestamp, request fingerprint, and a safe operator
+  note digest or short action/risk code. It MUST NOT require raw provider payloads, full prompts,
+  transcripts, tokens, cookies, raw systemd output, raw config, full comment/PR body, or private
+  local paths.
+- Replay request audit decisions SHOULD distinguish `no_request`,
+  `would_allow_retry_consideration`, `would_block`, `stale`, `conflict`, `manual_attention`,
+  `malformed`, and `unsupported` or implementation-defined equivalent categories.
+  `would_allow_retry_consideration` MUST mean only that the current request/closeout/replay
+  decision/permit/authorization/guard evidence still matches and the operator may continue to a
+  later explicit execution consideration. It MUST NOT be treated as authorization creation,
+  authorization consumption, provider I/O, dispatch mutation, worker start, writeback success,
+  systemd operation, configuration change, automatic retry, durable queue entry, migration, or
+  legacy service takeover.
+- Missing or invalid `allow_explicit_retry_consideration` closeouts, blocked replay decisions,
+  authorization/permit/guard mismatch, project/provider scope mismatch, operation/source mismatch,
+  outcome fingerprint/status drift, side-effect safety conflicts, stale cutover request evidence,
+  malformed or unsupported request input, and unresolved manual attention MUST NOT display as
+  allowed. They SHOULD surface as `would_block`, `stale`, `conflict`, `manual_attention`,
+  `malformed`, or `unsupported` scoped to the affected project/request.
+- If a later execution outcome ledger fact references the replay request or replay request audit
+  fingerprint, the audit summary SHOULD expose a sanitized link status such as outcome recorded,
+  still pending, blocked, stale, conflict, or manual attention. This link MUST NOT reinterpret the
+  old closeout or replay request as external side-effect success, and mismatched later evidence MUST
+  remain stale/conflicting rather than silently associated.
+- Dashboard/API summaries SHOULD expose device-level and project-level replay request audit status,
+  request counts, allow/block/stale/conflict/manual-attention/malformed/unsupported counts, recent
+  safe reason/action codes, safe request/outcome/closeout/replay-decision/permit/authorization/guard
+  fingerprints, and linked outcome status counts. Projects without an explicit replay request MUST
+  show `no_request` or request count 0, not pending migration, pending execution, automatic retry,
+  or durable queue state. Malformed replay request input for one project MUST NOT crash Hub runtime,
+  `/api/v1/state`, Dashboard, or other project summaries.
+- Hub-compatible implementations MAY expose a minimal read-only cutover closure chain contract
+  before building a complete closure report. 该合同 SHOULD consume only already-sanitized summaries
+  or test fixtures, and SHOULD bind one explicit attempt or replay key to `project_id`, safe
+  provider scope, operation, side-effect source, cutover request fingerprint, readiness permit,
+  execution authorization, authorization consumption guard, outcome, safe evidence fingerprint, and
+  safe time metadata. It MUST NOT require provider raw payloads, full prompts/transcripts, tokens,
+  raw config, raw systemd output, local private paths, full comment/PR bodies, or exception stack
+  traces.
+- 最小 closure chain 状态 SHOULD distinguish `no_chain`, `no_request`, `closed_succeeded`,
+  `closed_no_side_effect`, `open_retryable`, `open_manual_attention`, `conflict`, `stale`,
+  `malformed`, and `unsupported` or equivalent categories. `closed_succeeded` MUST come only from a
+  matching `succeeded` outcome with unchanged project/scope/source/operation/key/fingerprint
+  evidence. A matching `retryable` outcome SHOULD remain open as `open_retryable` until a later
+  explicit retry consideration rechecks permit, authorization, consumption guard, and replay request
+  audit evidence. Matching `unknown` or `manual_attention` outcomes SHOULD remain open as
+  `open_manual_attention` until operator closeout or manual review. Guard allowed, authorization
+  records, resolved closeouts, replay decisions, or replay request audits MUST NOT independently
+  imply success, resolved closeout, or retry allowed. Guard/no-authorization/validation blocks MAY
+  close only as `closed_no_side_effect` when side-effect entry is explicitly false and
+  may-have-happened is not true.
+- For open closure chains, the minimal contract SHOULD summarize retained closeout, replay decision,
+  and replay request audit references as read-only reference status. The status SHOULD distinguish
+  at least `missing`, `current`, `stale`, `conflict`, `malformed`, and `unsupported`, and summary,
+  project summary, and recent-chain output SHOULD expose per-reference-type status counts plus
+  recent safe reason/action codes. These reference statuses MUST NOT change closure final status,
+  create or consume authorization, allow retry, or trigger provider/dispatch/worker/writeback/systemd
+  paths. They MUST remain sanitized and include only safe status, reason/action code, and safe
+  fingerprints or digests, not tokens, raw provider payloads, full prompts/transcripts, full
+  comment/PR bodies, local private paths, raw systemd output, or exception stacks.
+- 最小 closure chain 合同 MUST remain read-only. It MUST NOT create authorization, consume
+  authorization, call providers, dispatch work, start workers, write providers, operate systemd,
+  edit configuration, queue retries, auto-replay side effects, or claim legacy service ownership.
+  Retryable/manual-attention outcomes and closeout/replay aggregations MAY be retained as safe
+  references or reported as open/unsupported until later closure-report slices define their full
+  semantics.
+- Hub Runtime/API-safe snapshots MAY expose this minimal chain as `hub_cutover_closure_chain` and
+  as `hub_device_observability.overview.cutover_closure_chain` plus per-project
+  `cutover_closure_chain` / `detail.closure_chain`. These projections SHOULD be derived only from
+  existing sanitized request/gate/permit/authorization/consumption-guard/outcome/closeout/replay
+  summaries, SHOULD use `no_chain` or `no_request` when evidence is absent, and MUST NOT report
+  pending execution or pending retry solely because closure evidence is missing. This projection is
+  not a complete closure report and not a retry/replay queue. Dashboard views MAY render the
+  existing safe snapshot as read-only device/project status, counts, reference-status counts,
+  reason/action codes, and safe fingerprints, but MUST NOT present `auto_replay_allowed`, resolved
+  closeouts, allowed replay decisions, or allowed replay request audits as automatic retry, queued
+  replay, execution success, or legacy takeover.
+- Hub-compatible implementations MAY 在最小 closure chain safe snapshot 之上增加 operator
+  conclusion baseline，并将它作为 Runtime/API-safe snapshot 暴露为
+  `hub_cutover_closure_conclusion`、`hub_device_observability.overview.cutover_closure_conclusion`
+  和 per-project `cutover_closure_conclusion` / `detail.closure_conclusion`。这个 read model SHOULD
+  接受 device summary、project summary 或单条 recent chain，并输出稳定的 operator-facing conclusion、
+  severity 或 attention level、summary code、required action codes、blocked-by entries、safe
+  evidence references，以及明确的 read-only / no-side-effect / no-auto-retry / no-auto-replay
+  边界信号。它 MUST 只从现有 safe snapshot 字段派生，例如 closure status、counts、reference
+  status、reason/action codes 和 safe fingerprints。它 MUST NOT 重新聚合 raw request/permit/
+  authorization/guard/outcome evidence，不得要求 provider raw payload，不得调用 provider、
+  dispatch work、start workers、write providers、operate systemd、edit configuration、创建或消费
+  authorization、queue retry/replay、新增 Dashboard 执行入口，或声明 legacy service ownership。
+  Live Dashboard MAY render this existing safe snapshot as device overview and per-project
+  conclusion badges/details, including severity/attention, summary code, required actions,
+  blocked-by, safe evidence/fingerprints, and read-only boundary flags. It is not a full
+  operator-facing closure report。project/provider scope MUST NOT 在不同 project conclusion 之间串项；
+  只要任一 project 仍 open、stale、conflicting、malformed 或 unsupported，device rollup MUST 保守处理，
+  不能显示为 fully closed。`closed_no_side_effect` MUST NOT 被报告为 operation success；
+  `open_retryable` MUST NOT 被报告为 automatic retry、queued replay 或 pending execution。
+- Hub-compatible implementations MAY 在 closure chain 与 closure conclusion safe snapshot 之上增加
+  library-level closure report safe packet/read model。该 packet SHOULD 只消费已有
+  `hub_cutover_closure_chain`、`hub_cutover_closure_conclusion` 或等价 safe fixture，MUST NOT 重新聚合
+  raw request、permit、authorization、guard、outcome、closeout、replay decision 或 replay request audit
+  evidence。它 SHOULD 输出 device-level 和 per-project stable safe summary，包括 report version、
+  generated_at、read-only boundary flags、report status、operator conclusion、severity/attention、
+  summary code、required action codes、blocked-by entries、closure-chain status/counts、retained
+  reference status counts、recent reason/action codes、safe provider scope 和 safe evidence
+  fingerprint。不同 project 的 provider scope、evidence reference、required action code 和 blocked-by
+  entries MUST NOT 串项。Device rollup MUST remain conservative: 任一 project 为 `open_retryable`、
+  `open_manual_attention`、`stale`、`conflict`、`malformed` 或 `unsupported` 时，packet MUST NOT report
+  fully closed；`closed_no_side_effect` MUST mean no-side-effect closure only, not operation success；
+  `open_retryable` MUST require explicit follow-up consideration and MUST NOT imply automatic retry、
+  queued replay、pending retry 或 running execution；`no_chain` / `no_request` MUST NOT imply pending
+  execution、migration queued、legacy takeover 或 retry queue。该 packet MUST remain sanitized and
+  read-only: it MUST NOT output provider tokens、Authorization/cookie、raw provider payload、full
+  prompt/transcript、full comment/PR body、local private paths、raw config、raw systemd output 或
+  exception stack traces, and MUST NOT create/consume authorization, call provider/dispatch/worker
+  starter/writeback/systemd/config-mutation paths, auto retry/replay, or take over legacy services.
+- Hub Runtime/API-safe snapshots MAY expose this packet as `hub_cutover_closure_report_packet`,
+  derived only from existing chain/conclusion safe snapshots or equivalent safe fixtures. Presenter
+  `/api/v1/state` MAY include the same device-level safe summary and MUST degrade safely for
+  legacy/non-Hub snapshots, nil/missing chain or conclusion inputs, summary-error-like maps, and
+  incompatible inputs without crashing or implying pending execution, automatic retry, queued
+  replay, migration queued, or legacy takeover. `hub_device_observability` MAY expose the same
+  packet at top level, overview, per-project summary, and project detail. Overview SHOULD express
+  report status, operator conclusion/severity/attention, required-action counts, blocked-by counts,
+  section status, and recent safe evidence reference/fingerprint. Project detail SHOULD express each
+  project's report status, closure-chain status, operator conclusion, required actions, blocked-by,
+  provider scope, and safe evidence fingerprint/reference. Live Dashboard MAY render this existing
+  packet in Hub device overview and project detail, but Dashboard MUST consume only the safe packet
+  or equivalent safe fixture fields and MUST degrade missing, nil, summary-error-like, legacy/non-Hub
+  or incompatible inputs without crashing or implying pending execution, automatic retry, queued
+  replay, migration queued, or legacy takeover. This Runtime/API/Dashboard integration MUST remain a
+  read-only organization/display layer over chain/conclusion safe snapshots; it is not full #171
+  execution closure report, not an execution entrypoint, not an automatic retry/replay queue, not a
+  durable execution queue, not one-click migration, and not legacy service takeover.
+- Implementations SHOULD keep a deterministic local dry-run fixture or equivalent harness for this
+  packet so reviewers can verify Presenter, `/api/v1/state`, and Dashboard output from the same
+  safe fields. The fixture SHOULD cover multiple project/provider scopes, closed success,
+  closed-no-side-effect, retry consideration, manual/unknown attention, no-request/no-chain fallback,
+  and at least one abnormal state such as stale/conflict/malformed/unsupported. The harness MUST
+  remain safe-summary-only and MUST NOT call provider, dispatch, worker starter, writeback, systemd,
+  workspace hook, config mutation, or legacy service operations. The Symphony repository baseline
+  is documented in [`docs/hub-cutover-closure-report-packet-dry-run.md`](docs/hub-cutover-closure-report-packet-dry-run.md).
+- Repository maintainers SHOULD keep an auditable coverage matrix for the historical #171/#172
+  closure report scope when that scope is replaced by smaller read-only slices. The Symphony
+  repository baseline is documented in
+  [`docs/hub-cutover-closure-report-coverage-audit.md`](docs/hub-cutover-closure-report-coverage-audit.md);
+  this matrix is evidence and owner-decision support only, not a runtime execution entrypoint or
+  automatic closure of historical issues.
+- Repository maintainers SHOULD also keep an auditable remaining capability coverage matrix for the
+  original #74 Hub mode goals when the epic is implemented through many smaller issues. The Symphony
+  repository baseline is documented in
+  [`docs/hub-mode-issue-74-remaining-capability-coverage-audit.md`](docs/hub-mode-issue-74-remaining-capability-coverage-audit.md);
+  this matrix maps goals, acceptance criteria, evidence, remaining gaps, and owner decisions. It is
+  an audit artifact and MUST NOT imply new provider, dispatch, worker, writeback, systemd, config,
+  retry/replay, durable queue, or legacy takeover behavior.
+- Repository maintainers SHOULD keep a separate provider exit residual coverage decision baseline
+  when #74-style provider governance is delivered incrementally. The Symphony repository baseline is
+  documented in
+  [`docs/hub-provider-exit-residual-coverage-decision-baseline.md`](docs/hub-provider-exit-residual-coverage-decision-baseline.md);
+  it classifies provider access paths as `hub_governed`, `legacy_direct_scoped_non_goal`,
+  `unsupported_manual_attention`, `future_migration_candidate`, or `non_runtime_provider_access`.
+  This is a decision artifact only: it MUST distinguish code coverage, test coverage, and
+  documentation/decision coverage, and MUST NOT treat a documented legacy or raw escape hatch as a
+  runtime-governed Hub provider exit.
+- Repository maintainers MAY keep a short #74 closure decision packet after coverage audit,
+  provider exit residual decision, and restart/replay fixture evidence are available. The Symphony
+  repository packet is documented in
+  [`docs/hub-mode-issue-74-closure-decision-packet.md`](docs/hub-mode-issue-74-closure-decision-packet.md);
+  it is an owner-decision artifact only and MUST NOT imply automatic issue closure, provider
+  migration, durable queue, automatic retry/replay, one-click migration, legacy service takeover, or
+  new runtime/API/Dashboard behavior.
+- `legacy_only` and `hub_ready` readiness states MUST NOT be treated as Hub ownership. A
+  `ready_for_dry_run` decision allows read-only or low-risk evaluation only. A
+  `ready_for_hub_management` decision is evidence for an operator to consider changing registry
+  state, not an automatic change. `hub_managed` MUST still rely on activation preflight and related
+  safe summaries before Hub-owned real actions run.
+- If a single project summary is missing fields, carries an incompatible version, or fails to build,
+  Hub observability MUST degrade only that project to `manual_attention`/`summary_error` and MUST
+  keep the overall Dashboard/API response available for other projects.
+- Hub runtime output MUST NOT expose provider tokens, API keys, authorization/cookie values, secret
+  env values, raw provider config, full prompts, full transcripts, or full comment/PR body text.
+  Summary fields that can carry full text, including `body`, `comment_body`, `pull_request_body`,
+  `pr_body`, `raw_provider_body`, and `full_prompt`, MUST be replaced with safe metadata such as
+  hashes and byte counts even when no credential-like value is present.
+- Hub runtime and Dashboard output MUST NOT expose raw env/raw config, raw provider responses, raw
+  systemd output, hook/app-server raw output, or exception stack traces.
+- The readiness report and dry-run runbook MUST NOT implement one-click migration, an interactive
+  migration wizard, automatic stop/disable/restart/delete of `symphony@project.service`, automatic
+  edits to `HUB.yaml`, `WORKFLOW.md`, `TRACKER.yaml`, systemd units, project state, or provider
+  state, or new provider writeback behavior beyond the explicitly supported Hub writeback subset.
+- Hub runtime output SHOULD expose real writeback executor observability when present: executor
+  mode, supported and rejected operation kinds, pending/succeeded/failed/unknown/manual-attention
+  counts, per-project writeback pressure, and recent safe error categories. These summaries MUST
+  keep the same redaction boundary and MUST NOT include raw provider responses, GraphQL/REST
+  payloads, full comment/PR bodies, prompts, transcripts, authorization/cookie values, tokens, or
+  secret env values.
+
+Compatibility boundary:
+
+- `HUB.yaml` defines a model and validation entrypoint. It does not require the existing
+  single-project orchestrator to become a Hub scheduler.
+- Hub runtime ledgers define recoverable claim/attempt/workspace/retry/session/writeback facts for
+  future Hub coordination. They also define start-intent and safe run-context facts for the atomic
+  dispatch boundary. They do not by themselves implement a provider poll loop,
+  database/transaction backend, cross-process distributed lock, full Hub scheduler, or real provider
+  execution.
+- A restart/replay safe fixture baseline MAY prove that current ledger facts can be reloaded and
+  consistently interpreted by RuntimeLedger replay, DeviceObservability, and `/api/v1/state`.
+  This remains a read-only validation artifact and MUST NOT imply automatic redispatch, workspace
+  cleanup, provider writeback replay, or a new persistent runtime backend.
+- Hub provider request governance defines the model and in-memory scheduling contract for a shared
+  provider exit, and Hub poll coordination may build candidate-scan poll plans and safe observable
+  snapshots from that contract. A Hub poll tick skeleton may execute selected candidate-scan
+  requests through an injectable provider executor and record normalized results, but it MUST NOT
+  require existing legacy tracker/provider calls, dynamic tools, or writeback paths to be migrated
+  until an explicit Hub integration enables that path.
+- A real Hub candidate-scan executor, when explicitly enabled, is only a read-path integration for
+  governed candidate intake. It does not imply Hub provider writeback execution, dynamic tool
+  routing, durable provider queues, cross-process locking, or migration of legacy
+  `symphony@project.service` polling.
+- A real Hub writeback executor, when explicitly enabled, is only a minimal safe writeback
+  integration for governed writeback requests. It does not imply all dynamic tools are Hub-owned,
+  PR creation is automatically replayed, ordinary append comments are automatically replayed, a
+  durable provider queue exists, or legacy `symphony@project.service` polling/writeback ownership
+  has migrated.
+- Hub candidate intake MAY consume safe candidate-scan result summaries and produce
+  ready-for-dispatch-evaluation or skipped-candidate summaries, including project-level counts and
+  reasons such as invalid candidate, duplicate active attempt, workspace busy, project paused,
+  config error, provider backoff, manual attention, or capacity full. This remains a read/precheck
+  boundary and MUST NOT imply a Hub scheduler has taken ownership of dispatch.
+- Hub dispatch planning MAY consume eligible intake candidates and produce safe planned/skipped
+  outcomes plus unresolved pending-intent summaries, including per-project counts, skipped reasons,
+  candidate/poll source correlation, and plan identity. This remains a model-only planning boundary:
+  replayed or refreshed candidates with an existing pending plan/start intent MUST be explainable as
+  already planned rather than duplicated, and capacity/full/backoff/manual-attention/workspace
+  blockers MUST be visible without starting workers or touching providers.
+- Hub dispatch plan application MAY consume planned eligible intents and apply them to the
+  runtime-ledger model through the atomic dispatch boundary, producing claim, attempt, workspace
+  lease, start-intent, and safe run-context facts plus safe applied/skipped/blocked/already-applied
+  summaries. It remains a skeleton for later scheduler/worker integration and MUST NOT launch real
+  workers, create real workspaces, write providers, or introduce durable transaction storage by
+  itself.
+- Hub provider tool/writeback routing MAY provide an opt-in dynamic-tool execution boundary that
+  builds `ProviderGovernance` requests for structured provider calls and returns safe result
+  summaries. It MUST remain opt-in unless the implementation explicitly documents a Hub-owned
+  provider exit migration; legacy direct provider calls stay compatible by default.
+- Hub writeback intent/result processing MAY normalize those routing summaries into runtime ledger
+  writeback facts and produce replay, de-duplication, provider-lookup, manual-attention, and
+  conflict decisions. This processing baseline remains model-only and MUST NOT imply that every
+  legacy provider writeback now goes through Hub.
+- Hub atomic dispatch defines the candidate-to-run-intent model boundary. It MUST key active
+  attempts by `project_id + IssueRef`, bind claim, attempt, workspace lease, start intent, and run
+  context in one model transition, and expose replay diagnostics for duplicate candidates, workspace
+  conflicts, pending/unknown start acknowledgements, retry/backoff, blocked candidates, and manual
+  attention. This boundary MAY be model-only until a later persistent transaction store or scheduler
+  integration is introduced.
+- Hub worker lifecycle reconciliation MAY consume safe post-ack worker/session result summaries and
+  apply them to runtime-ledger attempts, leases, retry/backoff, blocked, released, unknown, and
+  manual-attention facts. It remains a reconciliation boundary and MUST NOT imply a Hub-owned
+  scheduler loop, cross-process worker supervisor, provider writeback executor, durable database/WAL,
+  or migration of legacy single-project worker lifecycle ownership.
+- Hub device observability MAY expose a single safe projection for Dashboard/API consumers that
+  summarizes project registry, provider governance, poll coordination, dispatch/runtime ledger, and
+  writeback/manual-attention state. This projection MUST remain a read model and MUST NOT imply that
+  legacy single-project provider polling or writeback has been replaced.
+- Without explicit Hub mode usage, legacy single-project startup using one `WORKFLOW.md` and one
+  `TRACKER.yaml` MUST remain compatible.
+
 ## 6. Configuration Specification
 
 ### 6.1 Configuration Resolution Pipeline
@@ -779,9 +2219,75 @@ claim state.
 4. `RetryQueued`
    - Worker is not running, but a retry timer exists in `retry_attempts`.
 
-5. `Released`
+5. `Blocked`
+   - Claim retained because the issue cannot be safely completed or retried automatically.
+   - Entries SHOULD include issue id, stage, blocked reason, session id, workspace path, worker host,
+     and recovery artifact path when available.
+
+6. `Released`
    - Claim removed because issue is terminal, non-active, missing, or retry path completed without
      re-dispatch.
+
+### 7.1.1 Hub Atomic Dispatch Boundary
+
+The Hub atomic dispatch boundary is a model-level contract for converting a candidate issue into an
+active agent run intent. It is part of the #74 Hub direction and is separate from the legacy
+single-project orchestrator implementation.
+
+Inputs:
+
+- `project_id`
+- configuration fingerprint or snapshot version
+- provider-neutral `IssueRef`
+- workflow and tracker state summary
+- trigger source: poll plan, manual refresh, webhook, running reconciliation, or recovery
+- provider governance or poll coordination request/correlation summary
+- attempt number or stable attempt-id input
+- workspace path/lease input
+- preflight observations
+
+Required preflight observations:
+
+- existing active attempt for the same `project_id + IssueRef`
+- existing active workspace lease for the requested workspace
+- active retry/backoff
+- project pause or configuration error
+- provider governance backpressure
+- explicit blocked/manual-attention state
+
+Invariants:
+
+- At most one active attempt MAY exist for one `project_id + IssueRef`.
+- An active attempt in claimed/running state MUST have one matching active workspace lease.
+- A workspace path MUST NOT have more than one active lease.
+- A start intent MUST reference an active attempt and matching workspace lease while pending,
+  unknown, or manual-attention.
+- Repeated candidates from duplicate ticks, webhooks, or recovery scans MUST be idempotent and MUST
+  NOT create a second active attempt.
+- An unknown worker-start result MUST be represented as pending/unknown/manual attention or another
+  safe retry state; implementations MUST NOT blindly start a second worker.
+
+Failure outcomes:
+
+- `retry_queued`: attempt failed before a durable worker run; retry/backoff records the due time and
+  releases the workspace lease.
+- `blocked`: dispatch cannot safely proceed automatically; replay exposes the blocked candidate and
+  diagnostic.
+- `released`: claim and workspace lease are released because no active run remains necessary.
+- `manual_attention`: start outcome is unknown or unsafe to replay; the unresolved start intent and
+  workspace lease remain observable until an operator or later recovery policy resolves them.
+
+Run context snapshots:
+
+- MUST include safe references to project/workflow/tracker configuration, issue identity, current
+  stage, attempt id/number, correlation id, workspace lease/path, worker host/runtime identity
+  summary, runner/start command summary, session id, start/activity timestamps, and exit summary.
+- MAY include safe source correlation showing the dispatch came from a Hub source poll, candidate
+  intake record, and dispatch planning outcome. This correlation MUST be safe metadata only and
+  MUST NOT include raw provider config, raw provider responses, full prompts/transcripts, or full
+  comment/PR bodies.
+- MUST NOT include provider tokens, API keys, credentials, cookies, secret env values, full prompts,
+  complete Codex transcripts, or raw secret-bearing config.
 
 Important nuance:
 
@@ -795,8 +2301,12 @@ Important nuance:
 - Workflow-stage progression MUST NOT use provider issue state refresh as the normal decision point
   between in-process stages. Provider-visible stage writes are external observability/recovery
   records.
-- Once the worker exits normally, the orchestrator MUST NOT schedule a continuation retry; the runner
-  has already completed the in-process stage loop.
+- Once the worker exits normally at a completion terminal stage, the orchestrator MUST NOT schedule a
+  continuation retry; the runner has already completed the in-process stage loop.
+- A worker exit at a non-completion terminal stage, including `blocked`, `protocol_blocked`,
+  `rework`, or equivalent diagnostic stages, MUST NOT be interpreted as delivered work. The issue
+  MUST remain open or provider-visible as blocked/rework/protocol-blocked, MUST NOT be counted as
+  completed, and MUST NOT lose its only recoverable workspace evidence.
 
 ### 7.2 Run Attempt Lifecycle
 
@@ -941,8 +2451,9 @@ Retry handling behavior:
 
 Note:
 
-- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation
-  (including terminal transitions for currently running issues).
+- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation only
+  for completion terminal stages. Non-completion terminal stages keep the claim blocked and preserve
+  workspace recovery evidence.
 - Retries can only re-dispatch issues that are back at `workflow.start_stage`; they MUST NOT advance
   middle stages through a provider-wide scan.
 
@@ -962,7 +2473,10 @@ Part B: Tracker state refresh
 
 - Fetch current issue states for all running issue IDs.
 - For each running issue:
-  - If provider state maps to a terminal workflow stage: terminate worker and clean workspace.
+  - If provider state maps to a completion terminal workflow stage: terminate worker and clean
+    workspace.
+  - If provider state maps to a blocked/protocol-blocked/rework terminal workflow stage: terminate
+    worker, keep the claim in blocked state, and preserve recovery evidence.
   - If provider state disagrees with the runner's local current stage: keep the worker running,
     update the in-memory issue snapshot, log a stage conflict, and expose
     `stage_conflict` through observability.
@@ -971,7 +2485,7 @@ Part B: Tracker state refresh
 ### 8.6 Startup Terminal Workspace Cleanup
 
 Startup no longer performs a provider-wide terminal-state cleanup scan. Terminal workspace cleanup is
-handled by active-run reconciliation and normal terminal stage completion.
+handled by active-run reconciliation and normal completion terminal stage completion.
 4. In workflow-stage mode, provider-wide terminal cleanup is not scanned at startup. Restart
    recovery is bounded by provider-visible stage plus workspace metadata; a fresh dispatch is only
    possible for issues visible in `workflow.start_stage`, while running in-memory stage position is
@@ -994,7 +2508,10 @@ Per-issue workspace path:
 Workspace persistence:
 
 - Workspaces are reused across runs for the same issue.
-- Successful runs do not auto-delete workspaces.
+- Completion terminal runs may delete workspaces according to the configured cleanup path.
+- Blocked terminal runs MUST retain the workspace or write enough recovery artifact data before any
+  cleanup. Local recovery artifacts SHOULD include `git status --short --branch`, `git diff --stat`,
+  `git diff --name-status`, an untracked-file list, patch data, session id, and blocked reason.
 
 ### 9.2 Workspace Creation and Reuse
 
@@ -1350,6 +2867,9 @@ GitHub-specific requirements for `tracker.kind == "github"`:
 - GitHub Project v2 writes MUST fail clearly when the configured issue is not in the project, the
   configured Status field is missing, or the requested Status option is missing.
 - GitHub native `CLOSED` is authoritative terminal state even if the Project Status field is stale.
+- GitHub Project v2 Status writes to non-completion terminal stages such as `Blocked` or
+  `Protocol Blocked` MUST NOT close the native GitHub issue. Native issue close is reserved for
+  completion terminal stages or the linked PR merge path.
 - When `tracker.project_number` is omitted, GitHub issues-only mode MUST NOT claim support for
   multi-stage provider-visible workflow state. Multi-stage workflow-stage config that needs
   provider-visible state MUST fail fast and point users to Project v2 Status or another tracker with
@@ -1364,6 +2884,8 @@ GitLab-specific requirements for `tracker.kind == "gitlab"`:
 - The default endpoint is `https://gitlab.com/api/v4`.
 - GitLab native `opened` maps to the first configured active state and `closed` maps to the first
   configured terminal state.
+- GitLab native state writes SHOULD close issues only for completion terminal stages; non-completion
+  terminal workflow stages remain provider-visible without being treated as delivered work.
 - GitLab scoped-label workflow state maps stage ids to labels such as
   `status::context-check`. Reads reject unmapped/conflicting provider states through the adapter
   stage contract; writes add the target scoped label and remove other labels in the configured
@@ -1431,6 +2953,9 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
   `Human Review`) rather than tracker terminal state `Done`.
 - If the `linear_graphql` client-side tool extension is implemented, it is still part of the agent
   toolchain rather than orchestrator business logic.
+- If Hub provider tool/writeback routing is implemented, it is an opt-in execution boundary for
+  structured provider tools. It does not make tracker writes first-class orchestrator business
+  logic, and it does not imply that the Hub scheduler owns all provider I/O.
 
 ## 12. Prompt Construction and Context Assembly
 
@@ -1710,6 +3235,10 @@ Minimum endpoints:
           "issue_identifier": "MT-651",
           "state": "In Progress",
           "error": "codex MCP elicitation requires operator input",
+          "recovery_artifact": {
+            "artifact_dir": "/workspaces/MT-651/.symphony/blocked/2026-02-24T20-12-00Z-thread-2-turn-3",
+            "available?": true
+          },
           "session_id": "thread-2-turn-3",
           "blocked_at": "2026-02-24T20:12:00Z",
           "last_event": "turn_input_required",
@@ -2073,8 +3602,10 @@ function reconcile_running_issues(state):
     return state
 
   for issue in refreshed:
-    if workflow_stage_mode and tracker.read_issue_stage(issue) in workflow.terminal_stages:
+    if workflow_stage_mode and tracker.read_issue_stage(issue) is completion_terminal_stage:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
+    else if workflow_stage_mode and tracker.read_issue_stage(issue) in workflow.terminal_stages:
+      state = stop_worker_and_block_issue(state, issue.id, preserve_recovery_artifact=true)
     else if workflow_stage_mode and tracker.read_issue_stage(issue) != state.running[issue.id].current_stage:
       state.running[issue.id].issue = issue
       state.running[issue.id].stage_conflict = {
@@ -2201,14 +3732,29 @@ on_worker_exit(issue_id, reason, state):
   state = add_runtime_seconds_to_totals(state, running_entry)
 
   if reason == normal:
-    state.completed.add(issue_id)  # bookkeeping only
-    state = schedule_retry(state, issue_id, 1, {
-      identifier: running_entry.identifier,
-      delay_type: continuation
-    })
+    if running_entry.current_stage is completion_terminal_stage:
+      state.completed.add(issue_id)  # bookkeeping only
+      remove_workspace(running_entry.identifier, running_entry.worker_host)
+      state.claimed.remove(issue_id)
+    else if running_entry.current_stage in workflow.terminal_stages:
+      state.blocked[issue_id] = blocked_context(running_entry, "terminal blocked stage")
+      preserve_recovery_artifact(running_entry.workspace_path, running_entry.session_id)
+    else:
+      state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+        retry_kind: "running",
+        identifier: running_entry.identifier,
+        current_stage: running_entry.current_stage,
+        workspace_path: running_entry.workspace_path,
+        session_id: running_entry.session_id,
+        error: "worker exited before terminal stage"
+      })
   else:
     state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+      retry_kind: "running",
       identifier: running_entry.identifier,
+      current_stage: running_entry.current_stage,
+      workspace_path: running_entry.workspace_path,
+      session_id: running_entry.session_id,
       error: format("worker exited: %reason")
     })
 
@@ -2231,12 +3777,36 @@ on_retry_timer(issue_id, state):
 
   issue = refreshed[0]
   if issue is null:
-    state.claimed.remove(issue_id)
+    if retry_entry.retry_kind == "running":
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "issue not found")
+    else:
+      state.claimed.remove(issue_id)
     return state
+
+  if retry_entry.retry_kind == "running":
+    provider_stage = tracker.read_issue_stage(issue)
+    if provider_stage is completion_terminal_stage:
+      remove_workspace(issue.identifier, retry_entry.worker_host)
+      state.claimed.remove(issue_id)
+      return state
+    if provider_stage in workflow.terminal_stages:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "terminal blocked stage")
+      preserve_recovery_artifact(retry_entry.workspace_path, retry_entry.session_id)
+      return state
+
+    if provider_stage is unreadable or issue is no longer routable or has unresolved blockers:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "running retry recovery blocked")
+      return state
+
+    if retry_entry.current_stage exists and provider_stage != retry_entry.current_stage:
+      state.blocked[issue_id] = blocked_retry_context(retry_entry, "workflow stage conflict")
+      return state
 
   if available_slots(state) == 0:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
+      retry_kind: retry_entry.retry_kind,
       identifier: issue.identifier,
+      current_stage: provider_stage or retry_entry.current_stage,
       error: "no available orchestrator slots"
     })
 
@@ -2330,8 +3900,12 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Workflow-stage normal worker exit releases the claim without scheduling continuation retry
 - Legacy normal worker exit schedules a short continuation retry (attempt 1)
 - Abnormal worker exit increments retries with 10s-based exponential backoff
+- Workflow-stage abnormal/stalled running retries recover the same issue by id at a non-terminal
+  middle stage without applying the new-dispatch start-stage filter
+- Workflow-stage running retries release terminal provider stages and block unreadable, conflicting,
+  unroutable, or dependency-blocked recovery state instead of orphaning the claim
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
-- Retry queue entries include attempt, due time, identifier, and error
+- Retry queue entries include attempt, due time, retry kind, identifier, current stage, and error
 - Stall detection kills stalled sessions and schedules retry
 - Slot exhaustion requeues retries with explicit error reason
 - If a snapshot API is implemented, it returns running rows, retry rows, token totals, and rate

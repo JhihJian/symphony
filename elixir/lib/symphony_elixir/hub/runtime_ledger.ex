@@ -1,0 +1,1972 @@
+defmodule SymphonyElixir.Hub.RuntimeLedger do
+  @moduledoc """
+  Recoverable Hub runtime ledger facts.
+
+  This module is intentionally model-only. It can build, normalize, validate,
+  serialize, deserialize, and replay Hub runtime ledger facts, but it does not
+  start poll loops or dispatch agents.
+  """
+
+  alias SymphonyElixir.Hub.IssueRef
+  alias SymphonyElixir.Hub.ProjectRegistry
+
+  @version 1
+  @issue_statuses [:unclaimed, :claimed, :running, :retry_queued, :blocked, :manual_attention, :released, :terminal]
+  @attempt_statuses [:pending, :running, :succeeded, :failed, :cancelled, :timeout, :stopped, :lost]
+  @lease_statuses [:active, :released, :lost]
+  @start_intent_statuses [:pending, :acknowledged, :failed, :cancelled, :unknown, :manual_attention]
+  @replay_policies [:idempotent, :non_idempotent]
+  @writeback_statuses [:pending, :succeeded, :failed, :unknown]
+  @lifecycle_statuses [
+    :running,
+    :succeeded,
+    :failed,
+    :cancelled,
+    :timeout,
+    :stopped,
+    :lost,
+    :unknown,
+    :manual_attention
+  ]
+  @terminal_lifecycle_statuses [:succeeded, :failed, :cancelled, :timeout, :stopped]
+  @unresolved_lifecycle_statuses [:lost, :unknown, :manual_attention]
+  @active_attempt_statuses [:pending, :running]
+  @terminal_issue_statuses [:released, :terminal]
+  @active_start_intent_statuses [:pending, :unknown, :manual_attention]
+  @sensitive_keys MapSet.new([
+                    "api_key",
+                    "apikey",
+                    "authorization",
+                    "cookie",
+                    "credential",
+                    "credentials",
+                    "secret",
+                    "secret_env",
+                    "secret_envs",
+                    "env_secret",
+                    "env_secrets",
+                    "prompt",
+                    "full_prompt",
+                    "transcript",
+                    "codex_transcript",
+                    "raw_config",
+                    "raw_output",
+                    "raw_provider_config",
+                    "raw_provider_output",
+                    "provider_config",
+                    "provider_response",
+                    "response_body",
+                    "token"
+                  ])
+  @sensitive_value_patterns [
+    ~r/\$[A-Z0-9_]*(TOKEN|API_KEY|SECRET|CREDENTIAL)[A-Z0-9_]*/,
+    ~r/\b(api[_-]?key|authorization|bearer|cookie|credential|secret|token|raw output|raw provider|transcript|full prompt|codex transcript)\b/i,
+    ~r/\b(ghp_|github_pat_|glpat-|sk-[A-Za-z0-9])/
+  ]
+  @body_keys MapSet.new(["body", "comment_body", "pull_request_body", "pr_body", "raw_body", "raw_provider_body"])
+
+  @type ledger :: %{
+          required(:version) => pos_integer(),
+          required(:generated_at) => String.t() | nil,
+          required(:updated_at) => String.t() | nil,
+          required(:projects) => [project()]
+        }
+
+  @type project :: %{
+          required(:project_id) => String.t(),
+          required(:config_fingerprint) => String.t() | nil,
+          required(:snapshot_version) => String.t() | nil,
+          required(:issues) => [issue()],
+          required(:workspace_leases) => [workspace_lease()],
+          required(:start_intents) => [start_intent()]
+        }
+
+  @type issue :: %{
+          required(:issue_key) => String.t(),
+          required(:issue_ref) => map(),
+          required(:claim_status) => atom(),
+          required(:current_stage) => String.t() | nil,
+          required(:claimed_at) => String.t() | nil,
+          required(:released_at) => String.t() | nil,
+          required(:terminal_reason) => String.t() | nil,
+          required(:attempts) => [attempt()],
+          required(:retry_backoff) => retry_backoff() | nil,
+          required(:lifecycle_results) => [lifecycle_result()],
+          required(:writebacks) => [writeback()]
+        }
+
+  @type attempt :: %{
+          required(:attempt_id) => String.t(),
+          required(:attempt_number) => non_neg_integer() | nil,
+          required(:status) => atom(),
+          required(:started_at) => String.t() | nil,
+          required(:ended_at) => String.t() | nil,
+          required(:terminal_reason) => String.t() | nil,
+          required(:current_stage) => String.t() | nil,
+          required(:worker_host) => String.t() | nil,
+          required(:workspace_path) => String.t() | nil,
+          required(:agent_session) => agent_session() | nil,
+          required(:run_context) => run_context() | nil
+        }
+
+  @type workspace_lease :: %{
+          required(:lease_id) => String.t() | nil,
+          required(:issue_key) => String.t(),
+          required(:attempt_id) => String.t(),
+          required(:workspace_path) => String.t(),
+          required(:status) => atom(),
+          required(:acquired_at) => String.t() | nil,
+          required(:released_at) => String.t() | nil,
+          required(:worker_host) => String.t() | nil
+        }
+
+  @type start_intent :: %{
+          required(:intent_id) => String.t(),
+          required(:issue_key) => String.t(),
+          required(:attempt_id) => String.t(),
+          required(:workspace_lease_id) => String.t() | nil,
+          required(:workspace_path) => String.t() | nil,
+          required(:status) => atom(),
+          required(:requested_at) => String.t() | nil,
+          required(:acked_at) => String.t() | nil,
+          required(:finished_at) => String.t() | nil,
+          required(:worker_host) => String.t() | nil,
+          required(:runtime_identity) => map(),
+          required(:worker_identity) => map(),
+          required(:runner) => String.t() | nil,
+          required(:start_command_summary) => map(),
+          required(:correlation_id) => String.t() | nil,
+          required(:error_summary) => String.t() | nil,
+          required(:manual_attention) => boolean()
+        }
+
+  @type retry_backoff :: %{
+          required(:attempt_id) => String.t(),
+          required(:due_at) => String.t(),
+          required(:error_summary) => String.t() | nil,
+          required(:preferred_worker_host) => String.t() | nil,
+          required(:preferred_workspace_path) => String.t() | nil
+        }
+
+  @type agent_session :: %{
+          required(:session_id) => String.t() | nil,
+          required(:last_activity_at) => String.t() | nil,
+          required(:usage) => map()
+        }
+
+  @type run_context :: %{
+          required(:project) => map(),
+          required(:workflow) => map(),
+          required(:tracker) => map(),
+          required(:issue_key) => String.t(),
+          required(:issue_ref) => map(),
+          required(:current_stage) => String.t() | nil,
+          required(:attempt_id) => String.t(),
+          required(:attempt_number) => non_neg_integer() | nil,
+          required(:correlation_id) => String.t() | nil,
+          required(:workspace_path) => String.t() | nil,
+          required(:workspace_lease_id) => String.t() | nil,
+          required(:worker_host) => String.t() | nil,
+          required(:runtime_identity) => map(),
+          required(:runner) => String.t() | nil,
+          required(:start_command_summary) => map(),
+          required(:session_id) => String.t() | nil,
+          required(:started_at) => String.t() | nil,
+          required(:last_activity_at) => String.t() | nil,
+          required(:exit_summary) => map(),
+          required(:status) => String.t() | nil
+        }
+
+  @type lifecycle_result :: %{
+          required(:result_id) => String.t(),
+          required(:attempt_id) => String.t(),
+          required(:start_intent_id) => String.t(),
+          required(:workspace_lease_id) => String.t() | nil,
+          required(:workspace_path) => String.t() | nil,
+          required(:session_id) => String.t() | nil,
+          required(:worker_host) => String.t() | nil,
+          required(:worker_identity) => map(),
+          required(:status) => atom(),
+          required(:recovery_status) => atom() | nil,
+          required(:reason) => String.t() | nil,
+          required(:source) => String.t() | nil,
+          required(:source_correlation) => map(),
+          required(:started_at) => String.t() | nil,
+          required(:last_activity_at) => String.t() | nil,
+          required(:finished_at) => String.t() | nil,
+          required(:exit_status) => String.t() | nil,
+          required(:exit_category) => String.t() | nil,
+          required(:terminal) => boolean(),
+          required(:manual_attention) => boolean(),
+          required(:workspace_action) => String.t() | nil,
+          required(:workspace_retained_reason) => String.t() | nil,
+          required(:recorded_at) => String.t() | nil
+        }
+
+  @type writeback :: %{
+          required(:intent_key) => String.t(),
+          required(:logical_action) => String.t() | nil,
+          required(:operation_type) => String.t() | nil,
+          required(:target) => map(),
+          required(:replay_policy) => atom(),
+          required(:result_status) => atom(),
+          required(:attempt_id) => String.t() | nil,
+          required(:provider_marker) => String.t() | nil,
+          required(:external_ref) => String.t() | nil,
+          required(:error_summary) => String.t() | nil,
+          required(:provider_result_status) => String.t() | nil,
+          required(:provider_replayable) => boolean(),
+          required(:manual_attention) => boolean(),
+          required(:manual_attention_reason) => String.t() | nil,
+          required(:correlation) => map()
+        }
+
+  @type diagnostic :: %{
+          required(:level) => :error | :warning,
+          required(:code) => atom(),
+          required(:project_id) => String.t() | nil,
+          optional(:issue_key) => String.t() | nil,
+          optional(:attempt_id) => String.t() | nil,
+          optional(:workspace_path) => String.t() | nil,
+          optional(:intent_key) => String.t() | nil,
+          required(:message) => String.t()
+        }
+
+  @type replay_summary :: %{
+          required(:version) => pos_integer(),
+          required(:generated_at) => String.t() | nil,
+          required(:updated_at) => String.t() | nil,
+          required(:projects) => [map()],
+          required(:conflicts) => [diagnostic()],
+          required(:manual_attention) => [diagnostic()]
+        }
+
+  @spec new(keyword()) :: ledger()
+  def new(opts \\ []) when is_list(opts) do
+    %{
+      version: Keyword.get(opts, :version, @version),
+      generated_at: normalize_time(Keyword.get(opts, :generated_at)),
+      updated_at: normalize_time(Keyword.get(opts, :updated_at)),
+      projects: opts |> Keyword.get(:projects, []) |> Enum.map(&normalize_project/1) |> Enum.sort_by(& &1.project_id)
+    }
+  end
+
+  @spec to_snapshot(ledger() | map()) :: ledger()
+  def to_snapshot(ledger) when is_map(ledger) do
+    ledger
+    |> normalize_ledger()
+    |> sort_ledger()
+  end
+
+  @spec from_snapshot(map()) :: {:ok, ledger()} | {:error, [diagnostic()]}
+  def from_snapshot(snapshot) when is_map(snapshot) do
+    case privacy_diagnostics(snapshot) do
+      [] -> {:ok, to_snapshot(snapshot)}
+      diagnostics -> {:error, diagnostics}
+    end
+  end
+
+  @spec validate(ledger() | map()) :: :ok | {:error, [diagnostic()]}
+  def validate(ledger) when is_map(ledger) do
+    diagnostics =
+      privacy_diagnostics(ledger) ++
+        (ledger
+         |> to_snapshot()
+         |> validation_diagnostics())
+
+    case diagnostics do
+      [] -> :ok
+      diagnostics -> {:error, diagnostics}
+    end
+  end
+
+  @spec replay(ledger() | map(), keyword()) :: replay_summary()
+  def replay(ledger, opts \\ []) when is_map(ledger) and is_list(opts) do
+    ledger = to_snapshot(ledger)
+    project_id = Keyword.get(opts, :project_id) |> normalize_optional_string()
+    projects = filter_projects(ledger.projects, project_id)
+    conflicts = validation_diagnostics(ledger)
+    manual_attention = manual_attention_diagnostics(ledger)
+
+    %{
+      version: ledger.version,
+      generated_at: ledger.generated_at,
+      updated_at: ledger.updated_at,
+      projects: Enum.map(projects, &project_summary(&1, conflicts, manual_attention)),
+      conflicts: filter_diagnostics(conflicts, project_id),
+      manual_attention: filter_diagnostics(manual_attention, project_id)
+    }
+  end
+
+  @spec observability_snapshot(term()) :: replay_summary() | nil
+  def observability_snapshot(snapshot), do: observability_snapshot(snapshot, [])
+
+  @spec observability_snapshot(term(), keyword()) :: replay_summary() | nil
+  def observability_snapshot(nil, _opts), do: nil
+
+  def observability_snapshot(snapshot, opts) when is_map(snapshot) and is_list(opts) do
+    replay(snapshot, opts)
+  end
+
+  def observability_snapshot(_snapshot, _opts), do: nil
+
+  @spec issue_key(IssueRef.t() | map()) :: String.t()
+  def issue_key(%IssueRef{} = issue_ref), do: IssueRef.key(issue_ref)
+
+  def issue_key(issue_ref) when is_map(issue_ref) do
+    [
+      required_string(issue_ref, :project_id),
+      required_string(issue_ref, :provider_scope_key),
+      optional_string(issue_ref, :provider_issue_id) ||
+        optional_string(issue_ref, :provider_local_id) ||
+        optional_string(issue_ref, :identifier)
+    ]
+    |> Enum.reject(&blank?/1)
+    |> Enum.join(":")
+  end
+
+  @spec writeback_intent_key(IssueRef.t() | map(), String.t()) :: String.t()
+  def writeback_intent_key(issue_ref, logical_action) when is_binary(logical_action) do
+    issue_ref
+    |> issue_key()
+    |> Kernel.<>(":writeback:" <> logical_action)
+  end
+
+  defp normalize_ledger(ledger) do
+    %{
+      version: value(ledger, :version) || @version,
+      generated_at: normalize_time(value(ledger, :generated_at)),
+      updated_at: normalize_time(value(ledger, :updated_at)),
+      projects: ledger |> list_value(:projects) |> Enum.map(&normalize_project/1) |> Enum.sort_by(& &1.project_id)
+    }
+  end
+
+  defp normalize_project(project) when is_map(project) do
+    project_id = required_string(project, :project_id)
+
+    %{
+      project_id: project_id,
+      config_fingerprint: optional_string(project, :config_fingerprint) || optional_string(project, :fingerprint),
+      snapshot_version: optional_string(project, :snapshot_version),
+      issues:
+        project
+        |> list_value(:issues)
+        |> Enum.map(&normalize_issue(project_id, &1))
+        |> Enum.sort_by(& &1.issue_key),
+      workspace_leases:
+        project
+        |> list_value(:workspace_leases)
+        |> Enum.map(&normalize_workspace_lease/1)
+        |> Enum.sort_by(&{&1.workspace_path, &1.issue_key, &1.attempt_id}),
+      start_intents:
+        project
+        |> list_value(:start_intents)
+        |> Enum.map(&normalize_start_intent/1)
+        |> Enum.sort_by(&{&1.issue_key, &1.attempt_id, &1.intent_id})
+    }
+  end
+
+  defp normalize_project(_project), do: normalize_project(%{})
+
+  defp normalize_issue(project_id, issue) when is_map(issue) do
+    issue_ref = normalize_issue_ref(project_id, value(issue, :issue_ref) || %{})
+    issue_key = optional_string(issue, :issue_key) || issue_key(issue_ref)
+
+    %{
+      issue_key: issue_key,
+      issue_ref: issue_ref,
+      claim_status: normalize_atom(value(issue, :claim_status) || value(issue, :status), :unclaimed, @issue_statuses),
+      current_stage: optional_string(issue, :current_stage),
+      claimed_at: normalize_time(value(issue, :claimed_at)),
+      released_at: normalize_time(value(issue, :released_at)),
+      terminal_reason: optional_string(issue, :terminal_reason),
+      attempts:
+        issue
+        |> list_value(:attempts)
+        |> Enum.map(&normalize_attempt/1)
+        |> Enum.sort_by(&{&1.attempt_number || 0, &1.attempt_id}),
+      retry_backoff: normalize_retry_backoff(value(issue, :retry_backoff)),
+      lifecycle_results:
+        issue
+        |> list_value(:lifecycle_results)
+        |> Enum.map(&normalize_lifecycle_result/1)
+        |> Enum.sort_by(&{&1.attempt_id, &1.start_intent_id, &1.recorded_at || "", &1.result_id}),
+      writebacks:
+        issue
+        |> list_value(:writebacks)
+        |> Enum.map(&normalize_writeback/1)
+        |> Enum.sort_by(&{&1.intent_key, &1.attempt_id || ""})
+    }
+  end
+
+  defp normalize_issue(project_id, _issue), do: normalize_issue(project_id, %{})
+
+  defp normalize_issue_ref(_project_id, %IssueRef{} = issue_ref) do
+    %{
+      project_id: issue_ref.project_id,
+      tracker_kind: issue_ref.tracker_kind,
+      provider_scope: stringify_nested_keys(issue_ref.provider_scope || %{}),
+      provider_scope_key: issue_ref.provider_scope_key,
+      provider_issue_id: issue_ref.provider_issue_id,
+      provider_local_id: issue_ref.provider_local_id,
+      identifier: issue_ref.identifier,
+      url: issue_ref.url
+    }
+  end
+
+  defp normalize_issue_ref(project_id, issue_ref) when is_map(issue_ref) do
+    %{
+      project_id: optional_string(issue_ref, :project_id) || project_id,
+      tracker_kind: optional_string(issue_ref, :tracker_kind),
+      provider_scope: stringify_nested_keys(value(issue_ref, :provider_scope) || %{}),
+      provider_scope_key: optional_string(issue_ref, :provider_scope_key),
+      provider_issue_id: optional_string(issue_ref, :provider_issue_id),
+      provider_local_id: optional_string(issue_ref, :provider_local_id),
+      identifier: optional_string(issue_ref, :identifier),
+      url: optional_string(issue_ref, :url)
+    }
+  end
+
+  defp normalize_issue_ref(project_id, _issue_ref), do: normalize_issue_ref(project_id, %{})
+
+  defp normalize_attempt(attempt) when is_map(attempt) do
+    %{
+      attempt_id: required_string(attempt, :attempt_id),
+      attempt_number: normalize_integer(value(attempt, :attempt_number)),
+      status: normalize_atom(value(attempt, :status), :pending, @attempt_statuses),
+      started_at: normalize_time(value(attempt, :started_at)),
+      ended_at: normalize_time(value(attempt, :ended_at)),
+      terminal_reason: optional_string(attempt, :terminal_reason),
+      current_stage: optional_string(attempt, :current_stage),
+      worker_host: optional_string(attempt, :worker_host),
+      workspace_path: optional_string(attempt, :workspace_path),
+      agent_session: normalize_agent_session(value(attempt, :agent_session)),
+      run_context: normalize_run_context(value(attempt, :run_context))
+    }
+  end
+
+  defp normalize_attempt(_attempt), do: normalize_attempt(%{})
+
+  defp normalize_workspace_lease(lease) when is_map(lease) do
+    %{
+      lease_id: optional_string(lease, :lease_id),
+      issue_key: required_string(lease, :issue_key),
+      attempt_id: required_string(lease, :attempt_id),
+      workspace_path: required_string(lease, :workspace_path),
+      status: normalize_atom(value(lease, :status), :active, @lease_statuses),
+      acquired_at: normalize_time(value(lease, :acquired_at)),
+      released_at: normalize_time(value(lease, :released_at)),
+      worker_host: optional_string(lease, :worker_host)
+    }
+  end
+
+  defp normalize_workspace_lease(_lease), do: normalize_workspace_lease(%{})
+
+  defp normalize_start_intent(intent) when is_map(intent) do
+    %{
+      intent_id: required_string(intent, :intent_id),
+      issue_key: required_string(intent, :issue_key),
+      attempt_id: required_string(intent, :attempt_id),
+      workspace_lease_id: optional_string(intent, :workspace_lease_id) || optional_string(intent, :lease_id),
+      workspace_path: optional_string(intent, :workspace_path),
+      status: normalize_atom(value(intent, :status), :pending, @start_intent_statuses),
+      requested_at: normalize_time(value(intent, :requested_at)),
+      acked_at: normalize_time(value(intent, :acked_at)),
+      finished_at: normalize_time(value(intent, :finished_at)),
+      worker_host: optional_string(intent, :worker_host),
+      runtime_identity: sanitize_value(value(intent, :runtime_identity) || %{}),
+      runner: optional_string(intent, :runner),
+      start_command_summary: sanitize_value(value(intent, :start_command_summary) || %{}),
+      correlation_id: optional_string(intent, :correlation_id),
+      error_summary: optional_string(intent, :error_summary),
+      manual_attention: truthy?(value(intent, :manual_attention))
+    }
+  end
+
+  defp normalize_start_intent(_intent), do: normalize_start_intent(%{})
+
+  defp normalize_retry_backoff(nil), do: nil
+
+  defp normalize_retry_backoff(retry) when is_map(retry) do
+    %{
+      attempt_id: required_string(retry, :attempt_id),
+      due_at: normalize_time(value(retry, :due_at)),
+      error_summary: optional_string(retry, :error_summary),
+      preferred_worker_host: optional_string(retry, :preferred_worker_host),
+      preferred_workspace_path: optional_string(retry, :preferred_workspace_path)
+    }
+  end
+
+  defp normalize_retry_backoff(_retry), do: nil
+
+  defp normalize_agent_session(nil), do: nil
+
+  defp normalize_agent_session(session) when is_map(session) do
+    %{
+      session_id: optional_string(session, :session_id),
+      last_activity_at: normalize_time(value(session, :last_activity_at)),
+      usage: stringify_nested_keys(value(session, :usage) || %{})
+    }
+  end
+
+  defp normalize_agent_session(_session), do: nil
+
+  defp normalize_run_context(nil), do: nil
+
+  defp normalize_run_context(context) when is_map(context) do
+    %{
+      project: sanitize_value(value(context, :project) || %{}),
+      workflow: sanitize_value(value(context, :workflow) || %{}),
+      tracker: sanitize_value(value(context, :tracker) || %{}),
+      issue_key: required_string(context, :issue_key),
+      issue_ref: normalize_issue_ref(required_string(context, :project_id), value(context, :issue_ref) || %{}),
+      current_stage: optional_string(context, :current_stage),
+      attempt_id: required_string(context, :attempt_id),
+      attempt_number: normalize_integer(value(context, :attempt_number)),
+      correlation_id: optional_string(context, :correlation_id),
+      workspace_path: optional_string(context, :workspace_path),
+      workspace_lease_id: optional_string(context, :workspace_lease_id) || optional_string(context, :lease_id),
+      worker_host: optional_string(context, :worker_host),
+      runtime_identity: sanitize_value(value(context, :runtime_identity) || %{}),
+      worker_identity: sanitize_value(value(context, :worker_identity) || %{}),
+      runner: optional_string(context, :runner),
+      start_command_summary: sanitize_value(value(context, :start_command_summary) || %{}),
+      session_id: optional_string(context, :session_id),
+      started_at: normalize_time(value(context, :started_at)),
+      last_activity_at: normalize_time(value(context, :last_activity_at)),
+      exit_summary: sanitize_value(value(context, :exit_summary) || %{}),
+      status: optional_string(context, :status)
+    }
+  end
+
+  defp normalize_run_context(_context), do: nil
+
+  defp normalize_lifecycle_result(result) when is_map(result) do
+    status = normalize_atom(value(result, :status) || value(result, :result_status), :unknown, @lifecycle_statuses)
+
+    %{
+      result_id: optional_string(result, :result_id) || lifecycle_result_id(result),
+      attempt_id: required_string(result, :attempt_id),
+      start_intent_id: required_string(result, :start_intent_id),
+      workspace_lease_id: optional_string(result, :workspace_lease_id) || optional_string(result, :lease_id),
+      workspace_path: optional_string(result, :workspace_path),
+      session_id: optional_string(result, :session_id),
+      worker_host: optional_string(result, :worker_host),
+      worker_identity: sanitize_value(value(result, :worker_identity) || %{}),
+      status: status,
+      recovery_status: normalize_lifecycle_recovery_status(value(result, :recovery_status)),
+      reason: optional_string(result, :reason) || optional_string(result, :compact_reason),
+      source: optional_string(result, :source),
+      source_correlation: sanitize_value(value(result, :source_correlation) || value(result, :correlation) || %{}),
+      started_at: normalize_time(value(result, :started_at)),
+      last_activity_at: normalize_time(value(result, :last_activity_at)),
+      finished_at: normalize_time(value(result, :finished_at)),
+      exit_status: optional_string(result, :exit_status),
+      exit_category: optional_string(result, :exit_category),
+      terminal: terminal_lifecycle_status?(status) or truthy?(value(result, :terminal)),
+      manual_attention: status == :manual_attention or truthy?(value(result, :manual_attention)),
+      workspace_action: optional_string(result, :workspace_action),
+      workspace_retained_reason: optional_string(result, :workspace_retained_reason),
+      recorded_at: normalize_time(value(result, :recorded_at))
+    }
+  end
+
+  defp normalize_lifecycle_result(_result), do: normalize_lifecycle_result(%{})
+
+  defp normalize_writeback(writeback) when is_map(writeback) do
+    %{
+      intent_key: required_string(writeback, :intent_key),
+      logical_action: optional_string(writeback, :logical_action),
+      operation_type: optional_string(writeback, :operation_type),
+      target: sanitize_target(value(writeback, :target) || %{}),
+      replay_policy: normalize_atom(value(writeback, :replay_policy), :idempotent, @replay_policies),
+      result_status: normalize_atom(value(writeback, :result_status), :pending, @writeback_statuses),
+      attempt_id: optional_string(writeback, :attempt_id),
+      provider_marker: optional_string(writeback, :provider_marker),
+      external_ref: optional_string(writeback, :external_ref),
+      error_summary: optional_string(writeback, :error_summary),
+      provider_result_status: optional_string(writeback, :provider_result_status),
+      provider_replayable: truthy?(value(writeback, :provider_replayable)),
+      manual_attention: truthy?(value(writeback, :manual_attention)),
+      manual_attention_reason: optional_string(writeback, :manual_attention_reason),
+      correlation: sanitize_value(value(writeback, :correlation) || %{})
+    }
+  end
+
+  defp normalize_writeback(_writeback), do: normalize_writeback(%{})
+
+  defp sort_ledger(ledger) do
+    Map.update!(ledger, :projects, fn projects ->
+      projects
+      |> Enum.map(fn project ->
+        project
+        |> Map.update!(:issues, &Enum.sort_by(&1, fn issue -> issue.issue_key end))
+        |> Map.update!(:workspace_leases, &Enum.sort_by(&1, fn lease -> {lease.workspace_path, lease.issue_key, lease.attempt_id} end))
+        |> Map.update!(:start_intents, &Enum.sort_by(&1, fn intent -> {intent.issue_key, intent.attempt_id, intent.intent_id} end))
+      end)
+      |> Enum.sort_by(& &1.project_id)
+    end)
+  end
+
+  defp validation_diagnostics(ledger) do
+    project_diagnostics =
+      Enum.flat_map(ledger.projects, fn project ->
+        validate_project(project) ++
+          issue_identity_conflicts(project) ++
+          active_attempt_conflicts(project) ++
+          workspace_lease_conflicts(project) ++
+          start_intent_conflicts(project) ++
+          run_context_conflicts(project) ++
+          retry_backoff_conflicts(project) ++
+          lifecycle_conflicts(project) ++
+          writeback_conflicts(project)
+      end)
+
+    privacy_diagnostics(ledger) ++ project_diagnostics ++ cross_project_workspace_lease_conflicts(ledger.projects)
+  end
+
+  defp validate_project(project) do
+    case ProjectRegistry.validate_project_id(project.project_id) do
+      :ok ->
+        []
+
+      {:error, {_code, _project_id, message}} ->
+        [diagnostic(:error, :invalid_project_id, project.project_id, nil, message)]
+    end
+  end
+
+  defp issue_identity_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      issue_ref = issue.issue_ref
+      expected_issue_key = issue_key(issue_ref)
+
+      []
+      |> maybe_add_diagnostic(
+        issue_ref.project_id != project.project_id,
+        diagnostic(
+          :error,
+          :issue_ref_project_mismatch,
+          project.project_id,
+          issue.issue_key,
+          "IssueRef project_id must match the containing ledger project"
+        )
+      )
+      |> maybe_add_diagnostic(
+        blank?(issue_ref.provider_scope_key),
+        diagnostic(
+          :error,
+          :issue_ref_missing_provider_scope,
+          project.project_id,
+          issue.issue_key,
+          "IssueRef must include provider_scope_key; provider-local issue ids are not global ledger keys"
+        )
+      )
+      |> maybe_add_diagnostic(
+        blank?(provider_issue_identity(issue_ref)),
+        diagnostic(
+          :error,
+          :issue_ref_missing_provider_issue_identity,
+          project.project_id,
+          issue.issue_key,
+          "IssueRef must include provider_issue_id, provider_local_id, or identifier"
+        )
+      )
+      |> maybe_add_diagnostic(
+        issue.issue_key != expected_issue_key,
+        diagnostic(
+          :error,
+          :issue_key_mismatch,
+          project.project_id,
+          issue.issue_key,
+          "Issue key must be derived from project_id + IssueRef provider scope and issue identity"
+        )
+      )
+    end)
+  end
+
+  defp active_attempt_conflicts(project) do
+    project.issues
+    |> Enum.flat_map(fn issue ->
+      issue.attempts
+      |> Enum.filter(&active_attempt?/1)
+      |> Enum.map(&{issue.issue_key, &1.attempt_id})
+    end)
+    |> Enum.group_by(fn {issue_key, _attempt_id} -> issue_key end, fn {_issue_key, attempt_id} -> attempt_id end)
+    |> Enum.flat_map(fn
+      {_issue_key, [_single]} ->
+        []
+
+      {issue_key, attempt_ids} ->
+        [
+          diagnostic(
+            :error,
+            :active_attempt_conflict,
+            project.project_id,
+            issue_key,
+            "Issue has more than one active attempt: #{Enum.join(Enum.sort(attempt_ids), ", ")}"
+          )
+        ]
+    end)
+  end
+
+  defp workspace_lease_conflicts(project) do
+    duplicate_active_workspace_conflicts(project) ++
+      orphan_workspace_lease_conflicts(project) ++
+      active_attempt_missing_workspace_lease_conflicts(project) ++
+      terminal_issue_workspace_conflicts(project)
+  end
+
+  defp duplicate_active_workspace_conflicts(project) do
+    project.workspace_leases
+    |> Enum.filter(&active_lease?/1)
+    |> Enum.group_by(& &1.workspace_path)
+    |> Enum.flat_map(fn
+      {_workspace_path, [_single]} ->
+        []
+
+      {workspace_path, leases} ->
+        issue_keys = leases |> Enum.map(& &1.issue_key) |> Enum.uniq() |> Enum.sort() |> Enum.join(", ")
+
+        [
+          diagnostic(
+            :error,
+            :workspace_active_lease_conflict,
+            project.project_id,
+            nil,
+            workspace_path,
+            "Workspace has more than one active lease: #{issue_keys}"
+          )
+        ]
+    end)
+  end
+
+  defp cross_project_workspace_lease_conflicts(projects) do
+    projects
+    |> Enum.flat_map(fn project ->
+      Enum.map(project.workspace_leases, &Map.put(&1, :project_id, project.project_id))
+    end)
+    |> Enum.filter(&active_lease?/1)
+    |> Enum.group_by(& &1.workspace_path)
+    |> Enum.flat_map(fn
+      {_workspace_path, [_single]} ->
+        []
+
+      {workspace_path, leases} ->
+        project_ids = leases |> Enum.map(& &1.project_id) |> Enum.uniq() |> Enum.sort()
+
+        if length(project_ids) > 1 do
+          message = "Workspace has active leases in multiple projects: #{Enum.join(project_ids, ", ")}"
+
+          Enum.map(leases, fn lease ->
+            diagnostic(
+              :error,
+              :workspace_cross_project_active_lease_conflict,
+              lease.project_id,
+              lease.issue_key,
+              workspace_path,
+              lease.attempt_id,
+              message
+            )
+          end)
+        else
+          []
+        end
+    end)
+  end
+
+  defp orphan_workspace_lease_conflicts(project) do
+    Enum.flat_map(project.workspace_leases, fn lease ->
+      if active_lease?(lease) and not active_attempt_exists?(project, lease.issue_key, lease.attempt_id) and
+           not active_lease_retained_by_lifecycle?(project, lease) do
+        [
+          diagnostic(
+            :error,
+            :workspace_lease_orphan,
+            project.project_id,
+            lease.issue_key,
+            lease.workspace_path,
+            lease.attempt_id,
+            "Active workspace lease does not reference an active attempt"
+          )
+        ]
+      else
+        []
+      end
+    end)
+  end
+
+  defp active_lease_retained_by_lifecycle?(project, lease) do
+    project.issues
+    |> Enum.find(&(&1.issue_key == lease.issue_key))
+    |> case do
+      nil ->
+        false
+
+      issue ->
+        Enum.any?(issue.lifecycle_results, fn result ->
+          result.attempt_id == lease.attempt_id and
+            (is_nil(result.workspace_lease_id) or result.workspace_lease_id == lease.lease_id) and
+            result.workspace_action == "retained"
+        end)
+    end
+  end
+
+  defp active_attempt_missing_workspace_lease_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      if issue.claim_status in [:claimed, :running, :manual_attention] do
+        issue.attempts
+        |> Enum.filter(&active_attempt?/1)
+        |> Enum.reject(&active_lease_for(project, issue.issue_key, &1.attempt_id))
+        |> Enum.map(fn attempt ->
+          diagnostic(
+            :error,
+            :active_attempt_missing_workspace_lease,
+            project.project_id,
+            issue.issue_key,
+            attempt.workspace_path,
+            attempt.attempt_id,
+            "Active attempt is missing an active workspace lease"
+          )
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  defp terminal_issue_workspace_conflicts(project) do
+    terminal_issue_keys =
+      project.issues
+      |> Enum.filter(&(&1.claim_status in @terminal_issue_statuses))
+      |> MapSet.new(& &1.issue_key)
+
+    project.workspace_leases
+    |> Enum.filter(&(active_lease?(&1) and MapSet.member?(terminal_issue_keys, &1.issue_key)))
+    |> Enum.map(fn lease ->
+      diagnostic(
+        :error,
+        :terminal_issue_has_active_workspace_lease,
+        project.project_id,
+        lease.issue_key,
+        lease.workspace_path,
+        lease.attempt_id,
+        "Released or terminal issue still has an active workspace lease"
+      )
+    end)
+  end
+
+  defp start_intent_conflicts(project) do
+    duplicate_start_intent_conflicts(project) ++
+      orphan_start_intent_conflicts(project) ++
+      start_intent_workspace_conflicts(project)
+  end
+
+  defp duplicate_start_intent_conflicts(project) do
+    project.start_intents
+    |> Enum.filter(&active_start_intent?/1)
+    |> Enum.group_by(&{&1.issue_key, &1.attempt_id})
+    |> Enum.flat_map(fn
+      {_key, [_single]} ->
+        []
+
+      {{issue_key, attempt_id}, intents} ->
+        intent_ids = intents |> Enum.map(& &1.intent_id) |> Enum.sort() |> Enum.join(", ")
+
+        [
+          diagnostic(
+            :error,
+            :start_intent_conflict,
+            project.project_id,
+            issue_key,
+            nil,
+            attempt_id,
+            "Attempt has more than one active start intent: #{intent_ids}"
+          )
+        ]
+    end)
+  end
+
+  defp orphan_start_intent_conflicts(project) do
+    project.start_intents
+    |> Enum.filter(&active_start_intent?/1)
+    |> Enum.reject(&active_attempt_exists?(project, &1.issue_key, &1.attempt_id))
+    |> Enum.map(fn intent ->
+      diagnostic(
+        :error,
+        :start_intent_orphan,
+        project.project_id,
+        intent.issue_key,
+        intent.workspace_path,
+        intent.attempt_id,
+        "Active start intent does not reference an active attempt"
+      )
+    end)
+  end
+
+  defp start_intent_workspace_conflicts(project) do
+    project.start_intents
+    |> Enum.filter(&active_start_intent?/1)
+    |> Enum.reject(&matching_active_lease?(project, &1))
+    |> Enum.map(fn intent ->
+      diagnostic(
+        :error,
+        :start_intent_missing_workspace_lease,
+        project.project_id,
+        intent.issue_key,
+        intent.workspace_path,
+        intent.attempt_id,
+        "Active start intent is not bound to an active workspace lease"
+      )
+    end)
+  end
+
+  defp run_context_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      Enum.flat_map(issue.attempts, fn attempt ->
+        case attempt.run_context do
+          nil ->
+            []
+
+          context ->
+            []
+            |> maybe_add_diagnostic(
+              context.issue_key != issue.issue_key,
+              diagnostic(
+                :error,
+                :run_context_issue_key_mismatch,
+                project.project_id,
+                issue.issue_key,
+                attempt.workspace_path,
+                attempt.attempt_id,
+                "Run context issue_key must match the containing ledger issue"
+              )
+            )
+            |> maybe_add_diagnostic(
+              context.attempt_id != attempt.attempt_id,
+              diagnostic(
+                :error,
+                :run_context_attempt_mismatch,
+                project.project_id,
+                issue.issue_key,
+                attempt.workspace_path,
+                attempt.attempt_id,
+                "Run context attempt_id must match the containing attempt"
+              )
+            )
+            |> maybe_add_diagnostic(
+              context.issue_ref.project_id != project.project_id,
+              diagnostic(
+                :error,
+                :run_context_project_mismatch,
+                project.project_id,
+                issue.issue_key,
+                attempt.workspace_path,
+                attempt.attempt_id,
+                "Run context IssueRef project_id must match the containing ledger project"
+              )
+            )
+        end
+      end)
+    end)
+  end
+
+  defp retry_backoff_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      case issue.retry_backoff do
+        nil ->
+          []
+
+        %{attempt_id: attempt_id} = retry ->
+          cond do
+            is_nil(attempt_id) ->
+              [
+                diagnostic(
+                  :error,
+                  :retry_backoff_unknown_attempt,
+                  project.project_id,
+                  issue.issue_key,
+                  "Retry/backoff record is missing attempt_id"
+                )
+              ]
+
+            is_nil(retry.due_at) ->
+              [
+                diagnostic(
+                  :error,
+                  :retry_backoff_missing_due_at,
+                  project.project_id,
+                  issue.issue_key,
+                  attempt_id,
+                  "Retry/backoff record is missing due_at"
+                )
+              ]
+
+            Enum.any?(issue.attempts, &(&1.attempt_id == attempt_id)) ->
+              []
+
+            true ->
+              [
+                diagnostic(
+                  :error,
+                  :retry_backoff_unknown_attempt,
+                  project.project_id,
+                  issue.issue_key,
+                  attempt_id,
+                  "Retry/backoff record references an unknown attempt"
+                )
+              ]
+          end
+      end
+    end)
+  end
+
+  defp lifecycle_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      unknown_lifecycle_attempt_conflicts(project, issue) ++ duplicate_terminal_lifecycle_conflicts(project, issue)
+    end)
+  end
+
+  defp unknown_lifecycle_attempt_conflicts(project, issue) do
+    Enum.flat_map(issue.lifecycle_results, fn result ->
+      attempt = Enum.find(issue.attempts, &(&1.attempt_id == result.attempt_id))
+      start_intent = start_intent_for(project, issue.issue_key, result.attempt_id)
+
+      []
+      |> maybe_add_diagnostic(
+        is_nil(attempt),
+        diagnostic(
+          :error,
+          :worker_lifecycle_unknown_attempt,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          "Worker lifecycle result references an unknown attempt"
+        )
+      )
+      |> maybe_add_diagnostic(
+        not blank?(result.start_intent_id) and
+          (is_nil(start_intent) or start_intent.intent_id != result.start_intent_id),
+        diagnostic(
+          :error,
+          :worker_lifecycle_start_intent_mismatch,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          result.start_intent_id,
+          "Worker lifecycle result does not match the attempt start intent"
+        )
+      )
+    end)
+  end
+
+  defp duplicate_terminal_lifecycle_conflicts(project, issue) do
+    issue.lifecycle_results
+    |> Enum.filter(&(&1.status in @terminal_lifecycle_statuses))
+    |> Enum.group_by(&{&1.attempt_id, &1.start_intent_id})
+    |> Enum.flat_map(fn
+      {_key, []} ->
+        []
+
+      {_key, [_single]} ->
+        []
+
+      {{attempt_id, start_intent_id}, results} ->
+        statuses = results |> Enum.map(& &1.status) |> Enum.uniq()
+
+        if length(statuses) > 1 do
+          [
+            diagnostic(
+              :error,
+              :worker_lifecycle_terminal_conflict,
+              project.project_id,
+              issue.issue_key,
+              nil,
+              attempt_id,
+              start_intent_id,
+              "Worker lifecycle terminal results conflict for the same attempt/start intent"
+            )
+          ]
+        else
+          []
+        end
+    end)
+  end
+
+  defp writeback_conflicts(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      duplicate_writeback_conflicts(project, issue) ++ unstable_writeback_key_conflicts(project, issue)
+    end)
+  end
+
+  defp duplicate_writeback_conflicts(project, issue) do
+    issue.writebacks
+    |> Enum.group_by(& &1.intent_key)
+    |> Enum.flat_map(fn
+      {_intent_key, [_single]} ->
+        []
+
+      {intent_key, writebacks} ->
+        signatures =
+          writebacks
+          |> Enum.map(&writeback_signature/1)
+          |> Enum.uniq()
+
+        if length(signatures) > 1 do
+          [
+            diagnostic(
+              :error,
+              :writeback_intent_conflict,
+              project.project_id,
+              issue.issue_key,
+              nil,
+              nil,
+              intent_key,
+              "Writeback intent key maps to conflicting provider operations"
+            )
+          ]
+        else
+          []
+        end
+    end)
+  end
+
+  defp unstable_writeback_key_conflicts(project, issue) do
+    issue.writebacks
+    |> Enum.reject(&is_nil(&1.logical_action))
+    |> Enum.group_by(&{&1.logical_action, &1.operation_type})
+    |> Enum.flat_map(fn
+      {_logical_operation, [_single]} ->
+        []
+
+      {_logical_operation, writebacks} ->
+        intent_keys = writebacks |> Enum.map(& &1.intent_key) |> Enum.uniq()
+
+        if length(intent_keys) > 1 do
+          [
+            diagnostic(
+              :error,
+              :writeback_intent_key_unstable,
+              project.project_id,
+              issue.issue_key,
+              nil,
+              nil,
+              Enum.join(Enum.sort(intent_keys), ", "),
+              "Same logical writeback action uses different intent keys across attempts"
+            )
+          ]
+        else
+          []
+        end
+    end)
+  end
+
+  defp manual_attention_diagnostics(ledger) do
+    Enum.flat_map(ledger.projects, fn project ->
+      writeback_manual_attention(project) ++
+        start_intent_manual_attention(project) ++ lifecycle_manual_attention(project)
+    end)
+  end
+
+  defp writeback_manual_attention(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      issue.writebacks
+      |> Enum.filter(&writeback_manual_attention?/1)
+      |> Enum.map(fn writeback ->
+        diagnostic(
+          :warning,
+          :writeback_unknown_manual_attention,
+          project.project_id,
+          issue.issue_key,
+          nil,
+          writeback.attempt_id,
+          writeback.intent_key,
+          "Writeback requires manual attention: #{writeback_manual_attention_reason(writeback)}"
+        )
+        |> Map.put(:reason, writeback_manual_attention_reason(writeback))
+        |> Map.put(:target, writeback.target)
+      end)
+    end)
+  end
+
+  defp start_intent_manual_attention(project) do
+    project.start_intents
+    |> Enum.filter(&(&1.manual_attention or &1.status in [:unknown, :manual_attention]))
+    |> Enum.map(fn intent ->
+      diagnostic(
+        :warning,
+        :start_intent_unknown_manual_attention,
+        project.project_id,
+        intent.issue_key,
+        intent.workspace_path,
+        intent.attempt_id,
+        intent.intent_id,
+        "Worker start result is unknown and requires manual attention before replay"
+      )
+    end)
+  end
+
+  defp lifecycle_manual_attention(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      issue.lifecycle_results
+      |> Enum.filter(&(&1.manual_attention or &1.status in @unresolved_lifecycle_statuses))
+      |> Enum.map(fn result ->
+        diagnostic(
+          :warning,
+          :worker_lifecycle_unresolved_manual_attention,
+          project.project_id,
+          issue.issue_key,
+          result.workspace_path,
+          result.attempt_id,
+          result.start_intent_id,
+          "Worker lifecycle result is unresolved and requires reconciliation before redispatch"
+        )
+        |> Map.put(:reason, result.reason || Atom.to_string(result.status))
+      end)
+    end)
+  end
+
+  defp project_summary(project, conflicts, manual_attention) do
+    project_conflicts = Enum.filter(conflicts, &(&1.project_id == project.project_id))
+    project_manual_attention = Enum.filter(manual_attention, &(&1.project_id == project.project_id))
+
+    %{
+      project_id: project.project_id,
+      config_fingerprint: project.config_fingerprint,
+      snapshot_version: project.snapshot_version,
+      counts: project_counts(project),
+      active_attempts: active_attempt_summaries(project),
+      pending_start_intents: pending_start_intent_summaries(project),
+      workspace_leases: active_workspace_lease_summaries(project),
+      retry_backoff: retry_backoff_summaries(project),
+      blocked_candidates: blocked_candidate_summaries(project),
+      lifecycle: lifecycle_observability(project),
+      writebacks: writeback_observability(project),
+      active_issues: active_issue_summaries(project),
+      conflicts: project_conflicts,
+      manual_attention: project_manual_attention
+    }
+  end
+
+  defp filter_projects(projects, nil), do: projects
+  defp filter_projects(projects, project_id), do: Enum.filter(projects, &(&1.project_id == project_id))
+
+  defp filter_diagnostics(diagnostics, nil), do: diagnostics
+  defp filter_diagnostics(diagnostics, project_id), do: Enum.filter(diagnostics, &(&1.project_id == project_id))
+
+  defp project_counts(project) do
+    base = %{claimed: 0, running: 0, retry: 0, blocked: 0, manual_attention: 0, released: 0, terminal: 0}
+
+    Enum.reduce(project.issues, base, fn issue, counts ->
+      case issue.claim_status do
+        :claimed -> Map.update!(counts, :claimed, &(&1 + 1))
+        :running -> Map.update!(counts, :running, &(&1 + 1))
+        :retry_queued -> Map.update!(counts, :retry, &(&1 + 1))
+        :blocked -> Map.update!(counts, :blocked, &(&1 + 1))
+        :manual_attention -> Map.update!(counts, :manual_attention, &(&1 + 1))
+        :released -> Map.update!(counts, :released, &(&1 + 1))
+        :terminal -> Map.update!(counts, :terminal, &(&1 + 1))
+        _status -> counts
+      end
+    end)
+  end
+
+  defp active_issue_summaries(project) do
+    project.issues
+    |> Enum.reject(&(&1.claim_status in @terminal_issue_statuses))
+    |> Enum.map(&active_issue_summary(project, &1))
+  end
+
+  defp active_issue_summary(project, issue) do
+    attempt = active_attempt(issue) || latest_attempt(issue)
+    lease = active_lease_for(project, issue.issue_key, attempt && attempt.attempt_id)
+    start_intent = start_intent_for(project, issue.issue_key, attempt && attempt.attempt_id)
+    retry = issue.retry_backoff
+
+    %{
+      issue_key: issue.issue_key,
+      issue_ref: issue.issue_ref,
+      status: issue.claim_status,
+      stage: issue.current_stage || (attempt && attempt.current_stage),
+      attempt_id: attempt && attempt.attempt_id,
+      attempt_number: attempt && attempt.attempt_number,
+      start_intent_id: start_intent && start_intent.intent_id,
+      start_intent_status: start_intent && start_intent.status,
+      workspace_path: (lease && lease.workspace_path) || (attempt && attempt.workspace_path),
+      worker_host: (lease && lease.worker_host) || (attempt && attempt.worker_host),
+      last_error: (retry && retry.error_summary) || (attempt && attempt.terminal_reason),
+      backoff_due_at: retry && retry.due_at
+    }
+  end
+
+  defp active_attempt_summaries(project) do
+    Enum.flat_map(project.issues, fn issue ->
+      issue.attempts
+      |> Enum.filter(&active_attempt?/1)
+      |> Enum.map(fn attempt ->
+        lease = active_lease_for(project, issue.issue_key, attempt.attempt_id)
+        start_intent = start_intent_for(project, issue.issue_key, attempt.attempt_id)
+
+        %{
+          issue_key: issue.issue_key,
+          attempt_id: attempt.attempt_id,
+          attempt_number: attempt.attempt_number,
+          status: attempt.status,
+          stage: attempt.current_stage || issue.current_stage,
+          workspace_path: (lease && lease.workspace_path) || attempt.workspace_path,
+          workspace_lease_id: lease && lease.lease_id,
+          start_intent_id: start_intent && start_intent.intent_id,
+          start_intent_status: start_intent && start_intent.status,
+          worker_host: (lease && lease.worker_host) || attempt.worker_host,
+          run_context: attempt.run_context
+        }
+      end)
+    end)
+  end
+
+  defp pending_start_intent_summaries(project) do
+    project.start_intents
+    |> Enum.filter(&active_start_intent?/1)
+    |> Enum.map(fn intent ->
+      %{
+        issue_key: intent.issue_key,
+        attempt_id: intent.attempt_id,
+        intent_id: intent.intent_id,
+        status: intent.status,
+        requested_at: intent.requested_at,
+        workspace_path: intent.workspace_path,
+        workspace_lease_id: intent.workspace_lease_id,
+        worker_host: intent.worker_host,
+        runner: intent.runner,
+        correlation_id: intent.correlation_id,
+        runtime_identity: intent.runtime_identity,
+        start_command_summary: intent.start_command_summary,
+        manual_attention: intent.manual_attention
+      }
+    end)
+  end
+
+  defp active_workspace_lease_summaries(project) do
+    project.workspace_leases
+    |> Enum.filter(&active_lease?/1)
+    |> Enum.map(fn lease ->
+      %{
+        issue_key: lease.issue_key,
+        attempt_id: lease.attempt_id,
+        lease_id: lease.lease_id,
+        workspace_path: lease.workspace_path,
+        acquired_at: lease.acquired_at,
+        worker_host: lease.worker_host
+      }
+    end)
+  end
+
+  defp retry_backoff_summaries(project) do
+    project.issues
+    |> Enum.reject(&is_nil(&1.retry_backoff))
+    |> Enum.map(fn issue ->
+      %{
+        issue_key: issue.issue_key,
+        attempt_id: issue.retry_backoff.attempt_id,
+        due_at: issue.retry_backoff.due_at,
+        error_summary: issue.retry_backoff.error_summary,
+        preferred_workspace_path: issue.retry_backoff.preferred_workspace_path,
+        preferred_worker_host: issue.retry_backoff.preferred_worker_host
+      }
+    end)
+  end
+
+  defp blocked_candidate_summaries(project) do
+    project.issues
+    |> Enum.filter(&(&1.claim_status == :blocked))
+    |> Enum.map(fn issue ->
+      %{
+        issue_key: issue.issue_key,
+        stage: issue.current_stage,
+        terminal_reason: issue.terminal_reason
+      }
+    end)
+  end
+
+  defp writeback_observability(project) do
+    writebacks =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        Enum.map(issue.writebacks, fn writeback ->
+          %{
+            issue_key: issue.issue_key,
+            intent_key: writeback.intent_key,
+            logical_action: writeback.logical_action,
+            operation_type: writeback.operation_type,
+            target: writeback.target,
+            replay_policy: writeback.replay_policy,
+            result_status: writeback.result_status,
+            attempt_id: writeback.attempt_id,
+            provider_marker: writeback.provider_marker,
+            external_ref: writeback.external_ref,
+            error_summary: writeback.error_summary,
+            provider_result_status: writeback.provider_result_status,
+            provider_replayable: writeback.provider_replayable,
+            manual_attention: writeback_manual_attention?(writeback),
+            manual_attention_reason: writeback_manual_attention_reason(writeback),
+            correlation: writeback.correlation
+          }
+        end)
+      end)
+
+    %{
+      counts: writeback_counts(writebacks),
+      pending: Enum.filter(writebacks, &(&1.result_status == :pending)),
+      succeeded: Enum.filter(writebacks, &(&1.result_status == :succeeded)),
+      failed: Enum.filter(writebacks, &(&1.result_status == :failed)),
+      unknown: Enum.filter(writebacks, &(&1.result_status == :unknown)),
+      manual_attention: Enum.filter(writebacks, & &1.manual_attention)
+    }
+  end
+
+  defp lifecycle_observability(project) do
+    running =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        issue.attempts
+        |> Enum.filter(&active_attempt?/1)
+        |> Enum.map(fn attempt ->
+          lease = active_lease_for(project, issue.issue_key, attempt.attempt_id)
+          intent = start_intent_for(project, issue.issue_key, attempt.attempt_id)
+
+          lifecycle_running_summary(issue, attempt, intent, lease)
+        end)
+      end)
+
+    results =
+      project.issues
+      |> Enum.flat_map(fn issue ->
+        Enum.map(issue.lifecycle_results, &lifecycle_result_summary(issue.issue_key, &1))
+      end)
+      |> Enum.sort_by(&{&1.issue_key || "", &1.attempt_id || "", &1.start_intent_id || "", &1.recorded_at || ""})
+
+    terminal = Enum.filter(results, &(&1.status in @terminal_lifecycle_statuses))
+    unresolved = Enum.filter(results, &(&1.status in @unresolved_lifecycle_statuses))
+
+    %{
+      counts: lifecycle_counts(running, results),
+      reason_counts: lifecycle_reason_counts(results),
+      workspace_action_counts: lifecycle_workspace_action_counts(results),
+      running: running,
+      terminal: terminal,
+      unresolved: unresolved,
+      retry_backoff: retry_backoff_summaries(project),
+      blocked: blocked_candidate_summaries(project),
+      released: released_lifecycle_summaries(project),
+      retained_workspace: Enum.filter(results, &(&1.workspace_action == "retained")),
+      manual_attention: Enum.filter(results, &(&1.manual_attention == true))
+    }
+  end
+
+  defp lifecycle_running_summary(issue, attempt, intent, lease) do
+    run_context = attempt.run_context || %{}
+
+    %{
+      issue_key: issue.issue_key,
+      attempt_id: attempt.attempt_id,
+      attempt_number: attempt.attempt_number,
+      status: :running,
+      start_intent_id: intent && intent.intent_id,
+      start_intent_status: intent && intent.status,
+      workspace_lease_id: lease && lease.lease_id,
+      workspace_path: (lease && lease.workspace_path) || attempt.workspace_path,
+      worker_host: (lease && lease.worker_host) || attempt.worker_host,
+      session_id:
+        get_in(run_context, [:session_id]) ||
+          get_in(attempt.agent_session || %{}, [:session_id]),
+      started_at: attempt.started_at,
+      last_activity_at:
+        get_in(run_context, [:last_activity_at]) ||
+          get_in(attempt.agent_session || %{}, [:last_activity_at])
+    }
+  end
+
+  defp lifecycle_result_summary(issue_key, result) do
+    %{
+      issue_key: issue_key,
+      result_id: result.result_id,
+      attempt_id: result.attempt_id,
+      start_intent_id: result.start_intent_id,
+      workspace_lease_id: result.workspace_lease_id,
+      workspace_path: result.workspace_path,
+      session_id: result.session_id,
+      worker_host: result.worker_host,
+      worker_identity: result.worker_identity,
+      status: result.status,
+      recovery_status: result.recovery_status,
+      reason: result.reason,
+      source: result.source,
+      source_correlation: result.source_correlation,
+      started_at: result.started_at,
+      last_activity_at: result.last_activity_at,
+      finished_at: result.finished_at,
+      exit_status: result.exit_status,
+      exit_category: result.exit_category,
+      terminal: result.terminal,
+      manual_attention: result.manual_attention,
+      workspace_action: result.workspace_action,
+      workspace_retained_reason: result.workspace_retained_reason,
+      recorded_at: result.recorded_at
+    }
+  end
+
+  defp lifecycle_counts(running, results) do
+    base = %{
+      running: length(running),
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      timeout: 0,
+      stopped: 0,
+      lost: 0,
+      unknown: 0,
+      manual_attention: 0,
+      retry: 0,
+      blocked: 0,
+      released: 0,
+      retained_workspace: 0
+    }
+
+    Enum.reduce(results, base, fn result, counts ->
+      counts
+      |> update_lifecycle_status_count(result.status)
+      |> update_lifecycle_recovery_count(result.recovery_status)
+      |> update_lifecycle_retained_count(result.workspace_action)
+    end)
+  end
+
+  defp update_lifecycle_status_count(counts, status) when status in @lifecycle_statuses do
+    Map.update!(counts, status, &(&1 + 1))
+  end
+
+  defp update_lifecycle_status_count(counts, _status), do: counts
+
+  defp update_lifecycle_recovery_count(counts, :retry_queued), do: Map.update!(counts, :retry, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :blocked), do: Map.update!(counts, :blocked, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :released), do: Map.update!(counts, :released, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, :manual_attention), do: Map.update!(counts, :manual_attention, &(&1 + 1))
+  defp update_lifecycle_recovery_count(counts, _recovery_status), do: counts
+
+  defp update_lifecycle_retained_count(counts, "retained"), do: Map.update!(counts, :retained_workspace, &(&1 + 1))
+  defp update_lifecycle_retained_count(counts, _workspace_action), do: counts
+
+  defp lifecycle_reason_counts(results) do
+    results
+    |> Enum.map(&(&1.reason || Atom.to_string(&1.status)))
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {reason, _count} -> reason end)
+    |> Map.new()
+  end
+
+  defp lifecycle_workspace_action_counts(results) do
+    results
+    |> Enum.map(& &1.workspace_action)
+    |> Enum.reject(&blank?/1)
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {action, _count} -> action end)
+    |> Map.new()
+  end
+
+  defp released_lifecycle_summaries(project) do
+    project.issues
+    |> Enum.filter(&(&1.claim_status == :released))
+    |> Enum.flat_map(fn issue ->
+      issue.lifecycle_results
+      |> Enum.filter(&(&1.recovery_status == :released or &1.workspace_action == "released"))
+      |> Enum.map(&lifecycle_result_summary(issue.issue_key, &1))
+    end)
+  end
+
+  defp writeback_counts(writebacks) do
+    Enum.reduce(writebacks, %{pending: 0, succeeded: 0, failed: 0, unknown: 0, manual_attention: 0}, fn writeback, counts ->
+      counts
+      |> Map.update!(writeback.result_status, &(&1 + 1))
+      |> then(fn updated ->
+        if writeback.manual_attention do
+          Map.update!(updated, :manual_attention, &(&1 + 1))
+        else
+          updated
+        end
+      end)
+    end)
+  end
+
+  defp writeback_manual_attention?(writeback) do
+    writeback.manual_attention or
+      (writeback.result_status == :unknown and writeback.replay_policy == :non_idempotent)
+  end
+
+  defp writeback_manual_attention_reason(%{manual_attention_reason: reason}) when is_binary(reason) and reason != "", do: reason
+
+  defp writeback_manual_attention_reason(%{result_status: :unknown, logical_action: "pr_create"}), do: "unknown_pr_create_requires_provider_lookup"
+  defp writeback_manual_attention_reason(%{result_status: :unknown, logical_action: "comment_append"}), do: "unknown_append_comment_requires_manual_attention"
+  defp writeback_manual_attention_reason(%{result_status: :unknown, replay_policy: :non_idempotent}), do: "unknown_non_idempotent_writeback"
+  defp writeback_manual_attention_reason(_writeback), do: nil
+
+  defp active_attempt(issue), do: Enum.find(issue.attempts, &active_attempt?/1)
+
+  defp latest_attempt(issue) do
+    issue.attempts
+    |> Enum.sort_by(&{&1.attempt_number || 0, &1.started_at || ""}, :desc)
+    |> List.first()
+  end
+
+  defp active_lease_for(project, issue_key, attempt_id) do
+    Enum.find(project.workspace_leases, fn lease ->
+      active_lease?(lease) and lease.issue_key == issue_key and (is_nil(attempt_id) or lease.attempt_id == attempt_id)
+    end)
+  end
+
+  defp start_intent_for(_project, _issue_key, nil), do: nil
+
+  defp start_intent_for(project, issue_key, attempt_id) do
+    project.start_intents
+    |> Enum.filter(fn intent -> intent.issue_key == issue_key and intent.attempt_id == attempt_id end)
+    |> Enum.sort_by(&{&1.acked_at || &1.finished_at || &1.requested_at || "", &1.intent_id}, :desc)
+    |> List.first()
+  end
+
+  defp active_attempt_exists?(project, issue_key, attempt_id) do
+    Enum.any?(project.issues, fn issue ->
+      issue.issue_key == issue_key and Enum.any?(issue.attempts, &(&1.attempt_id == attempt_id and active_attempt?(&1)))
+    end)
+  end
+
+  defp active_attempt?(attempt) do
+    attempt.status in @active_attempt_statuses and is_nil(attempt.ended_at)
+  end
+
+  defp active_lease?(lease) do
+    lease.status == :active and is_nil(lease.released_at)
+  end
+
+  defp active_start_intent?(intent) do
+    intent.status in @active_start_intent_statuses and is_nil(intent.acked_at) and is_nil(intent.finished_at)
+  end
+
+  defp matching_active_lease?(project, intent) do
+    Enum.any?(project.workspace_leases, fn lease ->
+      active_lease?(lease) and
+        lease.issue_key == intent.issue_key and
+        lease.attempt_id == intent.attempt_id and
+        (is_nil(intent.workspace_lease_id) or lease.lease_id == intent.workspace_lease_id) and
+        (is_nil(intent.workspace_path) or lease.workspace_path == intent.workspace_path)
+    end)
+  end
+
+  defp writeback_signature(writeback) do
+    {writeback.operation_type, writeback.replay_policy, writeback.target}
+  end
+
+  defp provider_issue_identity(issue_ref) do
+    issue_ref.provider_issue_id || issue_ref.provider_local_id || issue_ref.identifier
+  end
+
+  defp maybe_add_diagnostic(diagnostics, true, diagnostic), do: diagnostics ++ [diagnostic]
+  defp maybe_add_diagnostic(diagnostics, false, _diagnostic), do: diagnostics
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp privacy_diagnostics(value) do
+    value
+    |> collect_sensitive_paths([])
+    |> Enum.map(fn {path, reason} ->
+      diagnostic(
+        :error,
+        :sensitive_ledger_snapshot_field,
+        nil,
+        nil,
+        "Ledger snapshot contains sensitive #{reason} at #{Enum.join(path, ".")}"
+      )
+    end)
+  end
+
+  defp collect_sensitive_paths(%{} = map, path) do
+    Enum.flat_map(map, fn {raw_key, value} ->
+      key = raw_key |> normalize_key() |> String.downcase()
+      next_path = path ++ [key]
+
+      key_findings =
+        if sensitive_key?(key) do
+          [{next_path, "field"}]
+        else
+          []
+        end
+
+      key_findings ++ collect_sensitive_paths(value, next_path)
+    end)
+  end
+
+  defp collect_sensitive_paths(values, path) when is_list(values) do
+    values
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {value, index} -> collect_sensitive_paths(value, path ++ [Integer.to_string(index)]) end)
+  end
+
+  defp collect_sensitive_paths(value, path) when is_binary(value) do
+    if sensitive_value?(value) do
+      [{path, "value"}]
+    else
+      []
+    end
+  end
+
+  defp collect_sensitive_paths(_value, _path), do: []
+
+  defp sanitize_target(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, raw_value}, target ->
+      key = normalize_key(key)
+
+      cond do
+        body_key?(key) ->
+          target
+          |> maybe_put("#{key}_sha256", body_hash(raw_value))
+          |> maybe_put("#{key}_bytes", byte_size_or_nil(raw_value))
+
+        sensitive_key?(key) or sensitive_value?(raw_value) ->
+          target
+
+        true ->
+          Map.put(target, key, sanitize_value(raw_value))
+      end
+    end)
+  end
+
+  defp sanitize_target(_value), do: %{}
+
+  defp sanitize_value(%DateTime{} = value), do: normalize_time(value)
+  defp sanitize_value(%_struct{} = value), do: value
+
+  defp sanitize_value(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
+    |> Map.new(fn {key, raw_value} -> {normalize_output_key(key), sanitize_value(raw_value)} end)
+  end
+
+  defp sanitize_value(value) when is_list(value) do
+    value
+    |> Enum.reject(&sensitive_value?/1)
+    |> Enum.map(&sanitize_value/1)
+  end
+
+  defp sanitize_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp sanitize_value(value), do: value
+
+  defp sensitive_key?(key) do
+    key =
+      key
+      |> to_string()
+      |> String.downcase()
+
+    MapSet.member?(@sensitive_keys, key) or Regex.match?(~r/(^|_)(token|secret|credential|credentials|cookie|prompt|transcript|raw_config)$/, key)
+  end
+
+  defp sensitive_value?(value) when is_binary(value) do
+    Enum.any?(@sensitive_value_patterns, &Regex.match?(&1, value))
+  end
+
+  defp sensitive_value?(%_struct{}), do: false
+
+  defp sensitive_value?(value) when is_map(value) do
+    Enum.any?(value, fn {key, raw_value} -> sensitive_key?(key) or sensitive_value?(raw_value) end)
+  end
+
+  defp sensitive_value?(value) when is_list(value), do: Enum.any?(value, &sensitive_value?/1)
+  defp sensitive_value?(_value), do: false
+
+  defp body_key?(key), do: MapSet.member?(@body_keys, key) or String.ends_with?(key, "_body")
+
+  defp body_hash(value) when is_binary(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp body_hash(_value), do: nil
+
+  defp byte_size_or_nil(value) when is_binary(value), do: byte_size(value)
+  defp byte_size_or_nil(_value), do: nil
+
+  defp normalize_output_key(key) when is_atom(key), do: key
+
+  defp normalize_output_key(key) when is_binary(key) do
+    if Regex.match?(~r/\A[a-z_][a-zA-Z0-9_]*\z/, key) do
+      String.to_atom(key)
+    else
+      key
+    end
+  end
+
+  defp normalize_output_key(key), do: key
+
+  defp diagnostic(level, code, project_id, issue_key, message) do
+    %{
+      level: level,
+      code: code,
+      project_id: project_id,
+      issue_key: issue_key,
+      message: message
+    }
+  end
+
+  defp diagnostic(level, code, project_id, issue_key, workspace_path, message) do
+    %{
+      level: level,
+      code: code,
+      project_id: project_id,
+      issue_key: issue_key,
+      workspace_path: workspace_path,
+      message: message
+    }
+  end
+
+  defp diagnostic(level, code, project_id, issue_key, workspace_path, attempt_id, message) do
+    %{
+      level: level,
+      code: code,
+      project_id: project_id,
+      issue_key: issue_key,
+      workspace_path: workspace_path,
+      attempt_id: attempt_id,
+      message: message
+    }
+  end
+
+  defp diagnostic(level, code, project_id, issue_key, workspace_path, attempt_id, intent_key, message) do
+    %{
+      level: level,
+      code: code,
+      project_id: project_id,
+      issue_key: issue_key,
+      workspace_path: workspace_path,
+      attempt_id: attempt_id,
+      intent_key: intent_key,
+      message: message
+    }
+  end
+
+  defp value(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp list_value(map, key) do
+    case value(map, key) do
+      values when is_list(values) -> values
+      _value -> []
+    end
+  end
+
+  defp required_string(map, key), do: optional_string(map, key) || ""
+
+  defp optional_string(map, key) do
+    map
+    |> value(key)
+    |> normalize_optional_string()
+  end
+
+  defp normalize_optional_string(nil), do: nil
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(value) when is_integer(value), do: Integer.to_string(value)
+  defp normalize_optional_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_optional_string(_value), do: nil
+
+  defp truthy?(value), do: value in [true, "true", "1", 1]
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_value), do: false
+
+  defp normalize_time(nil), do: nil
+  defp normalize_time(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp normalize_time(value) when is_binary(value), do: normalize_optional_string(value)
+  defp normalize_time(_value), do: nil
+
+  defp normalize_integer(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_integer(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {number, ""} when number >= 0 -> number
+      _parse_result -> nil
+    end
+  end
+
+  defp normalize_integer(_value), do: nil
+
+  defp normalize_atom(value, default, allowed) when is_atom(value) do
+    if value in allowed, do: value, else: default
+  end
+
+  defp normalize_atom(value, default, allowed) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace("-", "_")
+    |> case do
+      "" ->
+        default
+
+      normalized ->
+        Enum.find(allowed, default, &(Atom.to_string(&1) == normalized))
+    end
+  end
+
+  defp normalize_atom(_value, default, _allowed), do: default
+
+  defp normalize_lifecycle_recovery_status(value) do
+    status = normalize_atom(value, nil, [:retry_queued, :blocked, :released, :manual_attention])
+
+    case status do
+      nil -> nil
+      status -> status
+    end
+  end
+
+  defp terminal_lifecycle_status?(status), do: status in @terminal_lifecycle_statuses
+
+  defp lifecycle_result_id(result) when is_map(result) do
+    seed =
+      [
+        optional_string(result, :attempt_id),
+        optional_string(result, :start_intent_id),
+        normalize_time(value(result, :finished_at)),
+        normalize_time(value(result, :recorded_at)),
+        normalize_optional_string(value(result, :status) || value(result, :result_status))
+      ]
+      |> Enum.reject(&blank?/1)
+      |> Enum.join("|")
+
+    if seed == "" do
+      ""
+    else
+      "hub-worker-lifecycle:" <> Base.encode16(:crypto.hash(:sha256, seed), case: :lower)
+    end
+  end
+
+  defp stringify_nested_keys(value) when is_map(value) do
+    Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
+      Map.put(normalized, normalize_key(key), stringify_nested_keys(raw_value))
+    end)
+  end
+
+  defp stringify_nested_keys(value) when is_list(value), do: Enum.map(value, &stringify_nested_keys/1)
+  defp stringify_nested_keys(value), do: value
+
+  defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_key(value), do: to_string(value)
+end

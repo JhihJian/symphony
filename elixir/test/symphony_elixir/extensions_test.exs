@@ -219,6 +219,30 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 
+  test "workflow and tracker path changes tolerate workflow store shutdown window" do
+    ensure_workflow_store_running()
+    workflow_path = Workflow.workflow_file_path()
+    tracker_path = TrackerConfig.tracker_file_path()
+    workflow_store_pid = Process.whereis(WorkflowStore)
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_path)
+
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(WorkflowStore)) do
+        Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+      end
+    end)
+
+    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
+
+    missing_workflow = Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md")
+    missing_tracker = Path.join(System.tmp_dir!(), "missing-tracker-#{System.unique_integer([:positive])}.yaml")
+
+    assert :ok = Workflow.set_workflow_file_path(missing_workflow)
+    assert :ok = TrackerConfig.set_tracker_file_path(missing_tracker)
+  end
+
   test "workflow store watches sibling tracker config changes in workflow-stage mode" do
     ensure_workflow_store_running()
 
@@ -667,6 +691,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                    "provider_state" => "Human Review"
                  },
                  "error" => "codex turn requires operator input",
+                 "recovery_artifact" => %{
+                   "available?" => true,
+                   "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+                 },
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
@@ -696,6 +724,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
              },
+             "recovery" => nil,
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "worker_host" => nil,
@@ -729,6 +758,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert %{
              "status" => "blocked",
              "last_error" => "codex turn requires operator input",
+             "recovery" => %{
+               "available?" => true,
+               "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+             },
              "blocked" => %{
                "session_id" => "thread-blocked",
                "state" => "In Progress",
@@ -739,6 +772,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "observed_at" => _observed_at,
                  "provider_stage" => "review",
                  "provider_state" => "Human Review"
+               },
+               "recovery_artifact" => %{
+                 "available?" => true,
+                 "artifact_dir" => "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
                },
                "error" => "codex turn requires operator input"
              }
@@ -841,6 +878,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_js = response(get(build_conn(), "/dashboard.js"), 200)
     assert dashboard_js =~ "WorkflowMermaid"
+    assert dashboard_js =~ "renderAllWorkflowMermaid"
+    assert dashboard_js =~ "DOMContentLoaded"
+    assert dashboard_js =~ "MutationObserver"
+    assert dashboard_js =~ "output.querySelector(\"svg\")"
     assert dashboard_js =~ ".render(renderId, definition)"
 
     mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
@@ -1022,6 +1063,39 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert view
            |> element("[data-stage-target=\"working\"]")
            |> render_click() =~ "Implement the issue."
+
+    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Implement the issue."
+  end
+
+  test "workflow dashboard renders sanitized mermaid ids for simple non-blocking flows" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_start_stage: "___",
+      workflow_terminal_stages: ["done"],
+      workflow_outcomes: ["completed"],
+      workflow_missing_outcome_on_exhausted: "done",
+      workflow_stages: %{
+        "___" => %{"prompt" => "Sanitized start.", "transitions" => %{"completed" => "done"}},
+        "done" => %{"prompt" => "Finished cleanly.", "transitions" => %{}}
+      },
+      tracker_stage_states: %{
+        "___" => %{"state" => "Ready"},
+        "done" => %{"state" => "Done", "terminal" => true}
+      }
+    )
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :SimpleWorkflowDashboardOrchestrator),
+      snapshot_timeout_ms: 5
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+
+    assert html =~ "stage_0_stage"
+    assert html =~ "completed"
+    assert html =~ "Sanitized start."
+    refute html =~ "-->|blocked|"
   end
 
   test "workflow dashboard wraps long snake case stage labels in the Mermaid graph" do
@@ -1093,11 +1167,13 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/workflow")
+    {:ok, view, html} = live(build_conn(), "/workflow")
 
     assert html =~ "Workflow 配置不可用"
     assert html =~ "invalid_workflow_definition"
     assert html =~ "workflow.start_stage is required"
+
+    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Workflow 配置不可用"
   end
 
   test "workflow dashboard keeps static graph when tracker mapping and snapshot are unavailable" do
@@ -1212,6 +1288,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     dashboard_js = Req.get!("http://127.0.0.1:#{port}/dashboard.js")
     assert dashboard_js.status == 200
     assert dashboard_js.body =~ "WorkflowMermaid"
+    assert dashboard_js.body =~ "renderAllWorkflowMermaid"
+    assert dashboard_js.body =~ "MutationObserver"
 
     mermaid_js = Req.get!("http://127.0.0.1:#{port}/vendor/mermaid/mermaid.min.js")
     assert mermaid_js.status == 200
@@ -1298,6 +1376,10 @@ defmodule SymphonyElixir.ExtensionsTest do
             observed_at: DateTime.utc_now()
           },
           error: "codex turn requires operator input",
+          recovery_artifact: %{
+            available?: true,
+            artifact_dir: "/workspaces/MT-BLOCKED/.symphony/blocked/artifact"
+          },
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",

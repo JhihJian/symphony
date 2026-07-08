@@ -439,6 +439,24 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "orchestrator surfaces workflow-stage tracker config errors as configuration diagnostics" do
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    on_exit(fn ->
+      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+        TrackerConfig.clear_tracker_file_path()
+
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+      end
+    end)
+
+    if is_pid(orchestrator_pid) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    end
+
     workflow_path = Workflow.workflow_file_path()
     tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
@@ -883,7 +901,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
       File.write!(workflow_path, workflow_stage_file(%{workspace_root: test_root}))
-      File.write!(tracker_config_path, memory_tracker_stage_config())
+      File.write!(tracker_config_path, workflow_state_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
 
@@ -933,7 +951,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "workflow-stage canceled provider stage stops running agent through terminal mapping" do
+  test "workflow-stage canceled provider stage blocks running agent through terminal mapping" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -977,6 +995,7 @@ defmodule SymphonyElixir.CoreTest do
             identifier: issue_identifier,
             issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
             current_stage: "working",
+            workspace_path: workspace,
             started_at: DateTime.utc_now()
           }
         },
@@ -997,9 +1016,16 @@ defmodule SymphonyElixir.CoreTest do
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
       refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
-      refute File.exists?(workspace)
+      assert File.exists?(workspace)
+
+      assert %{
+               current_stage: "protocol_blocked",
+               issue: %Issue{state: "Canceled"},
+               error: "provider workflow stage protocol_blocked is blocked terminal",
+               recovery_artifact: %{available?: true}
+             } = updated_state.blocked[issue_id]
     after
       File.rm_rf(test_root)
     end
@@ -1321,7 +1347,235 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(updated_state.retry_attempts, issue_id)
   end
 
-  test "normal worker exit releases claim without active-state continuation retry" do
+  test "workflow-stage running retry keeps middle-stage issues recoverable without start-stage filter" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-working"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-RETRY",
+      title: "Recover in-progress work",
+      state: "In Progress",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 0,
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    retry_window_start_ms = System.monotonic_time(:millisecond)
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "stalled for 5000ms without codex activity",
+        worker_host: "worker-a",
+        workspace_path: "/workspaces/MT-RUNNING-RETRY",
+        session_id: "thread-running-retry"
+      })
+
+    retry_window_end_ms = System.monotonic_time(:millisecond)
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.blocked, issue_id)
+
+    assert %{
+             attempt: 2,
+             retry_kind: :running,
+             identifier: "MT-RUNNING-RETRY",
+             current_stage: "working",
+             worker_host: "worker-a",
+             workspace_path: "/workspaces/MT-RUNNING-RETRY",
+             session_id: "thread-running-retry",
+             due_at_ms: due_at_ms
+           } = updated_state.retry_attempts[issue_id]
+
+    assert_due_scheduled_after(due_at_ms, retry_window_start_ms, retry_window_end_ms, 20_000)
+  end
+
+  test "workflow-stage running retry releases terminal provider stages and cleans workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-running-retry-terminal-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-running-retry-terminal"
+    issue_identifier = "MT-RUNNING-DONE"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      workflow_path = Workflow.workflow_file_path()
+      tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+      File.write!(workflow_path, workflow_stage_file(%{workspace_root: test_root}))
+      File.write!(tracker_config_path, workflow_state_stage_config())
+      Workflow.set_workflow_file_path(workflow_path)
+      TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+      File.mkdir_p!(workspace)
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        title: "Terminal during retry",
+        state: "Done",
+        labels: []
+      }
+
+      state = %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new([issue_id]),
+        blocked: %{},
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 1, %{
+          retry_kind: :running,
+          identifier: issue.identifier,
+          current_stage: "working",
+          error: "agent exited: :boom"
+        })
+
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Map.has_key?(updated_state.blocked, issue_id)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workflow-stage running retry blocks unreadable provider stages instead of orphaning claims" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-unmapped"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-UNMAPPED",
+      title: "Unmapped retry state",
+      state: "Mystery",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 3, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "stalled for 5000ms without codex activity",
+        worker_host: "worker-a",
+        workspace_path: "/workspaces/MT-RUNNING-UNMAPPED",
+        session_id: "thread-running-unmapped"
+      })
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+
+    assert %{
+             identifier: "MT-RUNNING-UNMAPPED",
+             current_stage: "working",
+             worker_host: "worker-a",
+             workspace_path: "/workspaces/MT-RUNNING-UNMAPPED",
+             session_id: "thread-running-unmapped",
+             retry_kind: :running,
+             retry_attempt: 3,
+             error: error,
+             stage_conflict: %{
+               kind: :running_retry,
+               local_stage: "working",
+               provider_stage: {:error, {:unmapped_provider_state, "Mystery"}},
+               provider_state: "Mystery"
+             }
+           } = updated_state.blocked[issue_id]
+
+    assert error =~ "stalled for 5000ms without codex activity"
+    assert error =~ "recovery blocked"
+  end
+
+  test "workflow-stage running retry blocks provider stage conflicts instead of restarting the wrong stage" do
+    workflow_path = Workflow.workflow_file_path()
+    tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
+
+    File.write!(workflow_path, workflow_stage_file())
+    File.write!(tracker_config_path, memory_tracker_stage_config())
+    Workflow.set_workflow_file_path(workflow_path)
+    TrackerConfig.set_tracker_file_path(tracker_config_path)
+
+    issue_id = "issue-running-retry-conflict"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RUNNING-CONFLICT",
+      title: "Conflicting retry state",
+      state: "Human Review",
+      labels: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue_id, 2, %{
+        retry_kind: :running,
+        identifier: issue.identifier,
+        current_stage: "working",
+        error: "agent exited: :shutdown"
+      })
+
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+
+    assert %{
+             identifier: "MT-RUNNING-CONFLICT",
+             current_stage: "review",
+             retry_kind: :running,
+             retry_attempt: 2,
+             stage_conflict: %{
+               kind: :running_retry,
+               local_stage: "working",
+               provider_stage: "review",
+               provider_state: "Human Review"
+             }
+           } = updated_state.blocked[issue_id]
+  end
+
+  test "normal worker exit on completion stage releases claim without active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
@@ -1344,7 +1598,7 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-558",
       issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
-      current_stage: "working",
+      current_stage: "done",
       started_at: DateTime.utc_now()
     }
 
@@ -1370,7 +1624,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.retry_attempts, issue_id)
   end
 
-  test "workflow-stage normal exit completes without continuation retry" do
+  test "workflow-stage normal exit on completion stage completes without continuation retry" do
     workflow_path = Workflow.workflow_file_path()
     tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
@@ -1397,7 +1651,7 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-STAGE-560",
       issue: %Issue{id: issue_id, identifier: "MT-STAGE-560", state: "Ready"},
-      current_stage: "ready",
+      current_stage: "done",
       started_at: DateTime.utc_now()
     }
 
@@ -1753,6 +2007,23 @@ defmodule SymphonyElixir.CoreTest do
         protocol_blocked:
           state: Protocol Blocked
           terminal: true
+    """
+  end
+
+  defp workflow_state_stage_config do
+    """
+    tracker:
+      kind: memory
+      workflow_state:
+        strategy: project_v2_status
+        field_name: Status
+        state_options:
+          ready: Ready
+          working: In progress
+          review: Human Review
+          done: Done
+          blocked: Blocked
+          protocol_blocked: Protocol Blocked
     """
   end
 
@@ -2533,34 +2804,37 @@ defmodule SymphonyElixir.CoreTest do
       #!/bin/sh
       trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
-      count=0
+      turn_count=0
 
       while IFS= read -r line; do
-        count=$((count + 1))
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
+
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
             ;;
-          3)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-route"}}}'
             ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-1"}}}'
-            printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route","threadId":"thread-route","turnId":"turn-route-1","arguments":{"outcome":"accepted","summary":"Ready stage accepted."}}}'
+          *'"method":"turn/start"'*)
+            turn_count=$((turn_count + 1))
+
+            if [ "$turn_count" -eq 1 ]; then
+              printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-1"}}}'
+              printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route","threadId":"thread-route","turnId":"turn-route-1","arguments":{"outcome":"accepted","summary":"Ready stage accepted."}}}'
+            else
+              printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-2"}}}'
+              printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route-2","threadId":"thread-route","turnId":"turn-route-2","arguments":{"outcome":"completed","summary":"Working stage completed."}}}'
+            fi
             ;;
-          5)
+          *'"result"'*)
             printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          6)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-route-2"}}}'
-            printf '%s\\n' '{"id":102,"method":"item/tool/call","params":{"tool":"symphony_stage_outcome","callId":"call-route-2","threadId":"thread-route","turnId":"turn-route-2","arguments":{"outcome":"completed","summary":"Working stage completed."}}}'
-            ;;
-          7)
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
+
+            if [ "$turn_count" -ge 2 ]; then
+              exit 0
+            fi
             ;;
         esac
       done
@@ -2572,7 +2846,7 @@ defmodule SymphonyElixir.CoreTest do
       tracker_config_path = Path.join(Path.dirname(workflow_path), "TRACKER.yaml")
 
       File.write!(workflow_path, runner_stage_workflow_file(workspace_root, codex_binary, template_repo))
-      File.write!(tracker_config_path, memory_tracker_stage_config())
+      File.write!(tracker_config_path, workflow_state_stage_config())
       Workflow.set_workflow_file_path(workflow_path)
       TrackerConfig.set_tracker_file_path(tracker_config_path)
 
@@ -2626,7 +2900,7 @@ defmodule SymphonyElixir.CoreTest do
       assert Enum.at(turn_texts, 1) =~ "Implement the accepted scope."
       assert Enum.at(turn_texts, 1) =~ "- completed -> done"
 
-      assert_receive {:memory_tracker_stage_update, "issue-route", "working", "In Progress"}
+      assert_receive {:memory_tracker_stage_update, "issue-route", "working", "In progress"}
       assert_receive {:memory_tracker_stage_update, "issue-route", "done", "Done"}
       refute_receive :unexpected_issue_state_fetch, 100
     after
@@ -2751,32 +3025,28 @@ defmodule SymphonyElixir.CoreTest do
       #!/bin/sh
       trace_file=#{shell_escape(trace_file)}
       printf 'RUN\\n' >> "$trace_file"
-      count=0
+      turn_count=0
 
       while IFS= read -r line; do
-        count=$((count + 1))
         printf 'JSON:%s\\n' "$line" >> "$trace_file"
-        case "$count" in
-          1)
+
+        case "$line" in
+          *'"method":"initialize"'*)
             printf '%s\\n' '{"id":1,"result":{}}'
             ;;
-          2)
+          *'"method":"initialized"'*)
             ;;
-          3)
+          *'"method":"thread/start"'*)
             printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-missing"}}}'
             ;;
-          4)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-1"}}}'
+          *'"method":"turn/start"'*)
+            turn_count=$((turn_count + 1))
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-'"$turn_count"'"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          5)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-2"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            ;;
-          6)
-            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-missing-3"}}}'
-            printf '%s\\n' '{"method":"turn/completed"}'
-            exit 0
+
+            if [ "$turn_count" -ge 3 ]; then
+              exit 0
+            fi
             ;;
         esac
       done

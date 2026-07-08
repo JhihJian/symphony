@@ -60,6 +60,28 @@ defmodule SymphonyElixir.StagePromptRendererTest do
              )
   end
 
+  test "resolves current stage from workflow_state state_options mapping" do
+    assert {:ok, "in_progress"} =
+             StagePromptRenderer.stage_for_issue(
+               workflow(),
+               %Issue{state: "In progress"},
+               %{
+                 tracker: %{
+                   workflow_state: %{
+                     strategy: "project_v2_status",
+                     field_name: "Status",
+                     state_options: %{
+                       ready: "Ready",
+                       in_progress: "In progress",
+                       done: "Done",
+                       blocked: "Blocked"
+                     }
+                   }
+                 }
+               }
+             )
+  end
+
   test "renders defaults for terminal stage and sparse issue context" do
     prompt =
       StagePromptRenderer.render(

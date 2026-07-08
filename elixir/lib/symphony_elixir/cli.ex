@@ -3,17 +3,48 @@ defmodule SymphonyElixir.CLI do
   Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
   """
 
+  alias SymphonyElixir.Hub.Runtime, as: HubRuntime
   alias SymphonyElixir.LogFile
   alias SymphonyElixir.TrackerConfig
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer, tracker_config: :string]
+  @switches [
+    {@acknowledgement_switch, :boolean},
+    hub_activation_ack: :string,
+    hub_activation_probe: :string,
+    hub_config: :string,
+    hub_cutover_audit_history: :string,
+    hub_cutover_execution_authorization_request: :string,
+    hub_cutover_execution_outcome_closeout: :string,
+    hub_cutover_operation_request: :string,
+    hub_cutover_replay_request: :string,
+    hub_manual_attention_closeout: :string,
+    hub_provider_executor: :string,
+    hub_scheduler: :boolean,
+    hub_worker_starter: :string,
+    logs_root: :string,
+    port: :integer,
+    tracker_config: :string
+  ]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
           file_regular?: (String.t() -> boolean()),
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_tracker_config_file_path: (String.t() -> :ok | {:error, term()}),
+          set_hub_config_path: (String.t() -> :ok | {:error, term()}),
+          set_hub_provider_executor: (module() | nil -> :ok | {:error, term()}),
+          set_hub_activation_probe: (keyword() -> :ok | {:error, term()}),
+          load_hub_activation_ack: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_operation_request: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_audit_history: (String.t() -> :ok | {:error, term()}),
+          load_hub_manual_attention_closeout: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_execution_authorization_request: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_execution_outcome_closeout: (String.t() -> :ok | {:error, term()}),
+          load_hub_cutover_replay_request: (String.t() -> :ok | {:error, term()}),
+          set_hub_scheduler_enabled: (boolean() -> :ok | {:error, term()}),
+          validate_hub_config: (String.t() -> :ok | {:error, String.t()}),
+          set_hub_worker_starter: (module() | nil -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
           ensure_all_started: (-> ensure_started_result())
@@ -34,22 +65,60 @@ defmodule SymphonyElixir.CLI do
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
   def evaluate(args, deps \\ runtime_deps()) do
     case OptionParser.parse(args, strict: @switches) do
-      {opts, [], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(Path.expand("WORKFLOW.md"), tracker_config_path(opts), deps)
-        end
-
-      {opts, [workflow_path], []} ->
-        with :ok <- require_guardrails_acknowledgement(opts),
-             :ok <- maybe_set_logs_root(opts, deps),
-             :ok <- maybe_set_server_port(opts, deps) do
-          run(workflow_path, tracker_config_path(opts), deps)
-        end
+      {opts, positional, []} ->
+        evaluate_parsed(opts, positional, deps)
 
       _ ->
         {:error, usage_message()}
+    end
+  end
+
+  defp evaluate_parsed(opts, [], deps) do
+    if Keyword.has_key?(opts, :hub_config) do
+      run_hub(opts, deps)
+    else
+      with :ok <- require_guardrails_acknowledgement(opts),
+           :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_port(opts, deps) do
+        run(Path.expand("WORKFLOW.md"), tracker_config_path(opts), deps)
+      end
+    end
+  end
+
+  defp evaluate_parsed(opts, [workflow_path], deps) do
+    if Keyword.has_key?(opts, :hub_config) do
+      {:error, hub_usage_error("Do not pass a WORKFLOW.md path with --hub-config")}
+    else
+      with :ok <- require_guardrails_acknowledgement(opts),
+           :ok <- maybe_set_logs_root(opts, deps),
+           :ok <- maybe_set_server_port(opts, deps) do
+        run(workflow_path, tracker_config_path(opts), deps)
+      end
+    end
+  end
+
+  defp evaluate_parsed(_opts, _positional, _deps), do: {:error, usage_message()}
+
+  defp run_hub(opts, deps) do
+    with :ok <- require_guardrails_acknowledgement(opts),
+         :ok <- maybe_set_logs_root(opts, deps),
+         :ok <- maybe_set_server_port(opts, deps),
+         :ok <- maybe_set_hub_scheduler(opts, deps),
+         :ok <- maybe_set_hub_provider_executor(opts, deps),
+         :ok <- maybe_set_hub_worker_starter(opts, deps),
+         :ok <- maybe_set_hub_activation_probe(opts, deps),
+         :ok <- maybe_load_hub_activation_ack(opts, deps),
+         :ok <- maybe_load_hub_cutover_operation_request(opts, deps),
+         :ok <- maybe_load_hub_cutover_audit_history(opts, deps),
+         :ok <- maybe_load_hub_manual_attention_closeout(opts, deps),
+         :ok <- maybe_load_hub_cutover_execution_authorization_request(opts, deps),
+         :ok <- maybe_load_hub_cutover_execution_outcome_closeout(opts, deps),
+         :ok <- maybe_load_hub_cutover_replay_request(opts, deps),
+         {:ok, hub_config_path} <- hub_config_path(opts),
+         :ok <- require_regular_file(deps, hub_config_path, "Hub config file not found"),
+         :ok <- deps.validate_hub_config.(hub_config_path) do
+      :ok = deps.set_hub_config_path.(hub_config_path)
+      start_hub(hub_config_path, deps)
     end
   end
 
@@ -78,7 +147,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--logs-root <path>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -87,6 +156,19 @@ defmodule SymphonyElixir.CLI do
       file_regular?: &File.regular?/1,
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_tracker_config_file_path: &TrackerConfig.set_tracker_file_path/1,
+      set_hub_config_path: &HubRuntime.set_config_path/1,
+      set_hub_provider_executor: &HubRuntime.set_provider_executor/1,
+      set_hub_activation_probe: &HubRuntime.set_host_service_activation_probe/1,
+      load_hub_activation_ack: &HubRuntime.load_operator_acknowledgements/1,
+      load_hub_cutover_operation_request: &HubRuntime.load_cutover_operation_requests/1,
+      load_hub_cutover_audit_history: &HubRuntime.load_cutover_audit_history_entries/1,
+      load_hub_manual_attention_closeout: &HubRuntime.load_manual_attention_closeouts/1,
+      load_hub_cutover_execution_authorization_request: &HubRuntime.load_cutover_execution_authorization_requests/1,
+      load_hub_cutover_execution_outcome_closeout: &HubRuntime.load_cutover_execution_outcome_closeouts/1,
+      load_hub_cutover_replay_request: &HubRuntime.load_cutover_replay_requests/1,
+      set_hub_scheduler_enabled: &HubRuntime.set_scheduler_enabled/1,
+      validate_hub_config: &HubRuntime.validate_config/1,
+      set_hub_worker_starter: &HubRuntime.set_worker_start_starter/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
@@ -171,9 +253,231 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp maybe_set_hub_worker_starter(opts, deps) do
+    case Keyword.get_values(opts, :hub_worker_starter) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_worker_starter_module()
+        |> case do
+          {:ok, module} -> deps.set_hub_worker_starter.(module)
+          {:error, message} -> {:error, message}
+        end
+    end
+  end
+
+  defp maybe_set_hub_provider_executor(opts, deps) do
+    case Keyword.get_values(opts, :hub_provider_executor) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_provider_executor_module()
+        |> case do
+          {:ok, module} -> deps.set_hub_provider_executor.(module)
+          {:error, message} -> {:error, message}
+        end
+    end
+  end
+
+  defp maybe_set_hub_activation_probe(opts, deps) do
+    case Keyword.get_values(opts, :hub_activation_probe) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_activation_probe_opts()
+        |> case do
+          {:ok, probe_opts} -> deps.set_hub_activation_probe.(probe_opts)
+          {:error, message} -> {:error, message}
+        end
+    end
+  end
+
+  defp maybe_load_hub_activation_ack(opts, deps) do
+    case Keyword.get_values(opts, :hub_activation_ack) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <- values |> List.last() |> normalize_cli_path("Hub activation acknowledgement path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub activation acknowledgement file not found") do
+          deps.load_hub_activation_ack.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_operation_request(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_operation_request) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <- values |> List.last() |> normalize_cli_path("Hub cutover operation request path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover operation request file not found") do
+          deps.load_hub_cutover_operation_request.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_audit_history(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_audit_history) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <- values |> List.last() |> normalize_cli_path("Hub cutover audit history path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover audit history file not found") do
+          deps.load_hub_cutover_audit_history.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_manual_attention_closeout(opts, deps) do
+    case Keyword.get_values(opts, :hub_manual_attention_closeout) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <- values |> List.last() |> normalize_cli_path("Hub manual attention closeout path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub manual attention closeout file not found") do
+          deps.load_hub_manual_attention_closeout.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_execution_authorization_request(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_execution_authorization_request) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <-
+               values
+               |> List.last()
+               |> normalize_cli_path("Hub cutover execution authorization request path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover execution authorization request file not found") do
+          deps.load_hub_cutover_execution_authorization_request.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_execution_outcome_closeout(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_execution_outcome_closeout) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <-
+               values
+               |> List.last()
+               |> normalize_cli_path("Hub cutover execution outcome closeout path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover execution outcome closeout file not found") do
+          deps.load_hub_cutover_execution_outcome_closeout.(path)
+        end
+    end
+  end
+
+  defp maybe_load_hub_cutover_replay_request(opts, deps) do
+    case Keyword.get_values(opts, :hub_cutover_replay_request) do
+      [] ->
+        :ok
+
+      values ->
+        with {:ok, path} <-
+               values
+               |> List.last()
+               |> normalize_cli_path("Hub cutover replay request path must not be blank"),
+             :ok <- require_regular_file(deps, path, "Hub cutover replay request file not found") do
+          deps.load_hub_cutover_replay_request.(path)
+        end
+    end
+  end
+
+  defp maybe_set_hub_scheduler(opts, deps) do
+    deps.set_hub_scheduler_enabled.(Keyword.get(opts, :hub_scheduler, false) == true)
+  end
+
   defp set_server_port_override(port) when is_integer(port) and port >= 0 do
     Application.put_env(:symphony_elixir, :server_port_override, port)
     :ok
+  end
+
+  defp hub_worker_starter_module(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "real" ->
+        {:ok, SymphonyElixir.Hub.RealWorkerStarter}
+
+      "skeleton" ->
+        {:ok, nil}
+
+      other ->
+        {:error, "Unsupported --hub-worker-starter #{inspect(other)}. Use `real` or omit the option for the default skeleton."}
+    end
+  end
+
+  defp hub_worker_starter_module(_value), do: {:error, usage_message()}
+
+  defp hub_provider_executor_module(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "real-candidate-scan" ->
+        {:ok, SymphonyElixir.Hub.RealCandidateScanExecutor}
+
+      "real_candidate_scan" ->
+        {:ok, SymphonyElixir.Hub.RealCandidateScanExecutor}
+
+      "real-writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
+      "real_writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
+      "skeleton" ->
+        {:ok, nil}
+
+      other ->
+        {:error, "Unsupported --hub-provider-executor #{inspect(other)}. Use `real-candidate-scan`, `real-writeback`, or omit the option for the default skeleton."}
+    end
+  end
+
+  defp hub_provider_executor_module(_value), do: {:error, usage_message()}
+
+  defp hub_activation_probe_opts(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "host-service" ->
+        {:ok, []}
+
+      "host_service" ->
+        {:ok, []}
+
+      other ->
+        {:error, "Unsupported --hub-activation-probe #{inspect(other)}. Use `host-service` or omit the option for the default injected/no-op probe."}
+    end
+  end
+
+  defp hub_activation_probe_opts(_value), do: {:error, usage_message()}
+
+  defp hub_config_path(opts) do
+    case Keyword.get_values(opts, :hub_config) do
+      [] -> {:error, usage_message()}
+      values -> values |> List.last() |> normalize_cli_path("Hub config path must not be blank")
+    end
   end
 
   defp tracker_config_path(opts) do
@@ -192,6 +496,15 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp normalize_cli_path(path, blank_message) when is_binary(path) do
+    case String.trim(path) do
+      "" -> {:error, blank_message}
+      trimmed -> {:ok, Path.expand(trimmed)}
+    end
+  end
+
+  defp normalize_cli_path(_path, blank_message), do: {:error, blank_message}
+
   defp require_regular_file(deps, path, message_prefix) do
     if deps.file_regular?.(path), do: :ok, else: {:error, "#{message_prefix}: #{path}"}
   end
@@ -206,6 +519,20 @@ defmodule SymphonyElixir.CLI do
 
   defp maybe_set_tracker_config_file_path(path, deps) do
     deps.set_tracker_config_file_path.(path)
+  end
+
+  defp start_hub(hub_config_path, deps) do
+    case deps.ensure_all_started.() do
+      {:ok, _started_apps} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, "Failed to start Symphony Hub with config #{hub_config_path}: #{inspect(reason)}"}
+    end
+  end
+
+  defp hub_usage_error(message) do
+    "#{message}\n\n#{usage_message()}"
   end
 
   @spec wait_for_shutdown() :: no_return()

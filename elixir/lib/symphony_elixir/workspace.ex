@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Workspace do
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
   @hook_termination_grace_ms 1_000
+  @blocked_artifact_dir ".symphony/blocked"
 
   @type worker_host :: String.t() | nil
 
@@ -162,6 +163,40 @@ defmodule SymphonyElixir.Workspace do
 
   def remove_issue_workspaces(_identifier, _worker_host) do
     :ok
+  end
+
+  @spec preserve_blocked_artifacts(Path.t() | nil, worker_host(), map()) :: map()
+  def preserve_blocked_artifacts(workspace, nil, metadata) when is_binary(workspace) and is_map(metadata) do
+    case validate_workspace_path(workspace, nil) do
+      :ok ->
+        write_blocked_artifacts(workspace, metadata)
+
+      {:error, reason} ->
+        %{
+          available?: false,
+          workspace_path: workspace,
+          error: inspect(reason)
+        }
+    end
+  end
+
+  def preserve_blocked_artifacts(workspace, worker_host, _metadata)
+      when is_binary(workspace) and is_binary(worker_host) do
+    %{
+      available?: false,
+      workspace_path: workspace,
+      worker_host: worker_host,
+      error: "blocked artifact capture is not implemented for remote workspaces; workspace retained"
+    }
+  end
+
+  def preserve_blocked_artifacts(workspace, worker_host, _metadata) do
+    %{
+      available?: false,
+      workspace_path: workspace,
+      worker_host: worker_host,
+      error: "workspace path unavailable"
+    }
   end
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
@@ -375,6 +410,149 @@ defmodule SymphonyElixir.Workspace do
 
         :ok
     end
+  end
+
+  defp write_blocked_artifacts(workspace, metadata) do
+    artifact_dir = Path.join([workspace, @blocked_artifact_dir, artifact_slug(metadata)])
+
+    with :ok <- File.mkdir_p(artifact_dir),
+         artifacts <- collect_blocked_artifacts(workspace),
+         :ok <- write_artifact_files(artifact_dir, metadata, artifacts) do
+      %{
+        available?: true,
+        workspace_path: workspace,
+        artifact_dir: artifact_dir,
+        files: artifact_file_paths(artifact_dir),
+        git_status_available?: artifacts.git_status_available?
+      }
+    else
+      {:error, reason} ->
+        %{
+          available?: false,
+          workspace_path: workspace,
+          error: inspect(reason)
+        }
+    end
+  end
+
+  defp collect_blocked_artifacts(workspace) do
+    %{
+      git_status_available?: File.dir?(Path.join(workspace, ".git")),
+      status: git_output(workspace, ["status", "--short", "--branch"]),
+      diff_stat: git_output(workspace, ["diff", "--stat", "HEAD"]),
+      diff_name_status: git_output(workspace, ["diff", "--name-status", "HEAD"]),
+      untracked_files: git_output(workspace, ["ls-files", "--others", "--exclude-standard"]),
+      patch: git_output(workspace, ["diff", "--binary", "HEAD"])
+    }
+  end
+
+  defp write_artifact_files(artifact_dir, metadata, artifacts) do
+    summary = blocked_artifact_summary(metadata, artifacts)
+
+    with :ok <- File.write(Path.join(artifact_dir, "summary.md"), summary),
+         :ok <- File.write(Path.join(artifact_dir, "git-status.txt"), artifacts.status.output),
+         :ok <- File.write(Path.join(artifact_dir, "git-diff-stat.txt"), artifacts.diff_stat.output),
+         :ok <- File.write(Path.join(artifact_dir, "git-diff-name-status.txt"), artifacts.diff_name_status.output),
+         :ok <- File.write(Path.join(artifact_dir, "untracked-files.txt"), artifacts.untracked_files.output),
+         :ok <- File.write(Path.join(artifact_dir, "changes.patch"), artifacts.patch.output) do
+      :ok
+    end
+  end
+
+  defp artifact_file_paths(artifact_dir) do
+    %{
+      summary: Path.join(artifact_dir, "summary.md"),
+      git_status: Path.join(artifact_dir, "git-status.txt"),
+      git_diff_stat: Path.join(artifact_dir, "git-diff-stat.txt"),
+      git_diff_name_status: Path.join(artifact_dir, "git-diff-name-status.txt"),
+      untracked_files: Path.join(artifact_dir, "untracked-files.txt"),
+      patch: Path.join(artifact_dir, "changes.patch")
+    }
+  end
+
+  defp blocked_artifact_summary(metadata, artifacts) do
+    [
+      "# Symphony Blocked Workspace Artifact",
+      "",
+      "- issue_id: #{summary_value(metadata[:issue_id])}",
+      "- issue_identifier: #{summary_value(metadata[:identifier])}",
+      "- current_stage: #{summary_value(metadata[:current_stage])}",
+      "- session_id: #{summary_value(metadata[:session_id])}",
+      "- blocked_reason: #{summary_value(metadata[:error])}",
+      "- generated_at: #{DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()}",
+      "",
+      "## git status --short --branch",
+      "",
+      code_block(artifacts.status),
+      "",
+      "## git diff --stat",
+      "",
+      code_block(artifacts.diff_stat),
+      "",
+      "## git diff --name-status",
+      "",
+      code_block(artifacts.diff_name_status),
+      "",
+      "## git ls-files --others --exclude-standard",
+      "",
+      code_block(artifacts.untracked_files),
+      "",
+      "## patch",
+      "",
+      "See `changes.patch` in this directory."
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp code_block(%{output: output, status: status}) do
+    output =
+      case String.trim(to_string(output)) do
+        "" -> "(no output)"
+        value -> value
+      end
+
+    "```text\n# exit #{status}\n#{output}\n```"
+  end
+
+  defp summary_value(nil), do: "n/a"
+
+  defp summary_value(value) when is_binary(value) do
+    value
+    |> String.replace("\r\n", " ")
+    |> String.replace("\n", " ")
+    |> String.trim()
+  end
+
+  defp summary_value(value), do: inspect(value)
+
+  defp git_output(workspace, args) when is_binary(workspace) and is_list(args) do
+    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+      {output, status} ->
+        %{output: output, status: status}
+    end
+  rescue
+    error ->
+      %{output: Exception.message(error), status: 1}
+  end
+
+  defp artifact_slug(metadata) do
+    timestamp =
+      DateTime.utc_now()
+      |> DateTime.truncate(:second)
+      |> DateTime.to_iso8601()
+      |> String.replace(~r/[^A-Za-z0-9._-]+/, "-")
+
+    session =
+      metadata
+      |> Map.get(:session_id)
+      |> case do
+        value when is_binary(value) and value != "" -> value
+        _ -> "no-session"
+      end
+      |> String.replace(~r/[^A-Za-z0-9._-]+/, "-")
+      |> String.slice(0, 64)
+
+    "#{timestamp}-#{session}"
   end
 
   defp run_local_command(command, workspace, timeout_ms)

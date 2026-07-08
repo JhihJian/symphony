@@ -9,6 +9,8 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Workflow
   alias SymphonyElixir.Workflow.Definition
 
+  @settings_override_key {__MODULE__, :settings_override}
+
   @default_prompt_template """
   You are working on an issue.
 
@@ -31,6 +33,51 @@ defmodule SymphonyElixir.Config do
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
+    case Process.get(@settings_override_key) do
+      %Schema{} = settings ->
+        {:ok, settings}
+
+      _override ->
+        current_settings()
+    end
+  end
+
+  @spec settings_from_files(Path.t(), Path.t() | nil) :: {:ok, Schema.t()} | {:error, term()}
+  def settings_from_files(workflow_path, tracker_config_path \\ nil) when is_binary(workflow_path) do
+    with {:ok, %{config: config, workflow: %Definition{} = workflow_definition}} <-
+           Workflow.load(workflow_path),
+         nil <- TrackerConfig.legacy_tracker_config_error(config),
+         {:ok, tracker_config} <- tracker_config_for_workflow(workflow_path, tracker_config_path),
+         :ok <- Tracker.validate_workflow_state_mapping(Definition.to_map(workflow_definition), tracker_config) do
+      parse_two_file_settings(config, workflow_definition, tracker_config)
+    else
+      {:legacy_workflow_tracker_config, _keys} = reason ->
+        {:error, reason}
+
+      {:ok, %{workflow: nil}} ->
+        {:error, {:invalid_workflow_definition, "WORKFLOW.md must define provider-neutral workflow stages; move provider settings and stage-state mapping to TRACKER.yaml"}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec with_settings(Schema.t(), (-> term())) :: term()
+  def with_settings(%Schema{} = settings, fun) when is_function(fun, 0) do
+    previous = Process.get(@settings_override_key, :__symphony_config_settings_override_missing__)
+    Process.put(@settings_override_key, settings)
+
+    try do
+      fun.()
+    after
+      case previous do
+        :__symphony_config_settings_override_missing__ -> Process.delete(@settings_override_key)
+        previous_settings -> Process.put(@settings_override_key, previous_settings)
+      end
+    end
+  end
+
+  defp current_settings do
     case Workflow.current() do
       {:ok, %{config: config, workflow: %Definition{} = workflow_definition}} when is_map(config) ->
         parse_workflow_stage_settings(config, workflow_definition)
@@ -214,7 +261,8 @@ defmodule SymphonyElixir.Config do
 
   defp parse_workflow_stage_settings(config, %Definition{} = workflow_definition) do
     with nil <- TrackerConfig.legacy_tracker_config_error(config),
-         {:ok, tracker_config} <- tracker_config_for_workflow(Workflow.workflow_file_path()),
+         {:ok, tracker_config} <-
+           tracker_config_for_workflow(Workflow.workflow_file_path(), TrackerConfig.tracker_file_path()),
          :ok <- Tracker.validate_workflow_state_mapping(Definition.to_map(workflow_definition), tracker_config) do
       parse_two_file_settings(config, workflow_definition, tracker_config)
     else
@@ -236,8 +284,8 @@ defmodule SymphonyElixir.Config do
     Schema.parse(runtime_config)
   end
 
-  defp tracker_config_for_workflow(workflow_path) do
-    case TrackerConfig.tracker_file_path() do
+  defp tracker_config_for_workflow(workflow_path, tracker_config_path) do
+    case tracker_config_path do
       path when is_binary(path) -> TrackerConfig.load(path)
       nil -> TrackerConfig.load(TrackerConfig.default_tracker_file_path(workflow_path))
     end
