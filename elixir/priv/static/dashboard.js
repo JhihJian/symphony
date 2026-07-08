@@ -51,7 +51,7 @@
       return;
     }
 
-    if (element.__workflowMermaidSignature === signature) return;
+    if (element.__workflowMermaidSignature === signature && output.querySelector("svg")) return;
 
     var sequence = ++renderSequence;
     var renderId = "workflow-mermaid-" + sequence;
