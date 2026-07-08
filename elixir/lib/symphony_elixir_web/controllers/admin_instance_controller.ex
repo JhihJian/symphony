@@ -301,8 +301,7 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
     }
   end
 
-  defp auto_update_unavailable_error(%{__exception__: true} = error), do: Exception.message(error)
-  defp auto_update_unavailable_error(reason), do: "auto_update_unavailable: #{inspect(reason)}"
+  defp auto_update_unavailable_error(_reason), do: "当前 Hub 模式未启用自动更新进程，更新检查不可用。"
 
   defp encode_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 

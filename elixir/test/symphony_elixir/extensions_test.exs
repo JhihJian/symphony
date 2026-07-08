@@ -877,6 +877,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-connecting"
     assert dashboard_css =~ "[data-phx-main].phx-disconnected .status-badge-offline"
+    assert dashboard_css =~ "[data-phx-main].phx-client-error .status-badge-offline"
 
     dashboard_js = response(get(build_conn(), "/dashboard.js"), 200)
     assert dashboard_js =~ "WorkflowMermaid"
@@ -887,6 +888,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_js =~ ".render(renderId, definition)"
     assert dashboard_js =~ "renderWorkflowMermaidError"
     assert dashboard_js =~ "copyTextFromButton"
+    assert dashboard_js =~ "announceCopyButtonState"
+    assert dashboard_js =~ "document.getElementById(\"copy-status\")"
     assert dashboard_js =~ "copy.textContent"
     refute dashboard_js =~ "String(error && error.message ? error.message : error) +"
 
@@ -936,11 +939,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "进行中"
     assert html =~ "运行时长"
     assert html =~ "页面连接"
+    assert html =~ ~s(class="status-stack" role="status" aria-live="polite")
     assert html =~ "连接中"
     assert html =~ "实时连接"
     assert html =~ "连接断开"
     assert html =~ "复制 ID"
     assert html =~ "copy-button"
+    assert html =~ ~s(id="copy-status")
+    assert html =~ ~s(role="status")
+    assert html =~ ~s(aria-label="复制 MT-HTTP 的会话 ID")
+    assert html =~ ~s(data-copy-label="MT-HTTP")
     refute html =~ "onclick=\"navigator.clipboard"
     assert html =~ "Codex 更新"
     refute html =~ "Operations Dashboard"
@@ -1078,6 +1086,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Pick up new work."
     assert html =~ "缺失 outcome 处理"
     assert html =~ "protocol_blocked"
+    assert html =~ ~s(href="#stage-protocol_blocked")
+    assert html =~ ~s(id="stage-protocol_blocked")
     assert html =~ "Tracker 映射"
     assert html =~ "github"
     assert html =~ "In Progress"
