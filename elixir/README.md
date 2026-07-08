@@ -1414,7 +1414,8 @@ deployed SHA, remote SHA, next check time, rate-limit metadata, and any last err
 manual check/update triggers through `/api/v1/admin/auto-update`. Update execution is serialized
 with a host-local lock, refuses to proceed when the source checkout has local changes, fetches and
 fast-forwards `origin/main`, builds only after code changed, and restarts instances only after a
-successful build.
+successful build. If the auto-update state process is busy or unavailable, the management page and
+admin auto-update API return an `unavailable` snapshot instead of failing the whole operator view.
 
 Per-instance restart policy is read from `SYMPHONY_UPDATE_STRATEGY` in each instance `env` file:
 

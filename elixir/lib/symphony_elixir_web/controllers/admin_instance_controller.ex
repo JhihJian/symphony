@@ -39,17 +39,30 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   @spec auto_update(Conn.t(), map()) :: Conn.t()
   def auto_update(conn, _params) do
     with :ok <- authorize_admin_request(conn) do
-      json(conn, encode_datetimes(auto_update_module().snapshot(auto_update_opts())))
+      case safe_auto_update_call(fn -> auto_update_module().snapshot(auto_update_opts()) end) do
+        {:ok, snapshot} ->
+          json(conn, encode_datetimes(snapshot))
+
+        {:error, snapshot} ->
+          conn
+          |> put_status(503)
+          |> json(encode_datetimes(snapshot))
+      end
     end
   end
 
   @spec check_update(Conn.t(), map()) :: Conn.t()
   def check_update(conn, _params) do
     with :ok <- authorize_admin_request(conn) do
-      case auto_update_module().check_now(auto_update_opts()) do
-        {:ok, snapshot} ->
+      case safe_auto_update_call(fn -> auto_update_module().check_now(auto_update_opts()) end) do
+        {:ok, {:ok, snapshot}} ->
           conn
           |> put_status(202)
+          |> json(encode_datetimes(snapshot))
+
+        {:ok, {:error, snapshot}} ->
+          conn
+          |> put_status(503)
           |> json(encode_datetimes(snapshot))
 
         {:error, snapshot} ->
@@ -63,15 +76,20 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   @spec run_update(Conn.t(), map()) :: Conn.t()
   def run_update(conn, _params) do
     with :ok <- authorize_admin_request(conn) do
-      case auto_update_module().update_now(auto_update_opts()) do
-        {:ok, snapshot} ->
+      case safe_auto_update_call(fn -> auto_update_module().update_now(auto_update_opts()) end) do
+        {:ok, {:ok, snapshot}} ->
           conn
           |> put_status(202)
           |> json(encode_datetimes(snapshot))
 
-        {:error, snapshot} ->
+        {:ok, {:error, snapshot}} ->
           conn
           |> put_status(409)
+          |> json(encode_datetimes(snapshot))
+
+        {:error, snapshot} ->
+          conn
+          |> put_status(503)
           |> json(encode_datetimes(snapshot))
       end
     end
@@ -228,6 +246,34 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   defp auto_update_opts do
     Endpoint.config(:auto_update_opts) || []
   end
+
+  defp safe_auto_update_call(fun) do
+    {:ok, fun.()}
+  rescue
+    error ->
+      {:error, auto_update_unavailable_snapshot(error)}
+  catch
+    :exit, reason ->
+      {:error, auto_update_unavailable_snapshot(reason)}
+  end
+
+  defp auto_update_unavailable_snapshot(reason) do
+    %{
+      repo: "unknown",
+      branch: "main",
+      source_root: nil,
+      poll_interval_ms: 0,
+      current_sha: nil,
+      remote_sha: nil,
+      pending_update?: false,
+      next_check_at: nil,
+      last_check: %{status: "unavailable", error: auto_update_unavailable_error(reason), rate_limit: %{}, etag: nil},
+      last_update: %{status: "idle", instance_results: []}
+    }
+  end
+
+  defp auto_update_unavailable_error(%{__exception__: true} = error), do: Exception.message(error)
+  defp auto_update_unavailable_error(reason), do: "auto_update_unavailable: #{inspect(reason)}"
 
   defp encode_datetimes(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 

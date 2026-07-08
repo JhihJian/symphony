@@ -218,6 +218,14 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     defp owner(opts), do: Keyword.fetch!(opts, :owner)
   end
 
+  defmodule FailingAutoUpdate do
+    @moduledoc false
+
+    def snapshot(_opts), do: exit(:auto_update_busy)
+    def check_now(_opts), do: exit(:auto_update_busy)
+    def update_now(_opts), do: exit(:auto_update_busy)
+  end
+
   setup do
     original_endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
 
@@ -408,6 +416,30 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert [project_a, project_b] = update_payload["last_update"]["instance_results"]
     assert project_a["decision"] == "restarted"
     assert project_b["decision"] == "skipped_failed"
+  end
+
+  test "admin auto update unavailable state degrades instead of crashing" do
+    endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+    endpoint_config = Keyword.put(endpoint_config, :auto_update, FailingAutoUpdate)
+
+    Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+    SymphonyElixirWeb.Endpoint.config_change(%{SymphonyElixirWeb.Endpoint => endpoint_config}, [])
+
+    {:ok, _view, html} = live(build_conn(), "/admin/instances")
+
+    assert html =~ "GitHub main 自动更新"
+    assert html =~ "unavailable"
+    assert html =~ "auto_update_unavailable"
+
+    status_payload = json_response(get(build_conn(), "/api/v1/admin/auto-update"), 503)
+    assert status_payload["last_check"]["status"] == "unavailable"
+    assert status_payload["last_check"]["error"] =~ "auto_update_unavailable"
+
+    check_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/check", %{}), 503)
+    assert check_payload["last_check"]["status"] == "unavailable"
+
+    update_payload = json_response(post(build_conn(), "/api/v1/admin/auto-update/update", %{}), 503)
+    assert update_payload["last_check"]["status"] == "unavailable"
   end
 
   test "admin dashboard renders multi-instance overview and links" do
