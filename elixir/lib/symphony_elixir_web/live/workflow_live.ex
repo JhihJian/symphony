@@ -106,26 +106,30 @@ defmodule SymphonyElixirWeb.WorkflowLive do
 
             <% graph = workflow_mermaid(@projection, @selected_stage_id) %>
 
-            <div
-              id="workflow-mermaid-graph"
-              class="workflow-graph workflow-mermaid"
-              phx-hook="WorkflowMermaid"
-              data-mermaid-signature={graph.signature}
-              data-stage-map={graph.stage_map_json}
-              aria-label="Workflow stage graph"
-            >
-              <pre class="workflow-mermaid-source" data-mermaid-source><%= graph.definition %></pre>
-              <div class="workflow-mermaid-output" data-mermaid-output>
-                <p class="empty-state">正在渲染 Workflow 图...</p>
-              </div>
-            </div>
+            <div class="workflow-graph-inspector">
+              <div class="workflow-graph-stack">
+                <div
+                  id="workflow-mermaid-graph"
+                  class="workflow-graph workflow-mermaid"
+                  phx-hook="WorkflowMermaid"
+                  data-mermaid-signature={graph.signature}
+                  data-stage-map={graph.stage_map_json}
+                  aria-label="Workflow stage graph"
+                >
+                  <pre class="workflow-mermaid-source" data-mermaid-source><%= graph.definition %></pre>
+                  <div class="workflow-mermaid-output" data-mermaid-output>
+                    <p class="empty-state">正在渲染 Workflow 图...</p>
+                  </div>
+                </div>
 
-            <.workflow_mobile_flow_list stages={mobile_flow_stages(@projection)} />
+                <.workflow_mobile_flow_list stages={mobile_flow_stages(@projection)} />
+              </div>
+
+              <.selected_stage_panel stage={selected_stage(@projection, @selected_stage_id)} />
+            </div>
           </article>
 
           <div class="workflow-detail-strip">
-            <.selected_stage_panel stage={selected_stage(@projection, @selected_stage_id)} />
-
             <section class="section-card">
               <div class="section-header">
                 <div>
@@ -237,6 +241,9 @@ defmodule SymphonyElixirWeb.WorkflowLive do
                   </div>
                   <span class={if transition.known_outcome?, do: "state-badge state-badge-muted", else: "state-badge state-badge-warning"}>
                     <%= if transition.known_outcome?, do: "known outcome", else: "unknown outcome" %>
+                  </span>
+                  <span :if={!transition.target_exists?} class="state-badge state-badge-warning">
+                    unknown target
                   </span>
                 </div>
                 <p :if={stage.transitions == []} class="empty-state">无 outcome transition。</p>
@@ -354,27 +361,49 @@ defmodule SymphonyElixirWeb.WorkflowLive do
       <pre class="prompt-preview selected-stage-prompt"><%= @stage.prompt %></pre>
 
       <div class="transition-detail-list selected-stage-transitions">
-        <button
-          :for={transition <- @stage.transitions}
-          type="button"
-          class="transition-select-button"
-          data-stage-target={transition.to}
-          phx-click="select_stage"
-          phx-value-stage={transition.to}
-        >
-          <div class="workflow-route-token">
-            <span class="workflow-route-label">outcome</span>
-            <span class="mono"><%= transition.outcome %></span>
+        <%= for transition <- @stage.transitions do %>
+          <button
+            :if={transition.target_exists?}
+            type="button"
+            class={transition_select_class(transition)}
+            data-stage-target={transition.to}
+            phx-click="select_stage"
+            phx-value-stage={transition.to}
+          >
+            <.transition_content transition={transition} />
+          </button>
+          <div
+            :if={!transition.target_exists?}
+            class={transition_select_class(transition)}
+            data-stage-target={transition.to}
+            aria-disabled="true"
+          >
+            <.transition_content transition={transition} />
           </div>
-          <span class="workflow-edge-arrow" aria-hidden="true">→</span>
-          <div class="workflow-route-token">
-            <span class="workflow-route-label">target</span>
-            <span class="mono"><%= transition.to %></span>
-          </div>
-        </button>
+        <% end %>
         <p :if={@stage.transitions == []} class="empty-state">无 outcome transition。</p>
       </div>
     </section>
+    """
+  end
+
+  attr(:transition, :map, required: true)
+
+  defp transition_content(assigns) do
+    ~H"""
+    <div class="workflow-route-token">
+      <span class="workflow-route-label">outcome</span>
+      <span class="mono"><%= @transition.outcome %></span>
+    </div>
+    <span class="workflow-edge-arrow" aria-hidden="true">→</span>
+    <div class="workflow-route-token">
+      <span class="workflow-route-label">target</span>
+      <span class="mono"><%= @transition.to %></span>
+    </div>
+    <div class="workflow-node-badges transition-warning-badges">
+      <span :if={!@transition.known_outcome?} class="state-badge state-badge-warning">unknown outcome</span>
+      <span :if={!@transition.target_exists?} class="state-badge state-badge-warning">unknown target</span>
+    </div>
     """
   end
 
@@ -447,6 +476,16 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp diagnostic_class(_diagnostic), do: "diagnostic-item"
 
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  defp transition_select_class(transition) do
+    [
+      "transition-select-button",
+      !transition.known_outcome? && "workflow-edge-warning",
+      !transition.target_exists? && "transition-select-disabled"
+    ]
+    |> Enum.filter(& &1)
+    |> Enum.join(" ")
+  end
 
   defp default_selected_stage_id(%{workflow: %{start_stage: start_stage}}) when is_binary(start_stage), do: start_stage
   defp default_selected_stage_id(_projection), do: nil

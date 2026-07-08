@@ -1364,19 +1364,24 @@ The navigation bar also shows whether the browser session is a loopback `本机�
 
 The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
-detail links. Its first section summarizes the current context: whether the view is a single
-instance or Hub device runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path,
-the snapshot timestamp, and the `/api/v1/state` traceability entry.
+detail links. In Hub mode the first operator section prioritizes the current work queue and a
+compact Hub project focus list, so active attempts, workspace leases, manual attention, and the
+next project-level action are visible before lower-level Hub diagnostics. The context panel remains
+available for traceability and summarizes whether the view is a single instance or Hub device
+runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path, the snapshot timestamp,
+and the `/api/v1/state` entry. Empty rate-limit snapshots are hidden, and the full Hub device
+diagnostic matrix is behind an expandable details section after the compact health overview.
 
 The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
 the current `WORKFLOW.md` directly, renders a Mermaid stage graph with clickable nodes and
 outcome-labelled directed edges, marks `workflow.start_stage`, `workflow.terminal_stages`,
 blocked/protocol-blocked paths, and shows the selected stage plus
 `workflow.missing_outcome.max_retries`/`on_exhausted` separately from ordinary transitions.
-The stage graph is laid out as the full-width primary area on desktop. On narrow screens the page
-adds a text-first stage flow overview near the Mermaid graph so operators can read each stage,
-runtime count, and `outcome -> target` transition without horizontal scrolling or zooming.
-Selected-stage details, missing-outcome handling, and tracker stage-state mapping sit below it. It
+On desktop the stage graph and selected-stage inspector share the first workflow panel, so clicking
+a graph node updates visible stage details without forcing the operator below the graph. On narrow
+screens the page adds a text-first stage flow overview near the Mermaid graph so operators can read
+each stage, runtime count, and `outcome -> target` transition without horizontal scrolling or
+zooming. Missing-outcome handling and tracker stage-state mapping sit below it. It
 also previews each stage prompt, lists outcome targets, reports semantic warnings such as
 unreachable stages or non-terminal stages without transitions, and summarizes `TRACKER.yaml`
 stage-state coverage. Tracker provider details are

@@ -1072,6 +1072,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "阶段流向图"
     assert html =~ "workflow-mermaid"
+    assert html =~ "workflow-graph-inspector"
     assert html =~ "workflow-mobile-flow-list"
     assert html =~ "手机端 workflow stage 流向概览"
     assert html =~ "phx-hook=\"WorkflowMermaid\""
@@ -1103,6 +1104,91 @@ defmodule SymphonyElixir.ExtensionsTest do
            |> render_click() =~ "Implement the issue."
 
     assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Implement the issue."
+  end
+
+  test "workflow dashboard rejects invalid transitions before rendering clickable controls" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      workflow_stages: %{
+        "ready" => %{"prompt" => "Pick up new work.", "transitions" => %{"started" => "working", "mystery" => "ghost"}},
+        "working" => %{"prompt" => "Implement the issue.", "transitions" => %{"completed" => "done"}},
+        "done" => %{"prompt" => "Finished.", "transitions" => %{}},
+        "blocked" => %{"prompt" => "Human blocked.", "transitions" => %{}},
+        "protocol_blocked" => %{"prompt" => "Protocol blocked.", "transitions" => %{}}
+      },
+      workflow_outcomes: ["started", "completed"],
+      tracker_kind: "github",
+      tracker_owner: "acme",
+      tracker_repo: "widget",
+      tracker_project_number: 42
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowInvalidTransitionDashboardOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: static_snapshot(),
+        refresh: %{queued: true, coalesced: false, requested_at: DateTime.utc_now(), operations: ["poll"]}
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workflow")
+    document = Floki.parse_document!(html)
+
+    assert html =~ "Workflow 配置不可用"
+    assert html =~ "references unknown stage"
+    assert html =~ "references unknown outcome"
+    assert Floki.find(document, "button[data-stage-target=\"ghost\"]") == []
+  end
+
+  test "workflow dashboard renders unknown selected transitions as disabled controls" do
+    projection = %{
+      workflow: %{start_stage: "ready", stage_count: 1, transition_count: 1, terminal_stages: ["done"]},
+      runtime: %{available?: true, error: nil},
+      missing_outcome: %{
+        max_retries: 1,
+        on_exhausted: "done",
+        terminal_target?: true,
+        blocked_target?: false,
+        protocol_blocked_target?: false
+      },
+      tracker: nil,
+      diagnostics: [],
+      transitions: [],
+      stages: [
+        %{
+          id: "ready",
+          start?: true,
+          terminal?: false,
+          reachable?: true,
+          blocked?: false,
+          protocol_blocked?: false,
+          runtime: %{running: 0, retrying: 0, blocked: 0, total: 0},
+          tracker_state: nil,
+          prompt: "Pick up new work.",
+          transitions: [
+            %{outcome: "mystery", to: "ghost", known_outcome?: false, target_exists?: false}
+          ]
+        }
+      ]
+    }
+
+    html =
+      %{projection: projection, selected_stage_id: "ready", access_role: "本机管理员"}
+      |> SymphonyElixirWeb.WorkflowLive.render()
+      |> rendered_to_string()
+
+    document = Floki.parse_document!(html)
+
+    assert html =~ "transition-select-disabled"
+    assert html =~ "workflow-edge-warning"
+    assert html =~ "unknown outcome"
+    assert html =~ "unknown target"
+    assert Floki.find(document, "div[aria-disabled=\"true\"][data-stage-target=\"ghost\"]") != []
+    assert Floki.find(document, "button[data-stage-target=\"ghost\"]") == []
   end
 
   test "workflow dashboard renders sanitized mermaid ids for simple non-blocking flows" do

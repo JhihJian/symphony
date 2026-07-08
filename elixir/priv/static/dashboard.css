@@ -506,6 +506,13 @@ code {
   margin-top: 1rem;
 }
 
+.hub-device-compact-grid {
+  display: grid;
+  gap: 0.72rem;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin-top: 1rem;
+}
+
 .hub-summary-panel {
   min-width: 0;
   padding: 0.95rem;
@@ -513,6 +520,85 @@ code {
   border-radius: 8px;
   background: var(--card-muted);
   overflow-wrap: anywhere;
+}
+
+.hub-project-focus-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.hub-project-focus-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1.2fr) minmax(7rem, auto) minmax(9rem, 0.8fr) minmax(12rem, 1fr) minmax(9rem, 0.85fr);
+  gap: 0.65rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.68rem 0.78rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(247, 247, 248, 0.72);
+  color: var(--ink);
+  transition:
+    background 140ms ease,
+    border-color 140ms ease;
+}
+
+.hub-project-focus-row:hover {
+  border-color: rgba(8, 121, 95, 0.22);
+  background: white;
+}
+
+.hub-project-focus-main {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.hub-project-focus-main strong,
+.hub-project-focus-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-project-focus-main small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.hub-diagnostic-disclosure {
+  margin-top: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(247, 247, 248, 0.56);
+}
+
+.hub-diagnostic-disclosure summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.85rem;
+  align-items: center;
+  padding: 0.78rem 0.9rem;
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.hub-diagnostic-disclosure summary:focus-visible {
+  outline: 3px solid rgba(8, 121, 95, 0.3);
+  outline-offset: 3px;
+}
+
+.hub-diagnostic-disclosure summary small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-align: right;
+}
+
+.hub-diagnostic-grid {
+  padding: 0 0.9rem 0.9rem;
 }
 
 .operator-attention-card {
@@ -1257,6 +1343,19 @@ code {
   align-items: start;
 }
 
+.workflow-graph-inspector {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(18rem, 0.8fr);
+  gap: 1rem;
+  align-items: start;
+  margin-top: 1rem;
+  min-width: 0;
+}
+
+.workflow-graph-stack {
+  min-width: 0;
+}
+
 .workflow-side-stack {
   display: grid;
   gap: 1rem;
@@ -1265,7 +1364,7 @@ code {
 
 .workflow-detail-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 1rem;
   align-items: start;
 }
@@ -1281,7 +1380,7 @@ code {
 }
 
 .workflow-graph {
-  margin-top: 1rem;
+  margin-top: 0;
   overflow: hidden;
   max-width: 100%;
   padding-bottom: 0.25rem;
@@ -1380,10 +1479,14 @@ code {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  padding: 0.95rem;
+  border: 1px solid rgba(16, 163, 127, 0.24);
+  border-radius: 10px;
   border-color: rgba(16, 163, 127, 0.24);
   background:
     linear-gradient(180deg, rgba(232, 250, 244, 0.62), rgba(255, 255, 255, 0) 9rem),
     var(--card);
+  box-shadow: var(--shadow-sm);
 }
 
 .selected-stage-runtime {
@@ -1425,6 +1528,21 @@ code {
 
 .transition-select-button > * {
   min-width: 0;
+}
+
+.transition-warning-badges {
+  grid-column: 1 / -1;
+}
+
+.transition-select-disabled {
+  cursor: default;
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.transition-select-disabled:hover {
+  border-color: #f1d8a6;
+  background: #fff7e8;
 }
 
 .workflow-route-token {
@@ -1790,12 +1908,30 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .hub-project-focus-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .hub-project-focus-row > .event-meta {
+    grid-column: 1 / -1;
+  }
+
+  .hub-diagnostic-disclosure summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .hub-diagnostic-disclosure summary small {
+    text-align: left;
+  }
+
   .fleet-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .workflow-summary-grid,
   .workflow-layout,
+  .workflow-graph-inspector,
   .workflow-detail-strip {
     grid-template-columns: 1fr;
   }
@@ -1805,14 +1941,19 @@ code {
   }
 
   .workflow-mobile-flow-list {
-    order: 1;
     display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(14rem, 78%);
     gap: 0.65rem;
+    align-items: stretch;
+    overflow-x: auto;
+    overflow-y: hidden;
     margin-top: 1rem;
+    padding-bottom: 0.35rem;
+    -webkit-overflow-scrolling: touch;
   }
 
   .workflow-graph {
-    order: 2;
     margin-top: 0.85rem;
   }
 
@@ -1936,17 +2077,28 @@ code {
     padding: 1rem;
   }
 
+  .workflow-graph {
+    overflow-x: auto;
+    overflow-y: hidden;
+    opacity: 1;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .workflow-mermaid-output {
-    min-height: 5.5rem;
-    padding: 0.6rem;
+    justify-items: start;
+    width: max-content;
+    min-width: 44rem;
+    min-height: 11rem;
+    padding: 0.85rem;
+  }
+
+  .workflow-mermaid-output svg {
+    width: 44rem;
+    max-width: none;
   }
 
   .workflow-mermaid-output .empty-state {
     margin: 0;
-  }
-
-  .workflow-graph {
-    opacity: 0.72;
   }
 }
 

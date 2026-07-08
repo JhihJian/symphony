@@ -919,10 +919,10 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 
 这个页面是 operator 管理面，不是多租户 orchestrator：
 
-- `/` 是当前进程的单实例执行 Dashboard，优先展示运行中 Issue、Hub 活跃尝试、阻塞和重试队列，再展示速率限制、Hub 设备诊断和 token 状态。
+- `/` 是当前进程的执行 Dashboard，首屏优先展示当前工作队列和 Hub 项目焦点；Hub 项目焦点会把活跃尝试、workspace lease、manual attention 和下一步 project action 放在 Hub 设备诊断前。空的速率限制快照不显示，完整 Hub 诊断矩阵默认收在可展开区域里。
 - `/workflow` 是当前实例的只读 workflow-stage 配置可视化页面，读取该实例的 `WORKFLOW.md`
   和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
-  `current_stage` 运行态分布；页面不展示 token、`api_key` 或 env secret 原始值。
+  `current_stage` 运行态分布；桌面端的 Mermaid 图和当前阶段检查器同屏展示，便于点击节点后立即看到阶段详情。页面不展示 token、`api_key` 或 env secret 原始值。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
 - 实例总览在页面首屏之后后台加载，并带有总超时和单实例探测隔离；慢实例会显示成该实例自己的不可达/未知健康状态，不会让整个管理页或列表 API 长时间无响应。
 - 页面顶部固定提供“当前实例运行 / 流程配置 / 实例管理”三类入口，并标出当前访问身份是“本机管理员”还是“远程只读”。

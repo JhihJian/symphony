@@ -84,35 +84,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </div>
       </header>
 
-      <section class="section-card context-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title">当前上下文</h2>
-            <p class="section-copy">确认当前观察对象、配置来源和可追溯入口。</p>
-          </div>
-        </div>
-        <div class="context-grid">
-          <section class="context-item">
-            <p class="panel-label">运行面</p>
-            <strong><%= @runtime_context.scope %></strong>
-            <span class="muted"><%= @runtime_context.source %></span>
-          </section>
-          <section class="context-item">
-            <p class="panel-label">Workflow</p>
-            <span class="mono event-meta" title={@runtime_context.workflow_path}><%= @runtime_context.workflow_path %></span>
-          </section>
-          <section class="context-item">
-            <p class="panel-label">Tracker</p>
-            <span class="mono event-meta" title={@runtime_context.tracker_path}><%= @runtime_context.tracker_path %></span>
-          </section>
-          <section class="context-item">
-            <p class="panel-label">快照 / API</p>
-            <span class="mono event-meta"><%= @runtime_context.generated_at %></span>
-            <a class="issue-link" href="/api/v1/state">/api/v1/state</a>
-          </section>
-        </div>
-      </section>
-
       <%= if @payload[:error] do %>
         <section class="error-card">
           <h2 class="error-title">
@@ -122,47 +93,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
           </p>
         </section>
+
+        <.context_panel runtime_context={@runtime_context} />
       <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">运行中</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">当前运行时中的活跃 Issue 会话。</p>
-          </article>
-
-          <article :if={hub_device?(@payload)} class="metric-card">
-            <p class="metric-label">Hub 活跃尝试</p>
-            <p class="metric-value numeric"><%= hub_active_attempt_count(@payload) %></p>
-            <p class="metric-detail">Hub worker 生命周期中仍未完全收敛的活跃尝试。</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">重试中</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">等待下一个重试窗口的 Issue。</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">已阻塞</p>
-            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
-            <p class="metric-detail">因等待操作员输入或批准而暂停的 Issue。</p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Token 总数</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              输入 <%= format_int(@payload.codex_totals.input_tokens) %> / 输出 <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
-          </article>
-
-          <article class="metric-card">
-            <p class="metric-label">运行时长</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
-          </article>
-        </section>
-
         <section class="section-card operator-priority-panel">
           <div class="section-header">
             <div>
@@ -222,30 +155,92 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         </section>
 
-        <section class="section-card">
+        <section :if={hub_device?(@payload)} class="section-card hub-project-focus" id="hub-project-focus">
           <div class="section-header">
             <div>
-              <h2 class="section-title">速率限制</h2>
-              <p class="section-copy">可用时展示最新的上游速率限制快照。</p>
+              <h2 class="section-title">Hub 项目焦点</h2>
+              <p class="section-copy">优先列出仍有尝试、租约、运行记录或人工关注项的项目；点击项目可跳到完整明细行。</p>
             </div>
+            <a class="issue-link" href="#hub-project-details">完整项目明细</a>
           </div>
 
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+          <%= if hub_project_focus_projects(@payload) == [] do %>
+            <p class="empty-state">当前没有需要优先关注的 Hub project。</p>
+          <% else %>
+            <div class="hub-project-focus-list">
+              <a
+                :for={project <- hub_project_focus_projects(@payload)}
+                class="hub-project-focus-row"
+                href={"##{hub_project_anchor(project)}"}
+              >
+                <span class="hub-project-focus-main">
+                  <strong><%= project.project_id %></strong>
+                  <small><%= project.name || project.detail.identity.provider_scope_key || "unknown scope" %></small>
+                </span>
+                <span class={hub_project_badge_class(project.status)}><%= hub_project_status(project.status) %></span>
+                <span class="muted event-meta"><%= hub_poll_text(project.detail.poll_eligibility) %></span>
+                <span class="muted event-meta"><%= hub_active_attempt_project_summary(project) %></span>
+                <span class="muted event-meta">下一步：<%= hub_project_next_action(project) %></span>
+              </a>
+            </div>
+          <% end %>
         </section>
+
+        <section class="metric-grid">
+          <article class="metric-card">
+            <p class="metric-label">运行中</p>
+            <p class="metric-value numeric"><%= @payload.counts.running %></p>
+            <p class="metric-detail">当前运行时中的活跃 Issue 会话。</p>
+          </article>
+
+          <article :if={hub_device?(@payload)} class="metric-card">
+            <p class="metric-label">Hub 活跃尝试</p>
+            <p class="metric-value numeric"><%= hub_active_attempt_count(@payload) %></p>
+            <p class="metric-detail">Hub worker 生命周期中仍未完全收敛的活跃尝试。</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">重试中</p>
+            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
+            <p class="metric-detail">等待下一个重试窗口的 Issue。</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">已阻塞</p>
+            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
+            <p class="metric-detail">因等待操作员输入或批准而暂停的 Issue。</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">Token 总数</p>
+            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
+            <p class="metric-detail numeric">
+              输入 <%= format_int(@payload.codex_totals.input_tokens) %> / 输出 <%= format_int(@payload.codex_totals.output_tokens) %>
+            </p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">运行时长</p>
+            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
+            <p class="metric-detail">已完成和活跃会话累计的 Codex 运行时长。</p>
+          </article>
+        </section>
+
+        <.context_panel runtime_context={@runtime_context} />
 
         <%= if hub_device?(@payload) do %>
           <section class="section-card hub-device-overview">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Hub 设备总览</h2>
-                <p class="section-copy">显式 Hub mode 的设备级运行、安全阻断和下一轮 tick 状态。</p>
+                <p class="section-copy">默认只展示调度、容量、安全门和 provider 压力；完整迁移和 cutover 诊断可展开查看。</p>
               </div>
               <span class={hub_scheduler_badge_class(@payload.hub_device_observability.overview.scheduler.status)}>
                 <%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %>
               </span>
             </div>
 
-            <div class="hub-overview-grid">
+            <div class="hub-device-compact-grid">
               <article class="hub-summary-panel">
                 <p class="metric-label">Scheduler / Tick</p>
                 <p class="metric-value"><%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %></p>
@@ -262,6 +257,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   ready <%= hub_status_count(@payload, :ready_to_poll) %> · managed <%= hub_migration_count(@payload, "hub_managed") %> · blocked <%= hub_status_count(@payload, :blocked) %> · manual <%= hub_status_count(@payload, :manual_attention) %>
                 </p>
               </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Capacity / Workspace</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.capacity_workspace.active_attempt_count %></p>
+                <p class="metric-detail">
+                  start intents <%= @payload.hub_device_observability.overview.capacity_workspace.pending_start_intent_count %> · leases <%= @payload.hub_device_observability.overview.capacity_workspace.workspace_lease_count %> · waiting capacity <%= @payload.hub_device_observability.overview.capacity_workspace.waiting_capacity_count %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Cutover Gate</p>
+                <p class="metric-value"><%= hub_cutover_status(@payload) %></p>
+                <p class="metric-detail">
+                  allowed <%= hub_cutover_count(@payload, :allowed_count) %> · staged <%= hub_cutover_count(@payload, :staged_ready_count) %> · blocked <%= hub_cutover_count(@payload, :blocked_count) %> · manual <%= hub_cutover_count(@payload, :manual_attention_count) %>
+                </p>
+              </article>
+
+              <article class="hub-summary-panel">
+                <p class="metric-label">Provider 压力</p>
+                <p class="metric-value numeric"><%= @payload.hub_device_observability.overview.provider_governance.queue_pressure_count %></p>
+                <p class="metric-detail">
+                  backoff <%= @payload.hub_device_observability.overview.provider_governance.quota_backoff_count %> · circuit <%= @payload.hub_device_observability.overview.provider_governance.circuit_open_count %> · failure <%= @payload.hub_device_observability.overview.provider_governance.recent_failure_count %>
+                </p>
+              </article>
+            </div>
+
+            <details class="hub-diagnostic-disclosure">
+              <summary>
+                <span>完整 Hub 诊断矩阵</span>
+                <small>迁移、activation、cutover、replay、closure 等设备级证据</small>
+              </summary>
+
+              <div class="hub-overview-grid hub-diagnostic-grid">
+                <article class="hub-summary-panel">
+                  <p class="metric-label">Scheduler / Tick</p>
+                  <p class="metric-value"><%= hub_scheduler_status(@payload.hub_device_observability.overview.scheduler) %></p>
+                  <p class="metric-detail">
+                    下一轮 <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_reason || "暂无" %></span>
+                    · <span class="mono"><%= @payload.hub_device_observability.overview.scheduler.next_tick_at || "暂无" %></span>
+                  </p>
+                </article>
+
+                <article class="hub-summary-panel">
+                  <p class="metric-label">项目状态</p>
+                  <p class="metric-value numeric"><%= @payload.hub_device_observability.device.project_count %></p>
+                  <p class="metric-detail">
+                    ready <%= hub_status_count(@payload, :ready_to_poll) %> · managed <%= hub_migration_count(@payload, "hub_managed") %> · blocked <%= hub_status_count(@payload, :blocked) %> · manual <%= hub_status_count(@payload, :manual_attention) %>
+                  </p>
+                </article>
 
               <article class="hub-summary-panel">
                 <p class="metric-label">Migration Readiness</p>
@@ -493,10 +537,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   pending execution <%= hub_cutover_closure_report_packet_flag(@payload, :pending_execution) %> · pending retry <%= hub_cutover_closure_report_packet_flag(@payload, :pending_retry) %> · queued replay <%= hub_cutover_closure_report_packet_flag(@payload, :queued_replay) %> · legacy takeover <%= hub_cutover_closure_report_packet_flag(@payload, :legacy_takeover) %>
                 </p>
               </article>
-            </div>
+              </div>
+            </details>
           </section>
 
-          <section class="section-card hub-project-details">
+          <section class="section-card hub-project-details" id="hub-project-details">
             <div class="section-header">
               <div>
                 <h2 class="section-title">Hub 项目明细</h2>
@@ -745,6 +790,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </section>
         <% end %>
 
+        <section :if={@payload.rate_limits} class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">速率限制</h2>
+              <p class="section-copy">可用时展示最新的上游速率限制快照。</p>
+            </div>
+          </div>
+
+          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
+        </section>
+
         <section class="section-card" id="running-sessions">
           <div class="section-header">
             <div>
@@ -987,6 +1043,41 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  attr(:runtime_context, :map, required: true)
+
+  defp context_panel(assigns) do
+    ~H"""
+    <section class="section-card context-card">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">当前上下文</h2>
+          <p class="section-copy">确认当前观察对象、配置来源和可追溯入口。</p>
+        </div>
+      </div>
+      <div class="context-grid">
+        <section class="context-item">
+          <p class="panel-label">运行面</p>
+          <strong><%= @runtime_context.scope %></strong>
+          <span class="muted"><%= @runtime_context.source %></span>
+        </section>
+        <section class="context-item">
+          <p class="panel-label">Workflow</p>
+          <span class="mono event-meta" title={@runtime_context.workflow_path}><%= @runtime_context.workflow_path %></span>
+        </section>
+        <section class="context-item">
+          <p class="panel-label">Tracker</p>
+          <span class="mono event-meta" title={@runtime_context.tracker_path}><%= @runtime_context.tracker_path %></span>
+        </section>
+        <section class="context-item">
+          <p class="panel-label">快照 / API</p>
+          <span class="mono event-meta"><%= @runtime_context.generated_at %></span>
+          <a class="issue-link" href="/api/v1/state">/api/v1/state</a>
+        </section>
+      </div>
+    </section>
+    """
+  end
+
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
@@ -1143,6 +1234,64 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> List.wrap()
     |> Enum.filter(&(hub_project_active_attempt_count(&1) + hub_project_workspace_lease_count(&1) + hub_project_lifecycle_running_count(&1) > 0))
     |> Enum.take(4)
+  end
+
+  defp hub_project_focus_projects(payload) do
+    projects =
+      payload
+      |> get_in([:hub_device_observability, :projects])
+      |> List.wrap()
+
+    projects
+    |> Enum.filter(&hub_project_focus?/1)
+    |> case do
+      [] -> Enum.take(projects, 4)
+      focused -> Enum.take(focused, 6)
+    end
+  end
+
+  defp hub_project_focus?(project) do
+    hub_project_active_attempt_count(project) +
+      hub_project_workspace_lease_count(project) +
+      hub_project_lifecycle_running_count(project) > 0 or
+      hub_attention_text(project) != "暂无" or
+      hub_required_actions(project) != [] or
+      hub_required_acknowledgements(project) != []
+  end
+
+  defp hub_project_next_action(project) do
+    if hub_project_writeback_manual_attention?(project) do
+      "resolve_writeback_manual_attention"
+    else
+      hub_project_required_next_action(project)
+    end
+  end
+
+  defp hub_project_required_next_action(project) do
+    (hub_required_actions(project) ++ hub_required_acknowledgements(project))
+    |> Enum.map(&value_from_map(&1, :code))
+    |> Enum.find(&is_binary/1)
+    |> case do
+      nil -> hub_project_attention_action(project)
+      code -> code
+    end
+  end
+
+  defp hub_project_attention_action(project) do
+    cond do
+      hub_project_writeback_manual_attention?(project) ->
+        "resolve_writeback_manual_attention"
+
+      hub_attention_text(project) != "暂无" ->
+        hub_attention_text(project)
+
+      true ->
+        "继续观察"
+    end
+  end
+
+  defp hub_project_writeback_manual_attention?(project) do
+    hub_count(hub_nested_value(project, [:detail, :writeback, :counts], %{}), "manual_attention") > 0
   end
 
   defp hub_active_attempt_project_summary(project) do
@@ -2528,17 +2677,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp hub_attention_text(%{status: "backoff"}), do: "backoff"
   defp hub_attention_text(_project), do: "暂无"
 
-  defp hub_required_actions(%{migration_readiness: %{required_operator_actions: actions}}) when is_list(actions) do
-    Enum.take(actions, 4)
+  defp hub_required_actions(project) do
+    case hub_nested_value(project, [:migration_readiness, :required_operator_actions], []) do
+      actions when is_list(actions) -> Enum.take(actions, 4)
+      _actions -> []
+    end
   end
 
-  defp hub_required_actions(_project), do: []
-
-  defp hub_required_acknowledgements(%{activation_plan: %{required_acknowledgements: actions}}) when is_list(actions) do
-    Enum.take(actions, 4)
+  defp hub_required_acknowledgements(project) do
+    case hub_nested_value(project, [:activation_plan, :required_acknowledgements], []) do
+      actions when is_list(actions) -> Enum.take(actions, 4)
+      _actions -> []
+    end
   end
-
-  defp hub_required_acknowledgements(_project), do: []
 
   defp hub_short_plan_id(%{plan_id: plan_id}) when is_binary(plan_id), do: String.slice(plan_id, 0, 12)
   defp hub_short_plan_id(_plan), do: "unknown"
