@@ -110,6 +110,51 @@ defmodule SymphonyElixir.HubHostServiceProbeTest do
     end
   end
 
+  test "inactive disabled legacy config can remain as hub-managed project config" do
+    root = tmp_root("host-service-probe-hub-owned-config")
+    config_root = Path.join(root, "config")
+    runtime_root = Path.join(root, "runtime")
+    alpha_workspace = Path.join(root, "workspaces/alpha")
+
+    try do
+      write_legacy_project!(config_root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: alpha_workspace,
+        server_port: 20_001,
+        logs_root: Path.join(root, "runtime/alpha/logs")
+      )
+
+      registry =
+        registry([
+          project("alpha", migration_state: "hub_managed", workspace_root: alpha_workspace, port: 20_001)
+        ])
+
+      probe =
+        HostServiceProbe.build(registry,
+          config_root: config_root,
+          runtime_root: runtime_root,
+          deps:
+            deps(%{
+              systemctl_show: fn "symphony@alpha.service" ->
+                {:ok, "ActiveState=inactive\nSubState=dead\nResult=success\n"}
+              end,
+              systemctl_enabled: fn "symphony@alpha.service" -> {:ok, "disabled"} end,
+              listening_ports: fn -> {:ok, []} end
+            })
+        )
+
+      summary = ActivationPreflight.build(registry, probe: probe)
+      alpha = Enum.find(summary.projects, &(&1.project_id == "alpha"))
+
+      assert alpha.status == "safe_to_manage"
+      assert alpha.detected_legacy_ownership == []
+      assert ActivationPreflight.safe_to_manage?(summary, "alpha", :poll)
+      assert ActivationPreflight.safe_to_manage?(summary, "alpha", :writeback)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "probe failures become per-project unknown manual attention without leaking sensitive evidence" do
     root = tmp_root("host-service-probe-failures")
     config_root = Path.join(root, "config")

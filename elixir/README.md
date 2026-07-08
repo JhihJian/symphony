@@ -489,6 +489,11 @@ secrets, raw systemd output, raw config, provider bodies, prompts, transcripts, 
 are not exposed. Unavailable systemd, unreadable config, parse failures, unavailable port checks, or
 single-project probe failures become per-project unknown/manual-attention blockers instead of
 crashing the Hub runtime or optimistically passing.
+After a legacy unit is stopped and disabled, those project config files may remain as the Hub-owned
+project definition and rollback material. The host-service probe treats config-derived
+provider/workspace/runtime/log/state ownership as a blocker only when the legacy service is still
+active/enabled/failed or its legacy port is still listening; config presence alone is not a legacy
+owner for a `hub_managed` project.
 When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
 tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
 tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
@@ -898,6 +903,8 @@ Use readiness for migration preparation only; it does not execute a migration.
    provider/writeback executor or worker starter modes. After acknowledgement and `hub_managed`,
    inspect the cutover gate before enabling real Hub-owned actions; `allowed` or `staged_ready`
    explains which specific operations may proceed and why.
+   Stopped/disabled legacy project config files can stay in place when `HUB.yaml` references them;
+   the blocker to clear is the running/enabled legacy unit or listening legacy port.
 6. Optionally pass `--hub-activation-ack /path/to/ack.yaml` to load a serialized operator
    acknowledgement. The file should contain acknowledgement entries with `project_id`, `plan_id`,
    `source`, `created_at`, and confirmed action/risk codes. This only changes the safe ack summary;

@@ -71,6 +71,7 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
 
     runtime_probe = runtime_probe(project_id, runtime_dir, config_probe)
     port_probe = port_probe(project, project_id, service, config_probe, port_snapshot)
+    legacy_owner? = legacy_owner_present?(service_probe, port_probe)
     unknowns = unknown_sources(service_probe, config_probe, port_snapshot)
 
     %{
@@ -78,13 +79,13 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
       source: source,
       status: project_status(service_probe, config_probe, port_snapshot, unknowns),
       legacy_service: service_probe,
-      legacy_instances: legacy_instances(project_id, service, service_probe, config_probe),
-      instance_registry: instance_registry(project_id, service, config_probe),
-      provider_scope_owners: provider_scope_owners(project, project_id, config_probe),
-      workspace_owners: workspace_owners(project, project_id, config_probe),
-      runtime_path_owners: runtime_path_owners(project_id, runtime_probe),
-      log_path_owners: log_path_owners(project_id, config_probe),
-      state_path_owners: state_path_owners(project_id, runtime_probe),
+      legacy_instances: legacy_instances(project_id, service, service_probe, config_probe, legacy_owner?),
+      instance_registry: instance_registry(project_id, service, config_probe, legacy_owner?),
+      provider_scope_owners: provider_scope_owners(project, project_id, config_probe, legacy_owner?),
+      workspace_owners: workspace_owners(project, project_id, config_probe, legacy_owner?),
+      runtime_path_owners: runtime_path_owners(project_id, runtime_probe, legacy_owner?),
+      log_path_owners: log_path_owners(project_id, config_probe, legacy_owner?),
+      state_path_owners: state_path_owners(project_id, runtime_probe, legacy_owner?),
       port_owners: port_owners(project, port_probe),
       unknown_sources: unknowns
     }
@@ -409,12 +410,16 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
 
   defp port_list_entry(_port), do: []
 
-  defp legacy_instances(project_id, service, service_probe, config_probe) do
+  defp legacy_owner_present?(%{status: status}, _port_probe) when status in ["active", "enabled", "failed"], do: true
+  defp legacy_owner_present?(_service_probe, %{status: "ok", listening?: true}), do: true
+  defp legacy_owner_present?(_service_probe, _port_probe), do: false
+
+  defp legacy_instances(project_id, service, service_probe, config_probe, legacy_owner?) do
     cond do
       service_probe.status in ["active", "enabled", "failed"] ->
         [%{project_id: project_id, service: service, owner: service, status: service_probe.status, reason: "systemd_template_instance"}]
 
-      config_probe.config_present? ->
+      legacy_owner? and config_probe.config_present? ->
         [%{project_id: project_id, service: service, owner: service, status: config_probe.status, reason: "legacy_config_present"}]
 
       true ->
@@ -422,13 +427,13 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
     end
   end
 
-  defp instance_registry(project_id, service, %{config_present?: true, status: status}) do
+  defp instance_registry(project_id, service, %{config_present?: true, status: status}, true) do
     [%{project_id: project_id, service: service, owner: service, status: status, reason: "legacy_project_config"}]
   end
 
-  defp instance_registry(_project_id, _service, _config_probe), do: []
+  defp instance_registry(_project_id, _service, _config_probe, _legacy_owner?), do: []
 
-  defp provider_scope_owners(project, project_id, %{provider_scope_key: key, status: status})
+  defp provider_scope_owners(project, project_id, %{provider_scope_key: key, status: status}, true)
        when is_binary(key) do
     hub_key = get_in_map(project, [:tracker_summary, :provider_scope_key])
 
@@ -439,9 +444,9 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
     end
   end
 
-  defp provider_scope_owners(_project, _project_id, _config_probe), do: []
+  defp provider_scope_owners(_project, _project_id, _config_probe, _legacy_owner?), do: []
 
-  defp workspace_owners(project, project_id, %{workspace_root: workspace_root, status: status})
+  defp workspace_owners(project, project_id, %{workspace_root: workspace_root, status: status}, true)
        when is_binary(workspace_root) do
     hub_workspace_root = get_in_map(project, [:runtime_summary, :workspace_root])
 
@@ -460,9 +465,9 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
     end
   end
 
-  defp workspace_owners(_project, _project_id, _config_probe), do: []
+  defp workspace_owners(_project, _project_id, _config_probe, _legacy_owner?), do: []
 
-  defp runtime_path_owners(project_id, %{runtime_dir: runtime_dir, config_status: status, owner_present?: true}) do
+  defp runtime_path_owners(project_id, %{runtime_dir: runtime_dir, config_status: status, owner_present?: true}, true) do
     [
       %{
         project_id: project_id,
@@ -474,15 +479,15 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
     ]
   end
 
-  defp runtime_path_owners(_project_id, _runtime_probe), do: []
+  defp runtime_path_owners(_project_id, _runtime_probe, _legacy_owner?), do: []
 
-  defp log_path_owners(project_id, %{logs_root: logs_root, status: status}) when is_binary(logs_root) do
+  defp log_path_owners(project_id, %{logs_root: logs_root, status: status}, true) when is_binary(logs_root) do
     [%{project_id: project_id, log_path: path_fingerprint(logs_root), owner: project_id, status: status, reason: "legacy_env"}]
   end
 
-  defp log_path_owners(_project_id, _config_probe), do: []
+  defp log_path_owners(_project_id, _config_probe, _legacy_owner?), do: []
 
-  defp state_path_owners(project_id, %{state_path: state_path, config_status: status, owner_present?: true}) do
+  defp state_path_owners(project_id, %{state_path: state_path, config_status: status, owner_present?: true}, true) do
     [
       %{
         project_id: project_id,
@@ -494,7 +499,7 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
     ]
   end
 
-  defp state_path_owners(_project_id, _runtime_probe), do: []
+  defp state_path_owners(_project_id, _runtime_probe, _legacy_owner?), do: []
 
   defp port_owners(_project, %{status: "ok", listening?: true, matches_hub?: true} = port_probe) do
     [%{project_id: port_probe.project_id, port: port_probe.port, service: port_probe.service, status: "listening", reason: "legacy_dashboard_port"}]
@@ -518,8 +523,7 @@ defmodule SymphonyElixir.Hub.HostServiceProbe do
   defp maybe_unknown(sources, _condition, _source), do: sources
 
   defp project_status(_service_probe, _config_probe, _port_snapshot, [_first | _rest]), do: "unknown"
-  defp project_status(%{status: status}, _config_probe, _port_snapshot, _unknowns) when status in ["active", "enabled"], do: "conflict"
-  defp project_status(_service_probe, %{matches_hub?: true}, _port_snapshot, _unknowns), do: "conflict"
+  defp project_status(%{status: status}, _config_probe, _port_snapshot, _unknowns) when status in ["active", "enabled", "failed"], do: "conflict"
   defp project_status(_service_probe, _config_probe, _port_snapshot, _unknowns), do: "ok"
 
   defp maybe_mark_unknown(%{unknown_sources: unknowns} = probe, key, source) do
