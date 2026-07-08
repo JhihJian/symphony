@@ -2880,6 +2880,74 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "scheduler uses default interval when every project is paused" do
+    root = tmp_root("hub-runtime-scheduler-paused-idle")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"])
+      )
+
+      write_project!(root, "beta",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "beta"])
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          dispatch_enabled: false
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+          dispatch_enabled: false
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerPausedIdleRuntime)
+
+      runtime_opts = [
+        name: runtime_name,
+        config_path: hub_path,
+        scheduler_enabled: true,
+        provider_executor: success_executor(self())
+      ]
+
+      start_supervised!(
+        {Runtime, runtime_opts},
+        id: :hub_runtime_scheduler_paused_idle
+      )
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_scheduler: %{status: "scheduled", counts: %{run_count: count}, next_delay_ms: 30_000}} ->
+                   count >= 1
+
+                 _snapshot ->
+                   false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.next_reason == "default_interval"
+      assert snapshot.hub_scheduler.next_tick_at != nil
+
+      projects = Map.new(snapshot.hub_scheduler.projects, &{&1.project_id, &1})
+      assert projects["alpha"].allow_poll == false
+      assert projects["alpha"].eligibility_reason == "paused"
+      assert projects["beta"].allow_poll == false
+      assert projects["beta"].eligibility_reason == "paused"
+
+      run_count = snapshot.hub_scheduler.counts.run_count
+      Process.sleep(100)
+      assert Runtime.snapshot(runtime_name, 100).hub_scheduler.counts.run_count == run_count
+      refute_receive {:provider_candidate_scan, _request}, 100
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "scheduler next tick uses provider backoff and isolates provider failures" do
     root = tmp_root("hub-runtime-scheduler-backoff")
     hub_path = Path.join(root, "HUB.yaml")

@@ -368,7 +368,8 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
 `--hub-worker-starter real` 和 `--hub-activation-probe host-service`。安装脚本不会自动停止、
 disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置。生产切换到
 `hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
-workspace/runtime/log/state 路径和 cutover gate。
+workspace/runtime/log/state 路径和 cutover gate。所有项目暂停、配置无效或被 activation/cutover
+门禁阻断时，Hub scheduler 只按默认间隔复查，不应出现因暂停项目 `next_due_at` 已到而连续空转。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
 边界后按每个 registry project 的 `WORKFLOW.md` / `TRACKER.yaml` 读取候选，并在

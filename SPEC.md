@@ -1262,6 +1262,10 @@ Runtime entrypoint:
   `allow_poll`/`next_due_at`, provider backoff/quota/circuit state, and unresolved runtime-ledger
   state such as pending or unknown start intents, running attempts, retry/backoff, and manual
   attention.
+- Projects that are paused, config-invalid, activation-preflight blocked, or cutover-gate blocked
+  MUST NOT by themselves cause an immediate scheduler loop. If no project is pollable and no
+  project can become pollable due to time/backoff alone, the scheduler SHOULD use its default
+  interval before rechecking safe Hub summaries.
 - The Hub scheduler MUST be non-reentrant. A manual `/refresh` or equivalent
   `request_refresh/1` call that arrives while an automatic tick is running or already queued MUST
   either coalesce with that tick or return another explicit non-concurrent state. The returned

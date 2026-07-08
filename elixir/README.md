@@ -496,6 +496,9 @@ or unknown start intents, running attempts, retry/backoff, and manual attention.
 queued, the request returns a diagnostic queued/coalesced summary with `requested_at`,
 `next_tick_at`, and scheduler state instead of running a second concurrent tick. Without
 `--hub-scheduler`, manual refresh remains synchronous and keeps the previous behavior.
+Paused projects, config-invalid projects, and projects blocked by activation or cutover gates do not
+force an immediate next tick just because their safe snapshot has a current `next_due_at`; if no
+project can become due from time/backoff alone, Hub uses the default scheduler interval.
 Hub mode still does not start the legacy single-project orchestrator, run the final durable Hub
 scheduler, or take ownership of existing `symphony@project.service` instances. The default provider
 executor and default start handoff are skeleton boundaries and do not migrate the legacy

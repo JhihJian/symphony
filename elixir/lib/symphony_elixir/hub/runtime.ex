@@ -1792,9 +1792,17 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp earliest_project_due_at(plan, now) do
     plan.projects
+    |> Enum.filter(&reschedulable_project?/1)
     |> Enum.map(fn project -> project.backoff_until || project.next_due_at end)
     |> Enum.reject(&(is_nil(&1) or DateTime.compare(&1, now) == :lt))
     |> Enum.min_by(&DateTime.to_unix(&1, :millisecond), fn -> nil end)
+  end
+
+  defp reschedulable_project?(%{allow_poll: true}), do: true
+
+  defp reschedulable_project?(project) do
+    reason = project |> value(:eligibility) |> value(:reason) |> status_string()
+    reason in ["not_due", "backoff", "rate_limited", "circuit_open", "provider_unavailable", "scope_concurrency"]
   end
 
   defp unresolved_runtime_count(state) do

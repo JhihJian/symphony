@@ -507,7 +507,9 @@ disable, or restart existing `symphony@<project>.service` instances by itself.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of
-starting a concurrent one. This scheduler summary is exposed as `hub_scheduler` and
+starting a concurrent one. Paused projects and projects blocked by activation/cutover gates do not
+drive an immediate next tick; when no project can become due by time/backoff alone, Hub falls back
+to the default scheduler interval. This scheduler summary is exposed as `hub_scheduler` and
 `hub_runtime.scheduler`; it is still not the final durable Hub scheduler, provider writeback
 executor, distributed lock, or migration of existing `symphony@project.service` instances.
 
