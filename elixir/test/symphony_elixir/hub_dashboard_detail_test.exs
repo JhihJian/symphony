@@ -68,7 +68,10 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "入口：展开 Hub 项目明细确认 writeback 证据；当前页只读。"
     assert html =~ "入口：展开 Hub 项目明细查看证据；当前页只读。"
     assert html =~ ~s(href="#hub-project-details")
-    refute html =~ ~s(class="hub-project-focus-row" href="#hub-project-gamma")
+    assert html =~ ~s(data-open-details="hub-project-details")
+    assert html =~ ~s(data-focus-target="hub-project-alpha")
+    assert html =~ ~s(data-focus-target="hub-project-gamma")
+    assert html =~ ~s(id="hub-project-alpha" tabindex="-1")
     assert html =~ ~s(id="hub-project-alpha")
     refute html =~ ~s(href="#running-sessions">查看运行明细)
     assert html =~ ~s(href="#blocked-sessions")

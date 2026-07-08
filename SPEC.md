@@ -3177,6 +3177,9 @@ Enablement (extension):
 - Hub project focus rows SHOULD name both the next operator-readable action and the evidence entry
   point or execution boundary, especially when the page is read-only or when the action requires a
   different management surface or command-line operation.
+- Links from compact Hub focus rows into high-detail expandable sections SHOULD open the containing
+  section and focus the target row, so operators are not sent to content that remains hidden behind
+  a closed disclosure.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 
@@ -3204,6 +3207,11 @@ If provided:
 - Diagnostic summaries intended for the first workflow view SHOULD be operator-readable before raw
   diagnostic codes or English parser messages; raw codes and messages MAY remain available in the
   detailed diagnostics list.
+- When a diagnostic can be tied to a specific stage, the page SHOULD provide a direct action to
+  select or navigate to that affected stage in addition to the full diagnostics list.
+- Prompt previews SHOULD be labelled as read-only preview regions when they are keyboard focusable
+  or scrollable, so keyboard and assistive-technology users do not mistake raw prompt text for an
+  executable control.
 - When `TRACKER.yaml` is available, the page SHOULD summarize tracker kind, stage-to-provider-state
   mapping, and whether every workflow stage has a provider-visible state mapping.
 - The page MUST NOT render raw credential values, including `api_key`, token, env secret, password,
@@ -3377,6 +3385,9 @@ If implemented:
   environment, workspace root, log directory, port, and in-memory orchestrator state.
 - The management surface MAY discover registered instances from implementation-defined config
   directories and MAY aggregate service-manager state plus each instance's observability API.
+- The management surface SHOULD distinguish the current control console from the managed project
+  instances, including when managed instances are stopped or unreachable, so operators do not
+  mistake a managed service state for the state of the console they are using.
 - Stopped, failed, or unreachable instances MUST be represented as per-instance health states and
   MUST NOT prevent other instances from being shown.
 - Fleet-level issue counts SHOULD identify whether they are computed from all known instances or
@@ -3394,6 +3405,8 @@ If implemented:
   does not hide already available operator context.
 - Timer and lifecycle controls SHOULD be disabled with an operator-readable reason when the current
   state makes the requested action a no-op, for example enabling an already enabled timer.
+- Timer actions SHOULD include visible confirmation context when known managed instances are
+  unreachable or unknown, because fleet issue counts may be incomplete at the time of the action.
 - The management surface MAY coordinate deployment updates for the Symphony program itself. If it
   does, it SHOULD poll the upstream source with conditional requests where available, serialize
   update execution, refuse updates when the source checkout has local changes, build before any

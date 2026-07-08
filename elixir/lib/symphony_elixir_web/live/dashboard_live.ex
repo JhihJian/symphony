@@ -122,7 +122,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <a class="issue-link" href="#running-sessions">查看运行明细</a>
                 <% else %>
                   <%= if hub_active_attempt_count(@payload) > 0 do %>
-                    <a class="issue-link" href={"##{hub_primary_attention_anchor(@payload)}"}>查看 Hub 活跃尝试</a>
+                    <a
+                      class="issue-link"
+                      href={"##{hub_primary_attention_anchor(@payload)}"}
+                      data-open-details="hub-project-details"
+                      data-focus-target={hub_primary_attention_anchor(@payload)}
+                    >查看 Hub 活跃尝试</a>
                   <% else %>
                     暂无运行中会话
                   <% end %>
@@ -164,7 +169,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
               </span>
             </div>
             <div class="operator-attention-actions">
-              <a :for={project <- hub_active_attempt_projects(@payload)} class="issue-link operator-attention-link" href={"##{hub_project_anchor(project)}"}>
+              <a
+                :for={project <- hub_active_attempt_projects(@payload)}
+                class="issue-link operator-attention-link"
+                href={"##{hub_project_anchor(project)}"}
+                data-open-details="hub-project-details"
+                data-focus-target={hub_project_anchor(project)}
+              >
                 <span><%= project.project_id %></span>
                 <small><%= hub_active_attempt_project_summary(project) %></small>
               </a>
@@ -178,7 +189,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <h2 class="section-title">Hub 项目焦点</h2>
               <p class="section-copy">优先列出仍有尝试、租约、运行记录或人工关注项的项目；点击项目会定位到高级诊断入口，展开后查看 workspace/attempt 明细。</p>
             </div>
-            <a class="issue-link" href="#hub-project-details">完整项目明细</a>
+            <a class="issue-link" href="#hub-project-details" data-open-details="hub-project-details">完整项目明细</a>
           </div>
 
           <%= if hub_project_focus_projects(@payload) == [] do %>
@@ -188,7 +199,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <a
                 :for={project <- hub_project_focus_projects(@payload)}
                 class="hub-project-focus-row"
-                href="#hub-project-details"
+                href={"##{hub_project_anchor(project)}"}
+                data-open-details="hub-project-details"
+                data-focus-target={hub_project_anchor(project)}
               >
                 <span class="hub-project-focus-main">
                   <strong><%= project.project_id %></strong>
@@ -588,7 +601,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </tr>
                   </thead>
                   <tbody>
-                    <tr :for={project <- @payload.hub_device_observability.projects} id={hub_project_anchor(project)}>
+                    <tr :for={project <- @payload.hub_device_observability.projects} id={hub_project_anchor(project)} tabindex="-1">
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= project.project_id %></span>

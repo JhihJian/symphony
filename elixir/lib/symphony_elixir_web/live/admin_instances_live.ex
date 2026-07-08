@@ -245,6 +245,20 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         </section>
       <% end %>
 
+      <section class="admin-control-boundary" aria-label="当前控制台和被管理实例边界">
+        <div class="admin-boundary-item">
+          <p class="panel-label">当前控制台</p>
+          <strong><%= current_console_label() %> <%= current_console_port_text() %></strong>
+          <span class="muted">你正在操作的是这个页面所在的 Phoenix 管理面。</span>
+        </div>
+        <div class="admin-boundary-item">
+          <p class="panel-label">被管理实例</p>
+          <strong><%= managed_instance_ports_text(@instances, @instances_loaded?) %></strong>
+          <span class="muted">列表里的 stopped、不可达或未知，只表示对应 `symphony@...` 项目实例状态。</span>
+        </div>
+        <p class="admin-boundary-note">被管理实例停止不代表当前控制台停止；先看这一条边界，再判断下面的实例风险。</p>
+      </section>
+
       <section :if={@instances_loading? && !@instances_loaded?} id="admin-write-action-note" class="notice-banner notice-banner-warning" role="status" aria-live="polite" aria-busy="true">
         <strong>实例状态加载中，写操作已临时锁定</strong>
         <p>已读取页面配置；正在探测实例 systemd 和 `/api/v1/state`。自动更新与 timer 独立加载，慢实例会单独标记为不可达或未知。</p>
@@ -442,9 +456,9 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-label="启用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-label="禁用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-label="手动触发 symphony-update.service" title={update_timer_action_title(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} aria-label="启用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "enable", @instances_loading?, @instances_loaded?)} phx-confirm={update_timer_confirm("enable", @instances_loaded?, @instances)} phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} aria-label="禁用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "disable", @instances_loading?, @instances_loaded?)} phx-confirm={update_timer_confirm("disable", @instances_loaded?, @instances)} phx-disable-with="禁用中...">禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} aria-label="手动触发 symphony-update.service" title={update_timer_action_title(@local_admin?, @update_timer, "trigger", @instances_loading?, @instances_loaded?)} phx-confirm={update_timer_confirm("trigger", @instances_loaded?, @instances)} phx-disable-with="触发中...">手动触发</button>
           </div>
         </div>
 
@@ -526,7 +540,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <span class="instance-name"><%= instance.name %></span>
               <span class="muted mono"><%= instance.service %></span>
             </div>
-            <span class={instance_badge_class(instance.status)}><%= instance.status %></span>
+            <div class="instance-card-badges">
+              <span class="state-badge state-badge-muted">被管理实例</span>
+              <span class={instance_badge_class(instance.status)}><%= instance.status %></span>
+            </div>
           </header>
 
           <div class="instance-card-body">
@@ -886,7 +903,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
       socket
       |> start_async(:instances_state, fn -> list_instances_with_timeout() end)
       |> maybe_start_auto_update_async(auto_update)
-      |> start_async(:update_timer_state, fn -> update_timer_snapshot() end)
+      |> start_async(:update_timer_state, fn -> update_timer_snapshot_with_timeout() end)
     else
       socket
     end
@@ -917,18 +934,45 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
 
   defp list_instances_with_timeout do
     timeout_ms = admin_instances_timeout_ms()
-    task = Task.async(fn -> registry().list_instances(registry_opts()) end)
+
+    case run_with_timeout(fn -> registry().list_instances(registry_opts()) end, timeout_ms) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:instance_registry_exit, reason}}
+      :timeout -> {:error, {:instance_registry_timeout, timeout_ms}}
+    end
+  end
+
+  defp update_timer_snapshot_with_timeout do
+    timeout_ms = admin_instances_timeout_ms()
+
+    case run_with_timeout(fn -> update_timer_snapshot() end, timeout_ms) do
+      {:ok, snapshot} -> snapshot
+      {:exit, reason} -> update_timer_unavailable_snapshot(reason)
+      :timeout -> update_timer_unavailable_snapshot("超过 #{timeout_ms}ms 未返回")
+    end
+  end
+
+  defp run_with_timeout(fun, timeout_ms) do
+    task = start_timeout_task(fun)
 
     case Task.yield(task, timeout_ms) do
       {:ok, result} ->
-        result
+        {:ok, result}
 
       {:exit, reason} ->
-        {:error, {:instance_registry_exit, reason}}
+        {:exit, reason}
 
       nil ->
         Task.shutdown(task, :brutal_kill)
-        {:error, {:instance_registry_timeout, timeout_ms}}
+        :timeout
+    end
+  end
+
+  defp start_timeout_task(fun) do
+    if Process.whereis(SymphonyElixir.TaskSupervisor) do
+      Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fun)
+    else
+      Task.async(fun)
     end
   end
 
@@ -1296,6 +1340,68 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     end
   end
 
+  defp current_console_port_text do
+    port =
+      endpoint_http_port() ||
+        SymphonyElixir.HttpServer.bound_port() ||
+        endpoint_url_port()
+
+    case port do
+      value when is_integer(value) -> ":#{value}"
+      _value -> "当前端口"
+    end
+  end
+
+  defp current_console_label do
+    if Endpoint.config(:orchestrator) == SymphonyElixir.Hub.Runtime do
+      "Hub 管理控制台"
+    else
+      "当前管理控制台"
+    end
+  end
+
+  defp endpoint_http_port do
+    case Endpoint.config(:http) do
+      http when is_list(http) -> Keyword.get(http, :port)
+      _http -> nil
+    end
+  end
+
+  defp endpoint_url_port do
+    case Endpoint.config(:url) do
+      url when is_list(url) -> Keyword.get(url, :port)
+      _url -> nil
+    end
+  end
+
+  defp managed_instance_ports_text(_instances, false), do: "项目实例端口加载中"
+
+  defp managed_instance_ports_text(instances, true) do
+    ports =
+      instances
+      |> Enum.map(&(Map.get(&1, :port) || Map.get(&1, "port")))
+      |> Enum.filter(&is_integer/1)
+      |> Enum.sort()
+
+    case ports do
+      [] ->
+        "项目实例端口未登记"
+
+      [port] ->
+        "项目实例端口 #{port}"
+
+      ports ->
+        first = List.first(ports)
+        last = List.last(ports)
+
+        if Enum.to_list(first..last) == ports do
+          "项目实例端口 #{first}-#{last}"
+        else
+          "项目实例端口 #{Enum.join(ports, ", ")}"
+        end
+    end
+  end
+
   defp instance_entry_link_enabled?(local_admin?, instance, kind) do
     is_nil(instance_entry_disabled_reason(local_admin?, instance, kind))
   end
@@ -1533,6 +1639,33 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp update_timer_action_enabled?(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
     is_nil(update_timer_action_disabled_reason(local_admin?, snapshot, action, instances_loading?, instances_loaded?))
   end
+
+  defp update_timer_confirm("enable", instances_loaded?, instances) do
+    update_timer_risk_prefix(instances_loaded?, instances) <>
+      "确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。"
+  end
+
+  defp update_timer_confirm("disable", instances_loaded?, instances) do
+    update_timer_risk_prefix(instances_loaded?, instances) <>
+      "确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。"
+  end
+
+  defp update_timer_confirm("trigger", instances_loaded?, instances) do
+    update_timer_risk_prefix(instances_loaded?, instances) <> "确认手动触发 symphony-update.service？"
+  end
+
+  defp update_timer_risk_prefix(true, instances) do
+    unavailable = unavailable_instance_count(instances)
+    total = length(instances)
+
+    if unavailable > 0 and total > 0 do
+      "当前 #{unavailable}/#{total} 个被管理实例不可达或未知，Issue 数可能未知；"
+    else
+      ""
+    end
+  end
+
+  defp update_timer_risk_prefix(_instances_loaded?, _instances), do: ""
 
   defp update_timer_action_describedby(local_admin?, snapshot, action, instances_loading?, instances_loaded?) do
     cond do

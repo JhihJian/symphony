@@ -193,6 +193,89 @@
     watchWorkflowMermaid();
   }
 
+  function fragmentFromHref(href) {
+    if (!href) return null;
+
+    var hashIndex = href.indexOf("#");
+    if (hashIndex < 0 || hashIndex === href.length - 1) return null;
+
+    return decodeURIComponent(href.slice(hashIndex + 1));
+  }
+
+  function elementById(id) {
+    if (!id) return null;
+    return document.getElementById(id);
+  }
+
+  function openDetailsById(id) {
+    var details = elementById(id);
+    if (!details || details.tagName.toLowerCase() !== "details") return null;
+
+    details.open = true;
+    return details;
+  }
+
+  function openContainingDetails(target) {
+    if (!target || !target.closest) return;
+
+    var details = target.closest("details");
+    if (details) details.open = true;
+  }
+
+  function focusTargetById(id) {
+    var target = elementById(id);
+    if (!target) return;
+
+    openContainingDetails(target);
+
+    if (!target.hasAttribute("tabindex")) {
+      target.setAttribute("tabindex", "-1");
+    }
+
+    try {
+      target.focus({preventScroll: true});
+    } catch (_error) {
+      target.focus();
+    }
+
+    if (typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({block: "center", inline: "nearest"});
+    }
+  }
+
+  function openDetailsForCurrentHash() {
+    var targetId = window.location.hash ? decodeURIComponent(window.location.hash.slice(1)) : "";
+    var target = elementById(targetId);
+
+    if (!target) return;
+
+    openContainingDetails(target);
+
+    if (target.closest && target.closest("#hub-project-details")) {
+      window.setTimeout(function () {
+        focusTargetById(targetId);
+      }, 0);
+    }
+  }
+
+  function handleDetailsAnchorClick(event) {
+    var trigger = event.target.closest("[data-open-details], [data-scroll-target]");
+    if (!trigger) return;
+
+    var detailsId = trigger.getAttribute("data-open-details");
+    var focusTarget = trigger.getAttribute("data-focus-target") || trigger.getAttribute("data-scroll-target") || fragmentFromHref(trigger.getAttribute("href"));
+
+    if (detailsId) {
+      openDetailsById(detailsId);
+    }
+
+    if (focusTarget) {
+      window.setTimeout(function () {
+        focusTargetById(focusTarget);
+      }, 0);
+    }
+  }
+
   function resetCopyButton(button, delay) {
     clearTimeout(button.__copyTimer);
     button.__copyTimer = window.setTimeout(function () {
@@ -240,10 +323,17 @@
     copyTextFromButton(button);
   });
 
+  document.addEventListener("click", handleDetailsAnchorClick);
+  window.addEventListener("hashchange", openDetailsForCurrentHash);
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", startWorkflowMermaidRendering);
+    document.addEventListener("DOMContentLoaded", function () {
+      startWorkflowMermaidRendering();
+      openDetailsForCurrentHash();
+    });
   } else {
     startWorkflowMermaidRendering();
+    openDetailsForCurrentHash();
   }
 
   window.SymphonyDashboardHooks = Object.assign(window.SymphonyDashboardHooks || {}, {

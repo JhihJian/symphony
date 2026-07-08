@@ -578,6 +578,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "当前访问：本机管理员"
     assert html =~ "流程配置"
     assert html =~ "集中观察"
+    assert html =~ "当前控制台"
+    assert html =~ "管理控制台"
+    assert html =~ "被管理实例"
+    assert html =~ "项目实例端口 20001-20002"
+    assert html =~ "被管理实例停止不代表当前控制台停止"
     assert html =~ "fleet-summary"
     assert html =~ "不可达/未知实例"
     assert html =~ "不应被解读为 0 风险"
@@ -664,9 +669,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ ~s(phx-confirm="确认执行 GitHub main 更新)
     assert html =~ ~s(phx-disable-with="更新中...")
     assert html =~ ~s(phx-disable-with="检查中...")
-    assert html =~ ~s(phx-confirm="确认启用并立即启动 symphony-update.timer)
-    assert html =~ ~s(phx-confirm="确认禁用 symphony-update.timer)
-    assert html =~ ~s(phx-confirm="确认手动触发 symphony-update.service)
+    assert html =~ "当前 1/2 个被管理实例不可达或未知，Issue 数可能未知；确认启用并立即启动 symphony-update.timer"
+    assert html =~ "当前 1/2 个被管理实例不可达或未知，Issue 数可能未知；确认禁用 symphony-update.timer"
+    assert html =~ "当前 1/2 个被管理实例不可达或未知，Issue 数可能未知；确认手动触发 symphony-update.service"
     assert html =~ ~s(phx-confirm="确认启动 symphony@project-a.service)
     assert html =~ ~s(phx-confirm="确认停止 symphony@project-a.service)
     assert html =~ ~s(phx-confirm="确认重启 symphony@project-a.service)
@@ -919,6 +924,9 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     css = response(get(build_conn(), "/dashboard.css"), 200)
 
     assert css =~ ".fleet-summary"
+    assert css =~ ".admin-control-boundary"
+    assert css =~ ".admin-boundary-item"
+    assert css =~ ".instance-card-badges"
     assert css =~ ".instance-card-grid"
     assert css =~ ".instance-card"
     assert css =~ ".health-panel"
@@ -936,6 +944,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".admin-load-lanes"
     assert css =~ ".disabled-link"
     assert css =~ ".diagnostic-guidance"
+    assert css =~ ".workflow-diagnostic-stage-link"
+    assert css =~ ".transition-select-action"
     assert css =~ ".workspace-nav"
     assert css =~ ".notice-banner"
     assert css =~ ".operator-attention-card"

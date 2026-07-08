@@ -113,9 +113,17 @@ defmodule SymphonyElixirWeb.WorkflowLive do
           <article class={workflow_diagnostic_chip_class(@projection.diagnostics)}>
             <p class="metric-label">诊断提醒</p>
             <p class="workflow-chip-value numeric"><%= workflow_problem_diagnostic_count(@projection.diagnostics) %></p>
-            <p class="metric-detail">
+            <div class="metric-detail workflow-diagnostic-actions">
               <a class="issue-link" href="#workflow-diagnostics"><%= workflow_diagnostic_summary_text(@projection.diagnostics) %></a>
-            </p>
+              <a
+                :if={workflow_primary_problem_stage(@projection.diagnostics)}
+                class="issue-link workflow-diagnostic-stage-link"
+                href={"#stage-#{workflow_primary_problem_stage(@projection.diagnostics)}"}
+                phx-click="select_stage"
+                phx-value-stage={workflow_primary_problem_stage(@projection.diagnostics)}
+                data-scroll-target={"stage-#{workflow_primary_problem_stage(@projection.diagnostics)}"}
+              >查看 <%= workflow_primary_problem_stage(@projection.diagnostics) %> 阶段</a>
+            </div>
           </article>
         </section>
 
@@ -235,7 +243,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
                 </div>
               </div>
 
-              <pre class="prompt-preview"><%= stage.prompt %></pre>
+              <pre class="prompt-preview" role="region" tabindex="0" aria-label={"#{stage.id} 阶段 prompt 预览，可滚动"}><%= stage.prompt %></pre>
 
               <div class="stage-detail-meta">
                 <span>running <strong class="numeric"><%= stage.runtime.running %></strong></span>
@@ -301,6 +309,14 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             <p :if={diagnostic_operator_guidance(diagnostic)} class="diagnostic-guidance">
               <%= diagnostic_operator_guidance(diagnostic) %>
             </p>
+            <a
+              :if={diagnostic_stage_target(diagnostic)}
+              class="issue-link workflow-diagnostic-stage-link"
+              href={"#stage-#{diagnostic_stage_target(diagnostic)}"}
+              phx-click="select_stage"
+              phx-value-stage={diagnostic_stage_target(diagnostic)}
+              data-scroll-target={"stage-#{diagnostic_stage_target(diagnostic)}"}
+            >查看 <%= diagnostic_stage_target(diagnostic) %> 阶段</a>
           </div>
         </article>
       </div>
@@ -385,7 +401,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
         <% end %>
       </p>
 
-      <pre class="prompt-preview selected-stage-prompt"><%= @stage.prompt %></pre>
+      <pre class="prompt-preview selected-stage-prompt" role="region" tabindex="0" aria-label={"#{@stage.id} 阶段 prompt 预览，可滚动"}><%= @stage.prompt %></pre>
 
       <div class="transition-detail-list selected-stage-transitions">
         <%= for transition <- @stage.transitions do %>
@@ -431,6 +447,9 @@ defmodule SymphonyElixirWeb.WorkflowLive do
       <span :if={!@transition.known_outcome?} class="state-badge state-badge-warning">unknown outcome</span>
       <span :if={!@transition.target_exists?} class="state-badge state-badge-warning">unknown target</span>
     </div>
+    <span class="transition-select-action">
+      <%= if @transition.target_exists?, do: "查看目标阶段", else: "目标阶段不可用" %>
+    </span>
     """
   end
 
@@ -548,10 +567,10 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   end
 
   defp diagnostic_brief(%{code: :unreachable_stage, message: message}) do
-    %{"stage" => stage, "start" => start} =
-      Regex.named_captures(~r/^Stage (?<stage>.+) is not reachable from start_stage (?<start>.+)\.$/, message)
-
-    "#{stage} 无法从 #{start} 到达；确认是否废弃或补 transition。"
+    case Regex.named_captures(~r/^Stage (?<stage>.+) is not reachable from start_stage (?<start>.+)\.$/, message) do
+      %{"stage" => stage, "start" => start} -> "#{stage} 无法从 #{start} 到达；确认是否废弃或补 transition。"
+      _unknown -> "unreachable_stage：#{message}"
+    end
   end
 
   defp diagnostic_brief(%{code: code, message: message}) do
@@ -571,6 +590,21 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   end
 
   defp diagnostic_operator_guidance(_diagnostic), do: nil
+
+  defp workflow_primary_problem_stage(diagnostics) when is_list(diagnostics) do
+    diagnostics
+    |> workflow_primary_problem_diagnostic()
+    |> diagnostic_stage_target()
+  end
+
+  defp diagnostic_stage_target(%{code: :unreachable_stage, message: message}) do
+    case Regex.named_captures(~r/^Stage (?<stage>.+) is not reachable from start_stage (?<start>.+)\.$/, message) do
+      %{"stage" => stage} -> stage
+      _unknown -> nil
+    end
+  end
+
+  defp diagnostic_stage_target(_diagnostic), do: nil
 
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
 

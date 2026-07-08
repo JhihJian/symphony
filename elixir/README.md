@@ -1369,11 +1369,11 @@ compact Hub project focus list, so active attempts, workspace leases, manual att
 next project-level action are visible before lower-level Hub diagnostics. Hub project next actions
 are rendered as operator-readable action text on their own row, with a second line that names the
 evidence entry point and the read-only boundary. Hub project focus rows point to the expandable Hub
-project detail entry instead of jumping into content that is closed by default, and when the normal
-running-session count is zero but Hub attempts are still active, the first-screen link points to the
-relevant Hub project instead of the empty running-session section. The page header also labels the
-current access role, whether the first snapshot is loaded, and that the dashboard is a read-only observation
-surface. The context panel remains
+project detail entry instead of jumping into content that is closed by default；点击后会自动展开
+Hub 项目明细并聚焦目标 project 行。When the normal running-session
+count is zero but Hub attempts are still active, the first-screen link points to the relevant Hub
+project instead of the empty running-session section. The page header also labels the current access
+role, whether the first snapshot is loaded, and that the dashboard is a read-only observation surface. The context panel remains
 available for traceability and summarizes whether the view is a single instance or Hub device
 runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path, the snapshot timestamp,
 and the `/api/v1/state` entry. Empty rate-limit snapshots are hidden, and the full Hub device
@@ -1391,6 +1391,8 @@ summary next to the count instead of only a generic number; common reachability 
 as Chinese operator actions first, with raw diagnostic code and message still available in the
 diagnostics list. Mermaid graph nodes are clickable and keyboard-focusable, with a visible focus
 style for the rendered SVG node shape.
+能定位到具体 stage 的诊断（例如 unreachable stage）会同时提供“查看 ... 阶段”和完整诊断列表入口；
+可滚动 prompt 预览会标记为只读预览区域，方便键盘和辅助技术用户理解它不是可执行控件。
 On desktop the stage graph and selected-stage inspector share the first workflow panel, so clicking
 a graph node updates visible stage details without forcing the operator below the graph. On narrow
 screens the page adds a text-first stage flow overview near the Mermaid graph so operators can read
@@ -1421,6 +1423,9 @@ issue risk. Dashboard/API links are clickable only when the instance is running 
 reachable; stopped, failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled
 entries with the URL still visible for inspection. The update timer buttons are also gated by
 current state, so an already enabled/active timer does not present “enable” as an available action.
+管理页顶部会把当前控制台和被管理 project 实例端口范围分开说明，避免把 project 实例的
+`stopped` 或不可达误解成 `/admin/instances` 当前控制台停止。被管理实例不可达或未知时，
+update-timer 的启用、禁用、手动触发确认文案会先说明该风险，再让 operator 确认是否继续。
 While the instance overview is still loading, create, auto-update, and update-timer write actions
 are disabled and linked to a visible loading reason; disabled buttons use neutral styling rather
 than retaining primary or danger colors. Remote read-only sessions cannot open the create-instance

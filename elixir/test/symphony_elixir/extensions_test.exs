@@ -892,6 +892,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert dashboard_js =~ "announceCopyButtonState"
     assert dashboard_js =~ "document.getElementById(\"copy-status\")"
     assert dashboard_js =~ "copy.textContent"
+    assert dashboard_js =~ "openDetailsForCurrentHash"
+    assert dashboard_js =~ "data-open-details"
+    assert dashboard_js =~ "data-focus-target"
     refute dashboard_js =~ "String(error && error.message ? error.message : error) +"
 
     mermaid_js = response(get(build_conn(), "/vendor/mermaid/mermaid.min.js"), 200)
@@ -1081,6 +1084,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "protocol_blocked 无法从 ready 到达；确认是否废弃或补 transition。"
     assert html =~ "unreachable_stage"
     assert html =~ ~s(href="#workflow-diagnostics")
+    assert html =~ "查看 protocol_blocked 阶段"
+    assert html =~ ~s(data-scroll-target="stage-protocol_blocked")
     assert html =~ ~s(id="workflow-diagnostics")
     assert html =~ "workflow-mermaid"
     assert html =~ "workflow-graph-inspector"
@@ -1096,6 +1101,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "started"
     assert html =~ "当前阶段"
     assert html =~ "Pick up new work."
+    assert html =~ ~s(aria-label="ready 阶段 prompt 预览，可滚动")
+    assert html =~ "查看目标阶段"
     assert html =~ "缺失结果处理"
     assert html =~ "protocol_blocked"
     assert html =~ ~s(href="#stage-protocol_blocked")
@@ -1114,7 +1121,11 @@ defmodule SymphonyElixir.ExtensionsTest do
            |> element("[data-stage-target=\"working\"]")
            |> render_click() =~ "Implement the issue."
 
-    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ "Implement the issue."
+    assert view
+           |> element(".workflow-status-chip [data-scroll-target=\"stage-protocol_blocked\"]")
+           |> render_click() =~ ~s(aria-label="protocol_blocked 阶段 prompt 预览，可滚动")
+
+    assert render_hook(view, :select_stage, %{"stage" => "ghost"}) =~ ~s(aria-label="protocol_blocked 阶段 prompt 预览，可滚动")
   end
 
   test "workflow dashboard rejects invalid transitions before rendering clickable controls" do
@@ -1200,6 +1211,77 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "unknown target"
     assert Floki.find(document, "div[aria-disabled=\"true\"][data-stage-target=\"ghost\"]") != []
     assert Floki.find(document, "button[data-stage-target=\"ghost\"]") == []
+  end
+
+  test "workflow dashboard renders malformed unreachable diagnostics without stage actions" do
+    projection = %{
+      workflow: %{start_stage: "ready", stage_count: 2, transition_count: 1, terminal_stages: ["done"]},
+      runtime: %{available?: true, error: nil},
+      missing_outcome: %{
+        max_retries: 1,
+        on_exhausted: "done",
+        terminal_target?: true,
+        blocked_target?: false,
+        protocol_blocked_target?: false
+      },
+      tracker: nil,
+      diagnostics: [
+        %{severity: :warning, code: :unreachable_stage, message: "bad format"},
+        %{severity: :warning, code: :terminal_stage_unreached, message: "Terminal stage done is not reachable."}
+      ],
+      transitions: [
+        %{
+          from: "ready",
+          to: "done",
+          outcome: "completed",
+          known_outcome?: true,
+          target_exists?: true,
+          terminal_target?: true,
+          blocked_target?: false,
+          protocol_blocked_target?: false
+        }
+      ],
+      stages: [
+        %{
+          id: "ready",
+          start?: true,
+          terminal?: false,
+          reachable?: true,
+          blocked?: false,
+          protocol_blocked?: false,
+          runtime: %{running: 0, retrying: 0, blocked: 0, total: 0},
+          tracker_state: nil,
+          prompt: "Pick up new work.",
+          transitions: [
+            %{outcome: "completed", to: "done", known_outcome?: true, target_exists?: true}
+          ]
+        },
+        %{
+          id: "done",
+          start?: false,
+          terminal?: true,
+          reachable?: true,
+          blocked?: false,
+          protocol_blocked?: false,
+          runtime: %{running: 0, retrying: 0, blocked: 0, total: 0},
+          tracker_state: nil,
+          prompt: "Finished.",
+          transitions: []
+        }
+      ]
+    }
+
+    html =
+      %{projection: projection, selected_stage_id: "ready", access_role: "本机管理员"}
+      |> SymphonyElixirWeb.WorkflowLive.render()
+      |> rendered_to_string()
+
+    document = Floki.parse_document!(html)
+
+    assert html =~ "查看 2 条配置提醒：unreachable_stage：bad format"
+    assert html =~ "这类 stage 不会从 start stage 自动抵达"
+    assert html =~ "如果这是正常终点，应检查是否有 transition"
+    assert Floki.find(document, "[data-scroll-target]") == []
   end
 
   test "workflow dashboard renders sanitized mermaid ids for simple non-blocking flows" do
