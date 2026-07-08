@@ -15,8 +15,8 @@
   --danger: #b42318;
   --danger-soft: #fef3f2;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.08);
-  --shadow-panel: 0 18px 44px rgba(15, 23, 42, 0.09);
+  --shadow-lg: 0 6px 18px rgba(15, 23, 42, 0.06);
+  --shadow-panel: 0 8px 22px rgba(15, 23, 42, 0.07);
 }
 
 * {
@@ -25,11 +25,13 @@
 
 html {
   background: var(--page);
+  overflow-x: clip;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  overflow-x: clip;
   background:
     radial-gradient(circle at top, rgba(16, 163, 127, 0.12) 0%, rgba(16, 163, 127, 0) 30%),
     linear-gradient(180deg, var(--page-soft) 0%, var(--page) 24%, #f3f4f6 100%);
@@ -59,13 +61,13 @@ button {
   border: 1px solid var(--accent);
   background: var(--accent);
   color: white;
-  border-radius: 999px;
-  padding: 0.72rem 1.08rem;
+  border-radius: 10px;
+  padding: 0.64rem 0.92rem;
   cursor: pointer;
   font: inherit;
   font-weight: 600;
-  letter-spacing: -0.01em;
-  box-shadow: 0 8px 20px rgba(16, 163, 127, 0.18);
+  letter-spacing: 0;
+  box-shadow: 0 1px 2px rgba(16, 163, 127, 0.16);
   transition:
     transform 140ms ease,
     box-shadow 140ms ease,
@@ -75,7 +77,7 @@ button {
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(16, 163, 127, 0.22);
+  box-shadow: 0 4px 10px rgba(16, 163, 127, 0.18);
 }
 
 button:disabled {
@@ -93,7 +95,7 @@ button.secondary {
 }
 
 button.secondary:hover {
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.07);
 }
 
 .subtle-button {
@@ -101,7 +103,7 @@ button.secondary:hover {
   border: 1px solid var(--line-strong);
   background: rgba(255, 255, 255, 0.72);
   color: var(--muted);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 0.34rem 0.72rem;
   cursor: pointer;
   font: inherit;
@@ -126,7 +128,8 @@ button.secondary:hover {
 pre {
   margin: 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 code,
@@ -141,10 +144,18 @@ pre,
   font-feature-settings: "tnum" 1, "zero" 1;
 }
 
+.mono,
+code {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
 .app-shell {
+  width: 100%;
   max-width: 1280px;
   margin: 0 auto;
   padding: 2rem 1rem 3.5rem;
+  overflow-x: clip;
 }
 
 .workspace-nav {
@@ -155,7 +166,7 @@ pre,
   margin-bottom: 1rem;
   padding: 0.55rem;
   border: 1px solid rgba(217, 217, 227, 0.82);
-  border-radius: 18px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(16px);
@@ -251,6 +262,7 @@ pre,
 .dashboard-shell {
   display: grid;
   gap: 1rem;
+  min-width: 0;
 }
 
 .hero-card,
@@ -264,8 +276,9 @@ pre,
 }
 
 .hero-card {
-  border-radius: 28px;
-  padding: clamp(1.25rem, 3vw, 2rem);
+  min-width: 0;
+  border-radius: 12px;
+  padding: clamp(1rem, 2vw, 1.35rem);
   box-shadow: var(--shadow-lg);
 }
 
@@ -287,9 +300,10 @@ pre,
 
 .hero-title {
   margin: 0.35rem 0 0;
-  font-size: clamp(2rem, 4vw, 3.3rem);
-  line-height: 0.98;
-  letter-spacing: -0.04em;
+  font-size: clamp(1.55rem, 2.6vw, 2.35rem);
+  line-height: 1.08;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .hero-copy {
@@ -304,7 +318,8 @@ pre,
   gap: 0.5rem;
   justify-items: end;
   align-content: start;
-  min-width: min(100%, 9rem);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .status-badge {
@@ -313,7 +328,8 @@ pre,
   gap: 0.45rem;
   min-height: 2rem;
   padding: 0.35rem 0.78rem;
-  border-radius: 999px;
+  max-width: 100%;
+  border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--card-muted);
   color: var(--muted);
@@ -366,9 +382,10 @@ pre,
 
 .metric-card {
   position: relative;
+  min-width: 0;
   overflow: hidden;
-  border-radius: 22px;
-  padding: 1rem 1.05rem 1.1rem;
+  border-radius: 10px;
+  padding: 0.85rem 0.9rem 0.95rem;
 }
 
 .metric-card::before {
@@ -395,7 +412,8 @@ pre,
   margin: 0.35rem 0 0;
   font-size: clamp(1.6rem, 2vw, 2.1rem);
   line-height: 1.05;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .metric-detail {
@@ -405,8 +423,9 @@ pre,
 }
 
 .section-card {
-  border-radius: 24px;
-  padding: 1.15rem;
+  min-width: 0;
+  border-radius: 12px;
+  padding: 1rem;
 }
 
 .context-card {
@@ -426,8 +445,9 @@ pre,
   min-width: 0;
   padding: 0.78rem;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 8px;
   background: rgba(247, 247, 248, 0.72);
+  overflow-wrap: anywhere;
 }
 
 .context-item strong {
@@ -448,6 +468,7 @@ pre,
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--card-muted);
+  overflow-wrap: anywhere;
 }
 
 .hub-project-table {
@@ -466,7 +487,8 @@ pre,
   margin: 0;
   font-size: 1.08rem;
   line-height: 1.2;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .section-copy {
@@ -476,7 +498,11 @@ pre,
 }
 
 .table-wrap {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   margin-top: 1rem;
 }
 
@@ -510,6 +536,7 @@ pre,
   border-top: 1px solid var(--line);
   vertical-align: top;
   font-size: 0.94rem;
+  overflow-wrap: anywhere;
 }
 
 .issue-stack,
@@ -542,7 +569,8 @@ pre,
   align-items: center;
   min-height: 1.85rem;
   padding: 0.3rem 0.68rem;
-  border-radius: 999px;
+  max-width: 100%;
+  border-radius: 7px;
   border: 1px solid var(--line);
   background: var(--card-muted);
   color: var(--ink);
@@ -571,7 +599,8 @@ pre,
 
 .issue-id {
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .issue-link {
@@ -611,7 +640,7 @@ pre,
 .code-panel {
   margin-top: 1rem;
   padding: 1rem;
-  border-radius: 18px;
+  border-radius: 8px;
   background: #f5f5f7;
   border: 1px solid var(--line);
   color: #353740;
@@ -628,14 +657,16 @@ pre,
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 32rem), 1fr));
   gap: 1rem;
   margin-top: 1rem;
+  min-width: 0;
 }
 
 .instance-card {
   display: grid;
   gap: 0;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid rgba(217, 217, 227, 0.88);
-  border-radius: 24px;
+  border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.9)),
     var(--card);
@@ -649,7 +680,7 @@ pre,
 .instance-card:hover {
   border-color: rgba(16, 163, 127, 0.24);
   box-shadow: var(--shadow-panel);
-  transform: translateY(-2px);
+  transform: translateY(-1px);
 }
 
 .instance-card-header {
@@ -672,7 +703,8 @@ pre,
   font-size: 1.08rem;
   font-weight: 750;
   line-height: 1.2;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .instance-card-body {
@@ -689,8 +721,9 @@ pre,
   min-width: 0;
   padding: 0.8rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(247, 247, 248, 0.72);
+  overflow-wrap: anywhere;
 }
 
 .health-panel,
@@ -733,7 +766,7 @@ pre,
   min-width: 0;
   padding: 0.9rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 10px;
   background: rgba(247, 247, 248, 0.72);
 }
 
@@ -774,7 +807,7 @@ pre,
   width: 1.8rem;
   height: 1.8rem;
   border: 1px solid rgba(16, 163, 127, 0.18);
-  border-radius: 999px;
+  border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent-ink);
   font-size: 0.82rem;
@@ -811,7 +844,7 @@ pre,
   min-width: 0;
   min-height: 2.55rem;
   border: 1px solid var(--line-strong);
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
   color: var(--ink);
   padding: 0.58rem 0.72rem;
@@ -857,7 +890,7 @@ pre,
   align-items: flex-start;
   padding: 0.68rem 0.72rem;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
   color: var(--ink);
 }
@@ -893,7 +926,7 @@ pre,
   align-items: center;
   padding: 0.85rem;
   border: 1px solid rgba(16, 163, 127, 0.18);
-  border-radius: 18px;
+  border-radius: 10px;
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
@@ -948,7 +981,7 @@ pre,
 .pressure-grid span {
   min-width: 0;
   padding: 0.42rem 0.5rem;
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
   color: var(--ink);
   font-size: 0.84rem;
@@ -969,7 +1002,7 @@ pre,
   gap: 0.25rem;
   padding: 0.85rem 1rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 10px;
   background: var(--card);
   box-shadow: var(--shadow-sm);
 }
@@ -1052,7 +1085,7 @@ pre,
 }
 
 .error-card {
-  border-radius: 24px;
+  border-radius: 12px;
   padding: 1.25rem;
   background: linear-gradient(180deg, #fff8f7 0%, var(--danger-soft) 100%);
   border-color: #f6d3cf;
@@ -1062,7 +1095,7 @@ pre,
   margin: 0;
   color: var(--danger);
   font-size: 1.15rem;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .error-copy {
@@ -1077,7 +1110,8 @@ pre,
 .metric-value-stage {
   font-size: clamp(1.15rem, 2vw, 1.55rem);
   line-height: 1.2;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .workflow-layout {
@@ -1116,7 +1150,7 @@ pre,
   max-width: 100%;
   padding-bottom: 0.25rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 10px;
   background:
     linear-gradient(rgba(236, 236, 241, 0.36) 1px, transparent 1px),
     linear-gradient(90deg, rgba(236, 236, 241, 0.36) 1px, transparent 1px),
@@ -1238,7 +1272,7 @@ pre,
   min-width: 0;
   padding: 0.58rem 0.66rem;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   background: #ffffff;
   color: var(--ink);
   box-shadow: var(--shadow-sm);
@@ -1266,7 +1300,7 @@ pre,
 }
 
 .workflow-route-token .mono {
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
   word-break: normal;
   hyphens: none;
   line-height: 1.3;
@@ -1292,7 +1326,7 @@ pre,
 .stage-detail-card {
   min-width: 0;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 8px;
   background: rgba(247, 247, 248, 0.72);
   box-shadow: var(--shadow-sm);
 }
@@ -1355,7 +1389,8 @@ pre,
   min-width: 0;
   font-weight: 750;
   line-height: 1.25;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .workflow-node-badges,
@@ -1387,7 +1422,7 @@ pre,
   min-width: 0;
   padding: 0.36rem 0.42rem;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 8px;
   background: white;
   color: var(--muted);
   font-size: 0.82rem;
@@ -1417,7 +1452,7 @@ pre,
   min-width: 0;
   padding: 0.55rem 0.6rem;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
   font-size: 0.88rem;
 }
@@ -1460,7 +1495,7 @@ pre,
 .workflow-edge-outcome,
 .workflow-edge-target {
   min-width: 0;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
   word-break: normal;
   white-space: normal;
 }
@@ -1489,7 +1524,7 @@ pre,
   min-width: 0;
   padding: 0.72rem;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
 }
 
@@ -1525,7 +1560,7 @@ pre,
   align-items: flex-start;
   padding: 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 8px;
   background: rgba(247, 247, 248, 0.72);
 }
 
@@ -1567,7 +1602,7 @@ pre,
   overflow: auto;
   padding: 0.75rem;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 8px;
   background: white;
   color: #353740;
   font-size: 0.9rem;
@@ -1651,7 +1686,7 @@ pre,
     min-width: 0;
     padding: 0.75rem;
     border: 1px solid var(--line);
-    border-radius: 16px;
+    border-radius: 8px;
     background: rgba(247, 247, 248, 0.82);
   }
 
@@ -1668,7 +1703,7 @@ pre,
   }
 
   .workflow-mobile-stage-title strong {
-    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
     word-break: normal;
     font-size: 0.98rem;
     line-height: 1.25;
@@ -1760,7 +1795,7 @@ pre,
   .section-card,
   .hero-card,
   .error-card {
-    border-radius: 20px;
+    border-radius: 10px;
     padding: 1rem;
   }
 
