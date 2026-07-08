@@ -8,15 +8,20 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   alias Plug.Conn
   alias SymphonyElixirWeb.Endpoint
 
+  @admin_instances_timeout_ms 3_000
+
   @spec index(Conn.t(), map()) :: Conn.t()
   def index(conn, _params) do
     with :ok <- authorize_admin_request(conn) do
-      case registry().list_instances(registry_opts()) do
+      case list_instances_with_timeout() do
         {:ok, instances} ->
           json(conn, %{instances: instances})
 
         {:error, reason} ->
           error_response(conn, 500, "instance_registry_unavailable", inspect(reason))
+
+        :timeout ->
+          error_response(conn, 503, "instance_registry_timeout", "Instance registry did not respond within #{admin_instances_timeout_ms()}ms.")
       end
     end
   end
@@ -187,6 +192,30 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
         {:error, %{code: code, message: message}} ->
           error_response(conn, error_status(code), code, message)
       end
+    end
+  end
+
+  defp list_instances_with_timeout do
+    timeout_ms = admin_instances_timeout_ms()
+    task = Task.async(fn -> registry().list_instances(registry_opts()) end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:instance_registry_exit, reason}}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        :timeout
+    end
+  end
+
+  defp admin_instances_timeout_ms do
+    case Endpoint.config(:admin_instances_timeout_ms) do
+      timeout_ms when is_integer(timeout_ms) and timeout_ms > 0 -> timeout_ms
+      _timeout_ms -> @admin_instances_timeout_ms
     end
   end
 

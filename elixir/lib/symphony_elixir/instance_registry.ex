@@ -14,6 +14,8 @@ defmodule SymphonyElixir.InstanceRegistry do
   @env_var_pattern ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/
   @repo_part_pattern ~r/\A[A-Za-z0-9_.-]+\z/
   @default_state_timeout_ms 1_500
+  @default_instance_load_timeout_ms 2_500
+  @default_instance_load_concurrency 8
   @default_port_start 20_000
   @max_port 65_535
 
@@ -70,7 +72,7 @@ defmodule SymphonyElixir.InstanceRegistry do
         instances =
           entries
           |> Enum.sort()
-          |> Enum.map(&load_instance(config_root, &1, opts))
+          |> load_instances(config_root, opts)
 
         {:ok, instances}
 
@@ -251,6 +253,59 @@ defmodule SymphonyElixir.InstanceRegistry do
       env_path: env_path,
       runtime: runtime_summary(state_result),
       strategy: update_strategy(env)
+    }
+  end
+
+  defp load_instances(entries, config_root, opts) do
+    timeout_ms = Keyword.get(opts, :instance_load_timeout_ms, @default_instance_load_timeout_ms)
+    max_concurrency = Keyword.get(opts, :instance_load_concurrency, @default_instance_load_concurrency)
+
+    stream =
+      Task.async_stream(entries, &load_instance(config_root, &1, opts),
+        max_concurrency: max_concurrency,
+        ordered: true,
+        on_timeout: :kill_task,
+        timeout: timeout_ms
+      )
+
+    entries
+    |> Enum.zip(stream)
+    |> Enum.map(fn
+      {_name, {:ok, instance}} -> instance
+      {name, {:exit, :timeout}} -> unavailable_instance(config_root, name, "instance_probe_timeout")
+      {name, {:exit, reason}} -> unavailable_instance(config_root, name, inspect(reason))
+    end)
+  end
+
+  defp unavailable_instance(config_root, name, error) do
+    project_config_root = Path.join(config_root, name)
+    workflow_path = Path.join(project_config_root, "WORKFLOW.md")
+    tracker_config_path = Path.join(project_config_root, "TRACKER.yaml")
+    env_path = Path.join(project_config_root, "env")
+    service = service_name(name)
+
+    %{
+      name: name,
+      service: service,
+      status: "unknown",
+      systemd: %{active: "unknown", enabled: "unknown", sub: "unknown", failed: false},
+      port: nil,
+      dashboard_url: nil,
+      api_url: nil,
+      tracker: %{kind: nil, scope: nil, required_labels: []},
+      counts: %{running: 0, retrying: 0, blocked: 0},
+      health: %{
+        status: "unreachable",
+        summary: "instance probe timed out or crashed; counts are unknown",
+        error: error
+      },
+      workspace_root: nil,
+      logs_root: nil,
+      config_path: workflow_path,
+      tracker_config_path: existing_file_path(tracker_config_path),
+      env_path: env_path,
+      runtime: %{codex_total_tokens: 0, primary_rate_limit_remaining: 0},
+      strategy: "idle_restart"
     }
   end
 

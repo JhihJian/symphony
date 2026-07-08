@@ -55,6 +55,11 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
     assert html =~ "当前工作队列"
     assert html =~ "Hub 活跃尝试"
     assert html =~ "pending start 0 · workspace lease 1"
+    assert html =~ "Hub 仍在收敛"
+    assert html =~ "普通运行中会话为 0"
+    assert html =~ "attempt 1 · lease 1 · lifecycle 1"
+    assert html =~ ~s(href="#hub-project-alpha")
+    assert html =~ ~s(id="hub-project-alpha")
     assert html =~ ~s(href="#running-sessions")
     assert html =~ ~s(href="#blocked-sessions")
     assert html =~ ~s(href="#retry-queue")

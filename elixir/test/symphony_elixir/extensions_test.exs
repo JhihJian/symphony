@@ -872,9 +872,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
+    assert dashboard_css =~ ".status-badge-connecting"
     assert dashboard_css =~ ".status-badge-live"
     assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-connecting"
+    assert dashboard_css =~ "[data-phx-main].phx-disconnected .status-badge-offline"
 
     dashboard_js = response(get(build_conn(), "/dashboard.js"), 200)
     assert dashboard_js =~ "WorkflowMermaid"
@@ -933,8 +935,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "turn blocked: waiting for user input"
     assert html =~ "进行中"
     assert html =~ "运行时长"
-    assert html =~ "实时"
-    assert html =~ "离线"
+    assert html =~ "页面连接"
+    assert html =~ "连接中"
+    assert html =~ "实时连接"
+    assert html =~ "连接断开"
     assert html =~ "复制 ID"
     assert html =~ "copy-button"
     refute html =~ "onclick=\"navigator.clipboard"
@@ -946,6 +950,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
+    assert html =~ "status-badge-connecting"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
 

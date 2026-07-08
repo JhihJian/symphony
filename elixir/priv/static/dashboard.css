@@ -350,6 +350,12 @@ code {
   opacity: 0.9;
 }
 
+.status-badge-connecting {
+  background: #f5f5f7;
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
 .status-badge-live {
   display: none;
   background: var(--accent-soft);
@@ -358,6 +364,7 @@ code {
 }
 
 .status-badge-offline {
+  display: none;
   background: #f5f5f7;
   border-color: var(--line-strong);
   color: var(--muted);
@@ -374,8 +381,20 @@ code {
   display: inline-flex;
 }
 
+[data-phx-main].phx-connected .status-badge-connecting {
+  display: none;
+}
+
 [data-phx-main].phx-connected .status-badge-offline {
   display: none;
+}
+
+[data-phx-main].phx-disconnected .status-badge-connecting {
+  display: none;
+}
+
+[data-phx-main].phx-disconnected .status-badge-offline {
+  display: inline-flex;
 }
 
 .metric-grid {
@@ -473,6 +492,55 @@ code {
   border-radius: 8px;
   background: var(--card-muted);
   overflow-wrap: anywhere;
+}
+
+.operator-attention-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, auto);
+  gap: 0.85rem;
+  align-items: start;
+  margin-top: 0.85rem;
+  padding: 0.95rem;
+  border: 1px solid #f1d8a6;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #4b3a12;
+}
+
+.operator-attention-card strong {
+  line-height: 1.35;
+}
+
+.operator-attention-actions {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.operator-attention-link {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  padding: 0.5rem 0.62rem;
+  border: 1px solid rgba(138, 90, 0, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f4b00;
+}
+
+.operator-attention-link span,
+.operator-attention-link small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-attention-link span {
+  font-weight: 700;
+}
+
+.operator-attention-link small {
+  color: var(--muted);
 }
 
 .hub-project-table {
@@ -999,6 +1067,10 @@ code {
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0 1rem 1rem;
+}
+
+.instance-loading-panel {
+  margin-top: 1rem;
 }
 
 .notice-banner {
@@ -1747,7 +1819,8 @@ code {
   .workflow-edge,
   .missing-outcome-edge,
   .transition-detail-row,
-  .transition-select-button {
+  .transition-select-button,
+  .operator-attention-card {
     grid-template-columns: 1fr;
     gap: 0.38rem;
   }
