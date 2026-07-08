@@ -11,6 +11,12 @@ defmodule SymphonyElixirWeb.StaticAssetController do
   @spec dashboard_css(Conn.t(), map()) :: Conn.t()
   def dashboard_css(conn, _params), do: serve(conn, "/dashboard.css")
 
+  @spec dashboard_js(Conn.t(), map()) :: Conn.t()
+  def dashboard_js(conn, _params), do: serve(conn, "/dashboard.js")
+
+  @spec mermaid_js(Conn.t(), map()) :: Conn.t()
+  def mermaid_js(conn, _params), do: serve(conn, "/vendor/mermaid/mermaid.min.js")
+
   @spec phoenix_html_js(Conn.t(), map()) :: Conn.t()
   def phoenix_html_js(conn, _params), do: serve(conn, "/vendor/phoenix_html/phoenix_html.js")
 

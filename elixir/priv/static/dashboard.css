@@ -883,7 +883,6 @@ pre,
 
 .workflow-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(20rem, 0.72fr);
   gap: 1rem;
   align-items: start;
 }
@@ -894,6 +893,11 @@ pre,
   min-width: 0;
 }
 
+.workflow-detail-strip {
+  grid-template-columns: minmax(22rem, 1fr) minmax(18rem, 0.72fr) minmax(18rem, 0.9fr);
+  align-items: start;
+}
+
 .workflow-graph-card {
   min-width: 0;
 }
@@ -902,6 +906,138 @@ pre,
   margin-top: 1rem;
   overflow-x: auto;
   padding-bottom: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background:
+    linear-gradient(rgba(236, 236, 241, 0.58) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(236, 236, 241, 0.58) 1px, transparent 1px),
+    #ffffff;
+  background-size: 32px 32px;
+}
+
+.workflow-mermaid-source {
+  display: none;
+}
+
+.workflow-mermaid-output {
+  display: grid;
+  min-width: 1120px;
+  min-height: 500px;
+  padding: 1.5rem;
+  place-items: center;
+}
+
+.workflow-mermaid-output svg {
+  display: block;
+  width: 100%;
+  min-width: 1040px;
+  height: auto;
+  max-width: none;
+}
+
+.workflow-mermaid-output .edgeLabel,
+.workflow-mermaid-output .label {
+  font-family: "Sohne Mono", "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+}
+
+.workflow-mermaid-output .edgeLabel {
+  color: #4b5565;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.workflow-mermaid-output .edgeLabel p {
+  background: #ffffff;
+}
+
+.workflow-mermaid-output .flowchart-link {
+  stroke: #7c8597 !important;
+  stroke-width: 2px !important;
+}
+
+.workflow-mermaid-output .node rect,
+.workflow-mermaid-output .node polygon,
+.workflow-mermaid-output .node path {
+  filter: drop-shadow(0 8px 14px rgba(15, 23, 42, 0.08));
+  rx: 8px;
+  transition:
+    filter 140ms ease,
+    stroke 140ms ease,
+    stroke-width 140ms ease;
+}
+
+.workflow-mermaid-output .nodeLabel {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.workflow-mermaid-node-clickable {
+  cursor: pointer;
+  outline: none;
+}
+
+.workflow-mermaid-node-clickable:hover rect,
+.workflow-mermaid-node-clickable:focus-visible rect {
+  stroke: var(--accent) !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 12px 20px rgba(16, 163, 127, 0.18));
+}
+
+.workflow-mermaid-loading {
+  opacity: 0.72;
+}
+
+.workflow-mermaid-error {
+  width: min(100%, 42rem);
+}
+
+.selected-stage-panel {
+  border-color: rgba(16, 163, 127, 0.24);
+}
+
+.selected-stage-runtime {
+  margin-top: 1rem;
+}
+
+.selected-stage-prompt {
+  margin-top: 0.85rem;
+  max-height: 13rem;
+}
+
+.selected-stage-transitions {
+  margin-top: 0.85rem;
+}
+
+.transition-select-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0.58rem 0.66rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.84rem;
+  text-align: left;
+}
+
+.transition-select-button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-sm);
+  transform: none;
+}
+
+.transition-select-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workflow-node-grid {
@@ -1159,7 +1295,8 @@ pre,
   }
 
   .workflow-summary-grid,
-  .workflow-layout {
+  .workflow-layout,
+  .workflow-detail-strip {
     grid-template-columns: 1fr;
   }
 

@@ -12,7 +12,24 @@ defmodule SymphonyElixirWeb.WorkflowLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, assign(socket, :projection, load_projection())}
+    projection = load_projection()
+
+    {:ok,
+     socket
+     |> assign(:projection, projection)
+     |> assign(:selected_stage_id, default_selected_stage_id(projection))}
+  end
+
+  @impl true
+  def handle_event("select_stage", %{"stage" => stage_id}, socket) do
+    selected_stage_id =
+      if stage_exists?(socket.assigns.projection, stage_id) do
+        stage_id
+      else
+        socket.assigns.selected_stage_id
+      end
+
+    {:noreply, assign(socket, :selected_stage_id, selected_stage_id)}
   end
 
   @impl true
@@ -81,47 +98,30 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             <div class="section-header">
               <div>
                 <h2 class="section-title">Stage Graph</h2>
-                <p class="section-copy">节点是 workflow stage，箭头是 outcome -> target stage。</p>
+                <p class="section-copy">节点是 workflow stage，箭头是 outcome -> target stage；选中节点会在右侧展示详情。</p>
               </div>
             </div>
 
-            <div class="workflow-graph" aria-label="Workflow stage graph">
-              <div class="workflow-node-grid">
-                <article :for={stage <- @projection.stages} class={stage_node_class(stage)} id={"stage-#{stage.id}"}>
-                  <div class="workflow-node-header">
-                    <div class="workflow-node-title">
-                      <span class="mono"><%= stage.id %></span>
-                    </div>
-                    <div class="workflow-node-badges">
-                      <span :if={stage.start?} class="state-badge state-badge-active">start</span>
-                      <span :if={stage.terminal?} class="state-badge state-badge-terminal">terminal</span>
-                      <span :if={stage.blocked? and not stage.protocol_blocked?} class="state-badge state-badge-danger">blocked</span>
-                      <span :if={stage.protocol_blocked?} class="state-badge state-badge-danger">protocol</span>
-                    </div>
-                  </div>
+            <% graph = workflow_mermaid(@projection, @selected_stage_id) %>
 
-                  <p class="workflow-node-prompt"><%= stage.prompt_preview %></p>
-
-                  <div class="runtime-strip">
-                    <span>run <strong class="numeric"><%= stage.runtime.running %></strong></span>
-                    <span>retry <strong class="numeric"><%= stage.runtime.retrying %></strong></span>
-                    <span>blocked <strong class="numeric"><%= stage.runtime.blocked %></strong></span>
-                  </div>
-
-                  <div class="workflow-edge-list">
-                    <div :for={transition <- stage.transitions} class={transition_class(transition)}>
-                      <span class="workflow-edge-outcome mono"><%= transition.outcome %></span>
-                      <span class="workflow-edge-arrow">→</span>
-                      <a href={"#stage-#{transition.to}"} class="workflow-edge-target mono"><%= transition.to %></a>
-                    </div>
-                    <p :if={stage.transitions == []} class="muted workflow-empty-edge">无普通 transition</p>
-                  </div>
-                </article>
+            <div
+              id="workflow-mermaid-graph"
+              class="workflow-graph workflow-mermaid"
+              phx-hook="WorkflowMermaid"
+              data-mermaid-signature={graph.signature}
+              data-stage-map={graph.stage_map_json}
+              aria-label="Workflow stage graph"
+            >
+              <pre class="workflow-mermaid-source" data-mermaid-source><%= graph.definition %></pre>
+              <div class="workflow-mermaid-output" data-mermaid-output>
+                <p class="empty-state">正在渲染 Workflow 图...</p>
               </div>
             </div>
           </article>
 
-          <aside class="workflow-side-stack">
+          <aside class="workflow-side-stack workflow-detail-strip">
+            <.selected_stage_panel stage={selected_stage(@projection, @selected_stage_id)} />
+
             <section class="section-card">
               <div class="section-header">
                 <div>
@@ -264,6 +264,61 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     """
   end
 
+  attr(:stage, :map, required: true)
+
+  defp selected_stage_panel(assigns) do
+    ~H"""
+    <section class="section-card selected-stage-panel" id="selected-stage-panel">
+      <div class="section-header">
+        <div>
+          <h2 class="section-title">当前 Stage</h2>
+          <p class="section-copy mono"><%= @stage.id %></p>
+        </div>
+        <div class="workflow-node-badges">
+          <span :if={@stage.start?} class="state-badge state-badge-active">start</span>
+          <span :if={@stage.terminal?} class="state-badge state-badge-terminal">terminal</span>
+          <span :if={!@stage.reachable?} class="state-badge state-badge-warning">unreachable</span>
+          <span :if={@stage.blocked? and not @stage.protocol_blocked?} class="state-badge state-badge-danger">blocked</span>
+          <span :if={@stage.protocol_blocked?} class="state-badge state-badge-danger">protocol</span>
+        </div>
+      </div>
+
+      <div class="stage-detail-meta selected-stage-runtime">
+        <span>running <strong class="numeric"><%= @stage.runtime.running %></strong></span>
+        <span>retrying <strong class="numeric"><%= @stage.runtime.retrying %></strong></span>
+        <span>blocked <strong class="numeric"><%= @stage.runtime.blocked %></strong></span>
+      </div>
+
+      <p class="section-copy">
+        Tracker:
+        <%= if @stage.tracker_state && @stage.tracker_state.provider_state do %>
+          <span class="mono"><%= @stage.tracker_state.provider_state %></span>
+        <% else %>
+          <span class="muted">未映射</span>
+        <% end %>
+      </p>
+
+      <pre class="prompt-preview selected-stage-prompt"><%= @stage.prompt %></pre>
+
+      <div class="transition-detail-list selected-stage-transitions">
+        <button
+          :for={transition <- @stage.transitions}
+          type="button"
+          class="transition-select-button"
+          data-stage-target={transition.to}
+          phx-click="select_stage"
+          phx-value-stage={transition.to}
+        >
+          <span class="mono"><%= transition.outcome %></span>
+          <span>→</span>
+          <span class="mono"><%= transition.to %></span>
+        </button>
+        <p :if={@stage.transitions == []} class="empty-state">无 outcome transition。</p>
+      </div>
+    </section>
+    """
+  end
+
   defp load_projection do
     case Workflow.load(Workflow.workflow_file_path()) do
       {:ok, %{workflow: %Definition{} = definition}} ->
@@ -303,32 +358,6 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
 
-  defp stage_node_class(stage) do
-    [
-      "workflow-node",
-      stage.start? && "workflow-node-start",
-      stage.terminal? && "workflow-node-terminal",
-      stage.blocked? && "workflow-node-blocked",
-      stage.protocol_blocked? && "workflow-node-protocol",
-      !stage.reachable? && "workflow-node-unreachable"
-    ]
-    |> Enum.filter(& &1)
-    |> Enum.join(" ")
-  end
-
-  defp transition_class(transition) do
-    [
-      "workflow-edge",
-      transition.terminal_target? && "workflow-edge-terminal",
-      transition.blocked_target? && "workflow-edge-blocked",
-      transition.protocol_blocked_target? && "workflow-edge-protocol",
-      !transition.known_outcome? && "workflow-edge-warning",
-      !transition.target_exists? && "workflow-edge-warning"
-    ]
-    |> Enum.filter(& &1)
-    |> Enum.join(" ")
-  end
-
   defp missing_outcome_class(missing_outcome) do
     [
       "missing-outcome-edge",
@@ -348,4 +377,137 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp diagnostic_class(_diagnostic), do: "diagnostic-item"
 
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  defp default_selected_stage_id(%{workflow: %{start_stage: start_stage}}) when is_binary(start_stage), do: start_stage
+  defp default_selected_stage_id(%{stages: [%{id: stage_id} | _stages]}), do: stage_id
+  defp default_selected_stage_id(_projection), do: nil
+
+  defp stage_exists?(%{stages: stages}, stage_id) when is_binary(stage_id) do
+    Enum.any?(stages, &(&1.id == stage_id))
+  end
+
+  defp stage_exists?(_projection, _stage_id), do: false
+
+  defp selected_stage(%{stages: stages} = projection, selected_stage_id) do
+    Enum.find(stages, &(&1.id == selected_stage_id)) ||
+      Enum.find(stages, &(&1.id == default_selected_stage_id(projection)))
+  end
+
+  defp workflow_mermaid(projection, selected_stage_id) do
+    stages = Map.get(projection, :stages, [])
+
+    node_ids =
+      stages
+      |> Enum.with_index()
+      |> Map.new(fn {stage, index} -> {stage.id, mermaid_node_id(stage.id, index)} end)
+
+    definition =
+      ([
+         "flowchart LR",
+         "  classDef stage fill:#ffffff,stroke:#d9d9e3,stroke-width:1.5px,color:#202123;",
+         "  classDef selected fill:#e8faf4,stroke:#10a37f,stroke-width:3px,color:#202123;",
+         "  classDef start fill:#f0fbf7,stroke:#10a37f,stroke-width:2px,color:#202123;",
+         "  classDef terminal fill:#ffffff,stroke:#7c8597,stroke-width:2px,color:#202123;",
+         "  classDef blocked fill:#fef3f2,stroke:#f0aaa3,stroke-width:2px,color:#202123;",
+         "  classDef unreachable fill:#f5f5f7,stroke:#d9d9e3,stroke-width:1.5px,color:#6e6e80;"
+       ] ++
+         Enum.flat_map(stages, &mermaid_node_lines(&1, node_ids, selected_stage_id)) ++
+         mermaid_edge_lines(Map.get(projection, :transitions, []), node_ids))
+      |> Enum.join("\n")
+
+    %{
+      definition: definition,
+      signature: mermaid_signature(definition),
+      stage_map_json: mermaid_stage_map_json(node_ids)
+    }
+  end
+
+  defp collapse_blocked_edges(transitions) do
+    {blocked_edges, normal_edges} = Enum.split_with(transitions, & &1.blocked_target?)
+
+    case blocked_edges do
+      [] ->
+        normal_edges
+
+      edges ->
+        [representative_blocked_edge(edges) | normal_edges]
+    end
+  end
+
+  defp representative_blocked_edge(edges) do
+    edges
+    |> Enum.sort_by(fn edge -> {edge.from == "ready", edge.from, edge.to} end, :desc)
+    |> List.first()
+    |> Map.put(:outcome, "blocked")
+    |> Map.put(:graph_summary?, true)
+  end
+
+  defp mermaid_node_lines(stage, node_ids, selected_stage_id) do
+    node_id = Map.fetch!(node_ids, stage.id)
+
+    [
+      ~s(  #{node_id}["#{mermaid_text(stage.id)}"]),
+      "  class #{node_id} #{Enum.join(mermaid_node_classes(stage, selected_stage_id), ",")};"
+    ]
+  end
+
+  defp mermaid_edge_lines(transitions, node_ids) do
+    transitions
+    |> Enum.filter(fn transition -> Map.has_key?(node_ids, transition.from) and Map.has_key?(node_ids, transition.to) end)
+    |> collapse_blocked_edges()
+    |> Enum.map(fn transition ->
+      from_node_id = Map.fetch!(node_ids, transition.from)
+      to_node_id = Map.fetch!(node_ids, transition.to)
+
+      "  #{from_node_id} -->|#{mermaid_text(transition.outcome)}| #{to_node_id}"
+    end)
+  end
+
+  defp mermaid_node_classes(stage, selected_stage_id) do
+    [
+      "stage",
+      stage.start? && "start",
+      stage.terminal? && "terminal",
+      (stage.blocked? or stage.protocol_blocked?) && "blocked",
+      !stage.reachable? && "unreachable",
+      stage.id == selected_stage_id && "selected"
+    ]
+    |> Enum.filter(& &1)
+  end
+
+  defp mermaid_node_id(stage_id, index) do
+    normalized =
+      stage_id
+      |> to_string()
+      |> String.replace(~r/[^A-Za-z0-9_]/, "_")
+      |> String.trim("_")
+
+    suffix =
+      case normalized do
+        "" -> "stage"
+        value -> value
+      end
+
+    "stage_#{index}_#{suffix}"
+  end
+
+  defp mermaid_text(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[\r\n\t]+/, " ")
+    |> String.replace(~r/[|"<>]/, " ")
+    |> String.trim()
+  end
+
+  defp mermaid_signature(definition) do
+    :sha256
+    |> :crypto.hash(definition)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp mermaid_stage_map_json(node_ids) do
+    node_ids
+    |> Map.new(fn {stage_id, node_id} -> {node_id, stage_id} end)
+    |> Jason.encode!()
+  end
 end

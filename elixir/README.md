@@ -1274,15 +1274,17 @@ The observability UI now runs on a minimal Phoenix stack:
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+- Mermaid as a vendored static asset for the workflow-stage graph at `/workflow`
 
 The single-instance dashboard at `/` is the execution dashboard for the current Symphony process:
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
 detail links.
 
 The workflow dashboard at `/workflow` is a read-only configuration understanding surface. It loads
-the current `WORKFLOW.md` directly, renders stage nodes and outcome-labelled transitions, marks
-`workflow.start_stage`, `workflow.terminal_stages`, blocked/protocol-blocked paths, and shows
-`workflow.missing_outcome.max_retries` plus `on_exhausted` separately from ordinary transitions.
+the current `WORKFLOW.md` directly, renders a Mermaid stage graph with clickable nodes and
+outcome-labelled directed edges, marks `workflow.start_stage`, `workflow.terminal_stages`,
+blocked/protocol-blocked paths, and shows the selected stage plus
+`workflow.missing_outcome.max_retries`/`on_exhausted` separately from ordinary transitions.
 It also previews each stage prompt, lists outcome targets, reports semantic warnings such as
 unreachable stages or non-terminal stages without transitions, and summarizes `TRACKER.yaml`
 stage-state coverage. Tracker provider details are limited to non-secret hints such as kind,
