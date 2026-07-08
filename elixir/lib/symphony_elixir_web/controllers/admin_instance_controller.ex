@@ -8,7 +8,7 @@ defmodule SymphonyElixirWeb.AdminInstanceController do
   alias Plug.Conn
   alias SymphonyElixirWeb.Endpoint
 
-  @admin_instances_timeout_ms 3_000
+  @admin_instances_timeout_ms 8_000
 
   @spec index(Conn.t(), map()) :: Conn.t()
   def index(conn, _params) do
