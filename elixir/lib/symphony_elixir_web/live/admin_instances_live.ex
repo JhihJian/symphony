@@ -167,7 +167,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               type="button"
               phx-click="toggle_create_form"
               phx-disable-with="切换中..."
-              aria-expanded={@create_form_open?}
+              aria-expanded={if(@create_form_open?, do: "true", else: "false")}
               aria-controls="create-instance-form"
             ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
           </div>

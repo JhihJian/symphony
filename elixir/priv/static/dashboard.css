@@ -9,7 +9,7 @@
   --muted: #6e6e80;
   --line: #ececf1;
   --line-strong: #d9d9e3;
-  --accent: #10a37f;
+  --accent: #08795f;
   --accent-ink: #0f513f;
   --accent-soft: #e8faf4;
   --danger: #b42318;
@@ -28,12 +28,16 @@ html {
   overflow-x: clip;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
   overflow-x: clip;
   background:
-    radial-gradient(circle at top, rgba(16, 163, 127, 0.12) 0%, rgba(16, 163, 127, 0) 30%),
+    radial-gradient(circle at top, rgba(8, 121, 95, 0.11) 0%, rgba(8, 121, 95, 0) 30%),
     linear-gradient(180deg, var(--page-soft) 0%, var(--page) 24%, #f3f4f6 100%);
   color: var(--ink);
   font-family: "Sohne", "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
@@ -52,7 +56,7 @@ a:hover {
 
 a:focus-visible,
 button:focus-visible {
-  outline: 3px solid rgba(16, 163, 127, 0.3);
+  outline: 3px solid rgba(8, 121, 95, 0.3);
   outline-offset: 3px;
 }
 
@@ -67,7 +71,7 @@ button {
   font: inherit;
   font-weight: 600;
   letter-spacing: 0;
-  box-shadow: 0 1px 2px rgba(16, 163, 127, 0.16);
+  box-shadow: 0 1px 2px rgba(8, 121, 95, 0.16);
   transition:
     transform 140ms ease,
     box-shadow 140ms ease,
@@ -77,7 +81,7 @@ button {
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(16, 163, 127, 0.18);
+  box-shadow: 0 4px 10px rgba(8, 121, 95, 0.18);
 }
 
 button:disabled {
@@ -393,7 +397,7 @@ code {
   position: absolute;
   inset: 0 0 auto;
   height: 3px;
-  background: linear-gradient(90deg, var(--accent), rgba(16, 163, 127, 0));
+  background: linear-gradient(90deg, var(--accent), rgba(8, 121, 95, 0));
 }
 
 .fleet-summary {

@@ -557,19 +557,26 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard new instance button reveals the create form" do
     {:ok, view, html} = live(build_conn(), "/admin/instances")
+    {:ok, document} = Floki.parse_document(html)
 
     assert html =~ "新建实例"
     assert html =~ ~s(<form id="create-instance-form")
     assert html =~ ~s(hidden)
+    assert Floki.attribute(document, ~s(button[aria-controls="create-instance-form"]), "aria-expanded") == ["false"]
+    assert document |> Floki.find(~s(form#create-instance-form[hidden])) |> length() == 1
 
     html =
       view
       |> element("button", "新建实例")
       |> render_click()
 
+    {:ok, document} = Floki.parse_document(html)
+
     assert html =~ "收起表单"
     assert html =~ ~s(<form id="create-instance-form")
     refute html =~ ~s(<form id="create-instance-form" hidden)
+    assert Floki.attribute(document, ~s(button[aria-controls="create-instance-form"]), "aria-expanded") == ["true"]
+    assert document |> Floki.find(~s(form#create-instance-form[hidden])) |> length() == 0
   end
 
   test "admin dashboard creates instances and reads recent logs without exposing tokens" do

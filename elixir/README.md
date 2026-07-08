@@ -560,6 +560,10 @@ migration and ownership, config fingerprint/snapshot version, preflight result, 
 cutover gate decision, candidate intake, dispatch planning/application, worker start handoff, replay
 decision, replay request audit, closure chain, lifecycle reconciliation, and writeback
 completed/retryable/unknown/manual-attention/dangerous-replay state.
+The live Dashboard keeps the operator queue ahead of Hub internals: it surfaces running issue
+sessions, Hub active attempts, blocked sessions, and retry backlog before rate-limit and device
+diagnostic panels, so `counts.running = 0` is not mistaken for a fully idle Hub when runtime-ledger
+attempts or workspace leases are still active.
 `hub_device_observability.migration_readiness` adds a migration readiness report derived from the
 same safe summaries. At the device level it reports Hub runtime mode, scheduler status,
 provider/writeback executor mode, worker starter mode, activation probe mode, migration-state
