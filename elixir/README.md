@@ -1386,11 +1386,13 @@ The multi-instance dashboard at `/admin/instances` is a thin operator management
 registered instances from `~/.config/symphony/projects` by default, checks each
 `symphony@<project>.service` via `systemctl --user`, and queries each reachable instance's
 `/api/v1/state`. Stopped, failed, or unreachable instances are rendered as per-instance health
-states and do not block the rest of the overview. The page can create GitHub-backed instances by
-delegating to `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing
-env files and listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and
-recent-log actions for each service. Issue dispatch, retry semantics, workspace isolation, and
-Codex app-server behavior remain owned by each individual instance's orchestrator.
+states and do not block the rest of the overview. The fleet summary also shows an
+unreachable/unknown instance count so missing state snapshots are not mistaken for zero issue risk.
+The page can create GitHub-backed instances by delegating to
+`scripts/install-systemd-template.sh`, auto-allocates ports after checking existing env files and
+listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and recent-log
+actions for each service. Issue dispatch, retry semantics, workspace isolation, and Codex
+app-server behavior remain owned by each individual instance's orchestrator.
 
 Admin instance creation accepts either a one-time token entry or an environment variable reference;
 tokens are passed only to the install script environment and are not returned by the JSON API or
@@ -1400,10 +1402,12 @@ local `systemctl`, `journalctl`, and install-script commands. Remote browser ses
 view the management page as a read-only overview, but create, update, lifecycle, timer, and log
 buttons are visibly disabled and continue to be guarded server-side; the admin JSON API link is
 shown only to loopback administrator sessions. Destructive or high-impact
-operations such as stop, restart, disable, manual update execution, and timer triggering require a
-LiveView confirmation prompt that names the affected service or operation. Long-running actions use
-LiveView loading/disable feedback, and operation results render in a status or alert banner rather
-than as an unclassified text block.
+operations such as creating instances with optional immediate start/timer enablement, starting or
+enabling systemd services, stop, restart, disable, manual update execution, and timer enablement or
+triggering require a LiveView confirmation prompt that names the affected service or operation and
+states that systemd or automation state will change. Long-running actions use LiveView
+loading/disable feedback, and operation results render in a status or alert banner rather than as
+an unclassified text block.
 
 The same management page shows `symphony-update.timer` state, including enabled/active status and
 the next run time, and can enable, disable, or manually trigger `symphony-update.service`.
@@ -1416,6 +1420,9 @@ with a host-local lock, refuses to proceed when the source checkout has local ch
 fast-forwards `origin/main`, builds only after code changed, and restarts instances only after a
 successful build. If the auto-update state process is busy or unavailable, the management page and
 admin auto-update API return an `unavailable` snapshot instead of failing the whole operator view.
+The management page treats that state as unavailable/unknown rather than up to date; instance
+management remains usable, but operators should inspect the auto-update process before relying on
+update status.
 
 Per-instance restart policy is read from `SYMPHONY_UPDATE_STRATEGY` in each instance `env` file:
 

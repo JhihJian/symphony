@@ -141,12 +141,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
         <article class="metric-card">
           <p class="metric-label">重试中 Issue</p>
           <p class="metric-value numeric"><%= total_count(@instances, :retrying) %></p>
-          <p class="metric-detail">不可达实例按 0 计数，不影响其他实例。</p>
+          <p class="metric-detail">仅统计可返回状态快照的实例。</p>
         </article>
         <article class="metric-card">
           <p class="metric-label">阻塞 Issue</p>
           <p class="metric-value numeric"><%= total_count(@instances, :blocked) %></p>
           <p class="metric-detail">等待操作员输入或批准的会话数。</p>
+        </article>
+        <article class="metric-card">
+          <p class="metric-label">不可达/未知实例</p>
+          <p class="metric-value numeric"><%= unavailable_instance_count(@instances) %></p>
+          <p class="metric-detail">这些实例的 Issue 数可能未知，不应被解读为 0 风险。</p>
         </article>
       </section>
 
@@ -293,7 +298,13 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <strong>创建后将写入实例配置并刷新总览</strong>
               <span>本机管理员可提交；远端访问仅能预览当前表单。</span>
             </div>
-            <button class="lifecycle-button lifecycle-button-primary" type="submit" disabled={!@local_admin?} phx-disable-with="创建中...">创建实例</button>
+            <button
+              class="lifecycle-button lifecycle-button-primary"
+              type="submit"
+              disabled={!@local_admin?}
+              phx-confirm={create_instance_confirm(@create_form)}
+              phx-disable-with="创建中..."
+            >创建实例</button>
           </div>
         </form>
       </section>
@@ -327,6 +338,16 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           </div>
         </div>
 
+        <%= if auto_update_state(@auto_update) == :unavailable do %>
+          <section class="instance-panel">
+            <p class="panel-label">自动更新状态不可用</p>
+            <div class="detail-stack">
+              <span>无法判断 GitHub main 是否已有新版本。</span>
+              <span class="muted">页面和实例管理仍可用；请检查自动更新进程或最近错误后再执行更新相关操作。</span>
+            </div>
+          </section>
+        <% end %>
+
         <div class="instance-meta-grid">
           <section class="instance-panel">
             <p class="panel-label">当前部署</p>
@@ -347,7 +368,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           <section class="instance-panel">
             <p class="panel-label">更新状态</p>
             <div class="detail-stack">
-              <span class={update_badge_class(@auto_update.pending_update?)}><%= update_state_text(@auto_update.pending_update?) %></span>
+              <span class={update_badge_class(@auto_update)}><%= update_state_text(@auto_update) %></span>
               <span class="muted">最近检查：<%= get_in(@auto_update, [:last_check, :status]) || "never" %></span>
               <span class="muted">检查时间：<%= format_datetime(get_in(@auto_update, [:last_check, :checked_at])) %></span>
             </div>
@@ -410,7 +431,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
             <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
             <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
           </div>
@@ -531,6 +552,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-value-action="start"
                   phx-value-name={instance.name}
                   disabled={!@local_admin?}
+                  phx-confirm={"确认启动 #{instance.service}？此操作会改变用户 systemd 服务状态，并可能开始处理 Issue。"}
                   phx-disable-with="启动中..."
                 >启动</button>
                 <button
@@ -560,6 +582,7 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
                   phx-value-action="enable"
                   phx-value-name={instance.name}
                   disabled={!@local_admin?}
+                  phx-confirm={"确认启用 #{instance.service}？此操作会改变用户 systemd 开机/登录自启动状态。"}
                   phx-disable-with="启用中..."
                 >启用</button>
                 <button
@@ -798,6 +821,15 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     Enum.reduce(instances, 0, fn instance, total -> total + count(instance, key) end)
   end
 
+  defp unavailable_instance_count(instances) do
+    Enum.count(instances, fn instance ->
+      health_status = get_in(instance, [:health, :status])
+      instance_status = Map.get(instance, :status) || Map.get(instance, "status")
+
+      health_status != "reachable" or instance_status in [nil, "unknown"]
+    end)
+  end
+
   defp count(instance, key) do
     counts = Map.get(instance, :counts, %{})
     Map.get(counts, key, Map.get(counts, to_string(key), 0))
@@ -815,11 +847,45 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   defp strategy_description("force_restart"), do: "强制重启（危险操作）"
   defp strategy_description(_strategy), do: "使用默认空闲重启策略"
 
-  defp update_state_text(true), do: "有可用更新"
-  defp update_state_text(false), do: "已是最新"
+  defp create_instance_confirm(_form) do
+    "确认创建实例？此操作会写入实例配置；如果勾选了立即启动或自动更新 timer，还会改变用户 systemd 服务或自动化定时器状态。"
+  end
 
-  defp update_badge_class(true), do: "state-badge state-badge-blocked"
-  defp update_badge_class(false), do: "state-badge state-badge-active"
+  defp auto_update_state(snapshot) do
+    last_check = Map.get(snapshot, :last_check, %{})
+    status = Map.get(last_check, :status) || Map.get(last_check, "status")
+    error = Map.get(last_check, :error) || Map.get(last_check, "error")
+
+    cond do
+      status in ["unavailable", "unknown"] or error not in [nil, ""] ->
+        :unavailable
+
+      Map.get(snapshot, :pending_update?, false) ->
+        :pending
+
+      status in ["ok", "not_modified", "up_to_date"] ->
+        :up_to_date
+
+      true ->
+        :unavailable
+    end
+  end
+
+  defp update_state_text(snapshot) do
+    case auto_update_state(snapshot) do
+      :pending -> "有可用更新"
+      :up_to_date -> "已是最新"
+      :unavailable -> "无法判断/不可用"
+    end
+  end
+
+  defp update_badge_class(snapshot) do
+    case auto_update_state(snapshot) do
+      :pending -> "state-badge state-badge-blocked"
+      :up_to_date -> "state-badge state-badge-active"
+      :unavailable -> "state-badge state-badge-warning"
+    end
+  end
 
   defp format_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp format_datetime(nil), do: "未知"
