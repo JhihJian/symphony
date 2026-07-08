@@ -295,6 +295,10 @@ defmodule SymphonyElixir.CLITest do
           send(parent, {:hub_provider_executor_set, executor})
           :ok
         end,
+        set_hub_writeback_executor: fn executor ->
+          send(parent, {:hub_writeback_executor_set, executor})
+          :ok
+        end,
         set_hub_activation_probe: fn opts ->
           send(parent, {:hub_activation_probe_set, opts})
           :ok
@@ -316,6 +320,7 @@ defmodule SymphonyElixir.CLITest do
     assert_received {:hub_scheduler_set, false}
     assert_received :started
     refute_received {:hub_provider_executor_set, _executor}
+    refute_received {:hub_writeback_executor_set, _executor}
     refute_received {:hub_activation_probe_set, _opts}
     refute_received {:workflow_set, _path}
     refute_received {:tracker_config_set, _path}
@@ -805,12 +810,92 @@ defmodule SymphonyElixir.CLITest do
           send(parent, {:hub_provider_executor_set, executor})
           :ok
         end,
+        set_hub_writeback_executor: fn executor ->
+          send(parent, {:hub_writeback_executor_set, executor})
+          :ok
+        end,
         set_hub_config_path: fn _path -> :ok end,
         validate_hub_config: fn _path -> :ok end
       })
 
     assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-provider-executor", "real-writeback"], deps)
     assert_received {:hub_provider_executor_set, SymphonyElixir.Hub.RealWritebackExecutor}
+    assert_received {:hub_writeback_executor_set, SymphonyElixir.Hub.RealWritebackExecutor}
+  end
+
+  test "accepts explicit real hub writeback executor opt-in" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_writeback_executor: fn executor ->
+          send(parent, {:hub_writeback_executor_set, executor})
+          :ok
+        end,
+        set_hub_provider_executor: fn executor ->
+          send(parent, {:hub_provider_executor_set, executor})
+          :ok
+        end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-writeback-executor", "real-writeback"], deps)
+    assert_received {:hub_writeback_executor_set, SymphonyElixir.Hub.RealWritebackExecutor}
+    refute_received {:hub_provider_executor_set, _executor}
+  end
+
+  test "accepts production hub executor profile" do
+    parent = self()
+    hub_config_path = "tmp/hub/HUB.yaml"
+    expanded_hub_config_path = Path.expand(hub_config_path)
+
+    deps =
+      deps(%{
+        file_regular?: fn path -> path == expanded_hub_config_path end,
+        set_hub_provider_executor: fn executor ->
+          send(parent, {:hub_provider_executor_set, executor})
+          :ok
+        end,
+        set_hub_writeback_executor: fn executor ->
+          send(parent, {:hub_writeback_executor_set, executor})
+          :ok
+        end,
+        set_hub_worker_starter: fn starter ->
+          send(parent, {:hub_worker_starter_set, starter})
+          :ok
+        end,
+        set_hub_config_path: fn _path -> :ok end,
+        validate_hub_config: fn _path -> :ok end
+      })
+
+    assert :ok = CLI.evaluate([@ack_flag, "--hub-config", hub_config_path, "--hub-executor-profile", "production"], deps)
+    assert_received {:hub_provider_executor_set, SymphonyElixir.Hub.RealCandidateScanExecutor}
+    assert_received {:hub_writeback_executor_set, SymphonyElixir.Hub.RealWritebackExecutor}
+    assert_received {:hub_worker_starter_set, SymphonyElixir.Hub.RealWorkerStarter}
+  end
+
+  test "rejects unsupported hub writeback executor mode" do
+    deps = deps(%{})
+
+    assert {:error, message} =
+             CLI.evaluate([@ack_flag, "--hub-config", "HUB.yaml", "--hub-writeback-executor", "real-candidate-scan"], deps)
+
+    assert message =~ "Unsupported --hub-writeback-executor"
+    assert message =~ "real-writeback"
+  end
+
+  test "rejects unsupported hub executor profile" do
+    deps = deps(%{})
+
+    assert {:error, message} =
+             CLI.evaluate([@ack_flag, "--hub-config", "HUB.yaml", "--hub-executor-profile", "staging"], deps)
+
+    assert message =~ "Unsupported --hub-executor-profile"
+    assert message =~ "production"
   end
 
   test "accepts explicit real hub worker starter opt-in" do
@@ -861,6 +946,7 @@ defmodule SymphonyElixir.CLITest do
         set_tracker_config_file_path: fn _path -> :ok end,
         set_hub_config_path: fn _path -> :ok end,
         set_hub_provider_executor: fn _executor -> :ok end,
+        set_hub_writeback_executor: fn _executor -> :ok end,
         set_hub_activation_probe: fn _opts -> :ok end,
         load_hub_activation_ack: fn _path -> :ok end,
         load_hub_cutover_operation_request: fn _path -> :ok end,

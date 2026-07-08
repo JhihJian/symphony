@@ -18,9 +18,10 @@ Options:
   --no-start                Do not enable/start the service.
   -h, --help                Show this help.
 
-The installed service is a Hub observability sidecar. It does not enable
---hub-scheduler, real provider executors, real worker starter, writeback, or
-legacy service takeover.
+The installed service is the Hub production entrypoint. It enables the Hub
+scheduler, real candidate scan executor, real writeback executor, real worker
+starter, and host-service activation probe. It does not stop or disable legacy
+symphony@project.service units by itself.
 USAGE
 }
 
@@ -153,12 +154,15 @@ mkdir -p "$logs_root" "$hub_config_dir" "$systemd_user_dir"
   printf 'SYMPHONY_HUB_HOST=%s\n' "$host"
   printf 'SYMPHONY_HUB_PORT=%s\n' "$port"
   printf 'SYMPHONY_HUB_ACTIVATION_PROBE=host-service\n'
+  printf 'SYMPHONY_HUB_PROVIDER_EXECUTOR=real-candidate-scan\n'
+  printf 'SYMPHONY_HUB_WRITEBACK_EXECUTOR=real-writeback\n'
+  printf 'SYMPHONY_HUB_WORKER_STARTER=real\n'
 } > "$env_file"
 chmod 600 "$env_file"
 
 cat > "$unit_file" <<UNIT
 [Unit]
-Description=Symphony Hub observability sidecar
+Description=Symphony Hub production service
 Documentation=file:${app_dir}/README.md
 After=network-online.target
 Wants=network-online.target
@@ -167,7 +171,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${app_dir}
 EnvironmentFile=${env_file}
-ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_HUB_LOGS_ROOT} --hub-config \${SYMPHONY_HUB_CONFIG} --hub-activation-probe \${SYMPHONY_HUB_ACTIVATION_PROBE} --host \${SYMPHONY_HUB_HOST} --port \${SYMPHONY_HUB_PORT}
+ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_HUB_LOGS_ROOT} --hub-config \${SYMPHONY_HUB_CONFIG} --hub-scheduler --hub-provider-executor \${SYMPHONY_HUB_PROVIDER_EXECUTOR} --hub-writeback-executor \${SYMPHONY_HUB_WRITEBACK_EXECUTOR} --hub-worker-starter \${SYMPHONY_HUB_WORKER_STARTER} --hub-activation-probe \${SYMPHONY_HUB_ACTIVATION_PROBE} --host \${SYMPHONY_HUB_HOST} --port \${SYMPHONY_HUB_PORT}
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT

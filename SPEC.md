@@ -1282,6 +1282,9 @@ Runtime entrypoint:
 - A Hub runtime MAY provide an explicit opt-in real candidate-scan provider executor, for example
   `--hub-provider-executor real-candidate-scan`. The default without that opt-in MUST remain the
   skeleton executor, and legacy single-project runtime behavior MUST remain unchanged.
+- Candidate-scan and writeback execution MUST be independently configurable in Hub mode. Enabling a
+  real candidate-scan executor MUST NOT imply real writeback, and enabling real writeback MUST NOT
+  replace the candidate-scan executor used by poll ticks.
 - A Hub runtime MAY provide an explicit opt-in host/service activation probe flag, for example
   `--hub-activation-probe host-service`. Without that opt-in or an injected probe, the legacy
   single-project runtime and existing `symphony@project.service` deployments MUST NOT start local
@@ -1311,7 +1314,7 @@ Runtime entrypoint:
   problems to `permanent_failure`, and unknown/ambiguous side-effect results to a non-success
   unknown/manual-attention class.
 - A Hub runtime MAY provide an explicit opt-in real writeback provider executor, for example
-  `--hub-provider-executor real-writeback`. The default without that opt-in MUST remain the
+  `--hub-writeback-executor real-writeback`. The default without that opt-in MUST remain the
   skeleton/direct legacy behavior, and legacy single-project runtime behavior MUST remain unchanged.
 - A real writeback executor SHOULD handle only replay-safe or marker-addressed writeback subsets at
   first, such as workflow stage/status writes, workpad marker upserts, and additive label writes.

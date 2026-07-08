@@ -136,7 +136,7 @@ Unsupported provider kinds, non-candidate operations, project config/auth failur
 retryable provider errors are mapped back to governed result classes and per-scope backoff/manual
 attention summaries. This does not migrate provider writeback, dynamic tools, legacy
 `symphony@project.service`, or non-Hub runtime behavior.
-Passing `--hub-provider-executor real-writeback` opts into the first controlled real writeback
+Passing `--hub-writeback-executor real-writeback` opts into the first controlled real writeback
 executor. It is deliberately narrow: status/stage writes, GitHub workpad marker upserts, and GitHub
 label additions can execute after `WritebackProcessor` confirms the intent is safe to execute or
 retry. Already-succeeded intents, conflicting intent keys, non-idempotent unknown results, PR
@@ -147,7 +147,9 @@ registry project before loading that project's own `WORKFLOW.md` and `TRACKER.ya
 config/auth/provider failure is recorded for that project/scope only. Hub snapshot and
 `/api/v1/state` include safe writeback executor mode, supported/rejected operations, counts, project
 pressure, and recent error categories without tokens, raw provider payloads, or full comment/PR
-bodies.
+bodies. The legacy `--hub-provider-executor real-writeback` spelling is still accepted as a
+compatibility alias, but production Hub mode should set candidate scan and writeback executors with
+separate flags.
 Hub activation preflight adds the #74 legacy ownership guardrail before those Hub-owned paths run.
 For projects explicitly marked `hub_managed`, Hub evaluates a safe project snapshot plus injected
 host/service probe evidence for active/enabled legacy services, legacy-owned provider scopes,
@@ -497,9 +499,11 @@ project ownership remain manual operator decisions. This command gathers evidenc
 stop, disable, restart, delete, modify `HUB.yaml`, modify project config, or migrate
 `symphony@<project>.service`.
 For a long-running observability entrypoint, install `symphony-hub.service` with
-`scripts/install-hub-systemd-service.sh`. That sidecar keeps the Hub scheduler, real provider
-executors, real worker starter, and writeback disabled by default, and does not stop, disable, or
-restart existing `symphony@<project>.service` instances.
+`scripts/install-hub-systemd-service.sh`. The generated `symphony-hub.service` is the formal Hub
+production entrypoint and passes `--hub-scheduler`, `--hub-provider-executor real-candidate-scan`,
+`--hub-writeback-executor real-writeback`, `--hub-worker-starter real`,
+`--hub-activation-probe host-service`, and the configured `--host`/`--port`. It does not stop,
+disable, or restart existing `symphony@<project>.service` instances by itself.
 Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
 ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
 runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of

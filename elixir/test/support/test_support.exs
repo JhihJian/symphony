@@ -59,6 +59,8 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :tracker_config_file_path)
           Application.delete_env(:symphony_elixir, :server_host_override)
           Application.delete_env(:symphony_elixir, :server_port_override)
+          Application.delete_env(:symphony_elixir, :hub_provider_executor)
+          Application.delete_env(:symphony_elixir, :hub_writeback_executor)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues_by_project)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)

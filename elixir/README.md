@@ -338,7 +338,22 @@ To let Hub execute the first safe writeback subset through the same governed bou
 explicitly:
 
 ```bash
-./bin/symphony --hub-config /path/to/HUB.yaml --hub-provider-executor real-writeback --host 0.0.0.0 --port 21000
+./bin/symphony --hub-config /path/to/HUB.yaml --hub-writeback-executor real-writeback --host 0.0.0.0 --port 21000
+```
+
+A production Hub process that owns polling, safe writeback, and worker starts should set the
+candidate scan and writeback executors independently:
+
+```bash
+./bin/symphony \
+  --hub-config /path/to/HUB.yaml \
+  --hub-scheduler \
+  --hub-provider-executor real-candidate-scan \
+  --hub-writeback-executor real-writeback \
+  --hub-worker-starter real \
+  --hub-activation-probe host-service \
+  --host 0.0.0.0 \
+  --port 21000
 ```
 
 `--hub-config` is opt-in. Symphony does not switch into Hub mode just because a `HUB.yaml` file is
@@ -396,7 +411,7 @@ Other operation kinds remain unsupported and provider writeback is not implement
 validation problems become permanent failures, rate limits become rate-limited/backoff summaries,
 network/provider 5xx failures become retryable failures, and unknown results are not treated as
 success.
-When `--hub-provider-executor real-writeback` is used, the provider executor handles only the first
+When `--hub-writeback-executor real-writeback` is used, the writeback executor handles only the first
 safe writeback subset: status/stage writes, GitHub workpad marker upserts, and GitHub label
 additions. Before provider I/O it normalizes the routed writeback intent through
 `WritebackProcessor.decide/3`; already-succeeded intents are reused, conflicting intent keys are
@@ -407,6 +422,9 @@ and calls the project-local tracker/GitHub write path under `Config.with_setting
 providers or operations return governed non-success results. Success, rate limits, retryable
 network/provider failures, config/auth/not-found/validation failures, and unknown/manual-attention
 outcomes are mapped into safe `ProviderGovernance` result summaries linked to the writeback intent.
+The older `--hub-provider-executor real-writeback` spelling remains a compatibility alias, but
+production Hub mode should pair `--hub-provider-executor real-candidate-scan` with
+`--hub-writeback-executor real-writeback` instead of using one executor flag for both concerns.
 Hub cutover replay decisions are closeout-aware but still pre-side-effect guard summaries. After the
 execution outcome ledger and outcome closeout read model identify an unresolved `unknown` or
 `manual_attention` outcome, `SymphonyElixir.Hub.CutoverReplayDecision` can report whether the same
@@ -786,10 +804,9 @@ values, raw env/raw config, raw provider responses, raw systemd output, raw hook
 full prompts, full transcripts, provider body text, full comment/PR bodies, and exception stack
 traces.
 
-#### Hub sidecar systemd service
+#### Hub production systemd service
 
-For a long-running Hub observability entrypoint, install a separate sidecar instead of replacing
-existing `symphony@<project>.service` instances:
+For a long-running Hub production entrypoint, install a separate `symphony-hub.service`:
 
 ```bash
 ../scripts/install-hub-systemd-service.sh \
@@ -798,10 +815,11 @@ existing `symphony@<project>.service` instances:
   --port 21000
 ```
 
-The generated `symphony-hub.service` passes `--hub-activation-probe host-service` and keeps the Hub
-scheduler, real provider executors, real worker starter, and writeback disabled unless an operator
-starts a different explicit runtime. It is intended for Dashboard/API observability and activation
-preflight evidence only, not automatic legacy service takeover.
+The generated `symphony-hub.service` passes `--hub-scheduler`,
+`--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
+`--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
+`--host`/`--port`. The installer does not stop or disable existing `symphony@<project>.service`
+instances; perform that cutover explicitly after readiness and ownership checks.
 
 #### Hub migration readiness dry-run runbook
 

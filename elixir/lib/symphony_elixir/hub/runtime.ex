@@ -46,6 +46,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @env_key :hub_config_file_path
   @scheduler_env_key :hub_scheduler_enabled
   @provider_executor_env_key :hub_provider_executor
+  @writeback_executor_env_key :hub_writeback_executor
   @worker_start_starter_env_key :hub_worker_start_starter
   @activation_probe_env_key :hub_activation_probe
   @operator_acknowledgements_env_key :hub_operator_acknowledgements
@@ -75,6 +76,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:poll_facts) => [PollCoordinator.fact()],
           required(:provider_queue) => ProviderGovernance.queue(),
           required(:provider_executor) => module() | function(),
+          required(:writeback_executor) => module() | function(),
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
           required(:activation_probe) => map() | function() | nil,
           required(:operator_acknowledgements) => term(),
@@ -152,6 +154,18 @@ defmodule SymphonyElixir.Hub.Runtime do
   @spec clear_provider_executor() :: :ok
   def clear_provider_executor do
     Application.delete_env(:symphony_elixir, @provider_executor_env_key)
+    :ok
+  end
+
+  @spec set_writeback_executor(module() | function() | nil) :: :ok
+  def set_writeback_executor(executor) when is_atom(executor) or is_function(executor, 2) or is_nil(executor) do
+    Application.put_env(:symphony_elixir, @writeback_executor_env_key, executor)
+    :ok
+  end
+
+  @spec clear_writeback_executor() :: :ok
+  def clear_writeback_executor do
+    Application.delete_env(:symphony_elixir, @writeback_executor_env_key)
     :ok
   end
 
@@ -392,6 +406,15 @@ defmodule SymphonyElixir.Hub.Runtime do
     end
   end
 
+  @spec writeback_executor() :: module() | function()
+  def writeback_executor do
+    case Application.get_env(:symphony_elixir, @writeback_executor_env_key) do
+      nil -> ProviderExecutor
+      executor when is_atom(executor) or is_function(executor, 2) -> executor
+      _invalid -> ProviderExecutor
+    end
+  end
+
   @spec worker_start_starter() :: WorkerStartHandoff.starter()
   def worker_start_starter do
     Application.get_env(:symphony_elixir, @worker_start_starter_env_key)
@@ -521,6 +544,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       tick = idle_tick(loaded_at)
       scheduler = new_scheduler(Keyword.get(opts, :scheduler_enabled, scheduler_enabled?()), loaded_at)
       provider_executor = Keyword.get(opts, :provider_executor, provider_executor())
+      writeback_executor = initial_writeback_executor(opts, provider_executor)
       activation_probe = Keyword.get(opts, :activation_probe, activation_probe())
       operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements, operator_acknowledgements())
       cutover_operation_requests = Keyword.get(opts, :cutover_operation_requests, cutover_operation_requests())
@@ -545,6 +569,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           loaded_at,
           activation_preflight,
           provider_executor,
+          writeback_executor,
           worker_start_starter,
           activation_probe,
           operator_acknowledgements,
@@ -566,6 +591,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           cutover_replay_requests: cutover_replay_requests,
           provider_queue: provider_queue,
           provider_executor: provider_executor,
+          writeback_executor: writeback_executor,
           worker_start_starter: worker_start_starter,
           runtime_ledger: runtime_ledger,
           candidate_intake: candidate_intake,
@@ -594,6 +620,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         poll_facts: [],
         provider_queue: provider_queue,
         provider_executor: provider_executor,
+        writeback_executor: writeback_executor,
         worker_start_starter: worker_start_starter,
         activation_probe: activation_probe,
         operator_acknowledgements: operator_acknowledgements,
@@ -721,6 +748,7 @@ defmodule SymphonyElixir.Hub.Runtime do
             requested_at,
             activation_preflight,
             state.provider_executor,
+            state.writeback_executor,
             state.worker_start_starter,
             state.activation_probe,
             state.operator_acknowledgements,
@@ -788,6 +816,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     provider_queue = Keyword.get(opts, :provider_queue, ProviderGovernance.new_queue())
     poll_facts = Keyword.get(opts, :poll_facts, [])
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    writeback_executor = Keyword.get(opts, :writeback_executor, provider_executor)
     worker_start_starter = Keyword.get(opts, :worker_start_starter)
     activation_probe = Keyword.get(opts, :activation_probe)
     operator_acknowledgements = Keyword.get(opts, :operator_acknowledgements)
@@ -853,12 +882,13 @@ defmodule SymphonyElixir.Hub.Runtime do
       )
 
     scheduler = normalize_scheduler(Keyword.get(opts, :scheduler), poll_plan, runtime_ledger, worker_start_handoff, worker_lifecycle_reconciliation, now)
-    writeback = writeback_summary(runtime_ledger, provider_queue, provider_executor)
+    writeback = writeback_summary(runtime_ledger, provider_queue, writeback_executor)
 
     runtime_observability =
       hub_runtime_observability(
         read_only: Keyword.get(opts, :read_only, false),
         provider_executor: provider_executor,
+        writeback_executor: writeback_executor,
         activation_probe: activation_probe,
         activation_preflight: activation_preflight,
         worker_start_starter: worker_start_starter
@@ -1202,8 +1232,34 @@ defmodule SymphonyElixir.Hub.Runtime do
     ActivationPreflight.build(registry, now: now, probe: probe)
   end
 
-  defp build_cutover_gate(registry, now, activation_preflight, provider_executor, worker_start_starter, activation_probe, operator_acknowledgements, scheduler) do
-    provider_summary = provider_executor_summary(provider_executor)
+  defp initial_writeback_executor(opts, provider_executor) do
+    cond do
+      Keyword.has_key?(opts, :writeback_executor) ->
+        Keyword.get(opts, :writeback_executor)
+
+      match?({:ok, _value}, Application.fetch_env(:symphony_elixir, @writeback_executor_env_key)) ->
+        writeback_executor()
+
+      Keyword.has_key?(opts, :provider_executor) ->
+        provider_executor
+
+      true ->
+        ProviderExecutor
+    end
+  end
+
+  defp build_cutover_gate(
+         registry,
+         now,
+         activation_preflight,
+         provider_executor,
+         writeback_executor,
+         worker_start_starter,
+         activation_probe,
+         operator_acknowledgements,
+         scheduler
+       ) do
+    writeback_summary = writeback_executor_summary(writeback_executor)
 
     device_projection =
       DeviceObservability.build(
@@ -1211,6 +1267,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           hub_runtime:
             hub_runtime_observability(
               provider_executor: provider_executor,
+              writeback_executor: writeback_executor,
               activation_probe: activation_probe,
               activation_preflight: activation_preflight,
               worker_start_starter: worker_start_starter
@@ -1219,7 +1276,7 @@ defmodule SymphonyElixir.Hub.Runtime do
           activation_preflight: activation_preflight,
           scheduler: scheduler,
           runtime_ledger: RuntimeLedger.new(),
-          writeback: %{executor: provider_summary},
+          writeback: %{executor: writeback_summary},
           migration_boundary: migration_boundary()
         },
         now: now,
@@ -1387,6 +1444,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_replay_requests: state.cutover_replay_requests,
         provider_queue: provider_queue,
         provider_executor: state.provider_executor,
+        writeback_executor: state.writeback_executor,
         worker_start_starter: state.worker_start_starter,
         runtime_ledger: runtime_ledger,
         candidate_intake: candidate_intake,
@@ -1536,6 +1594,7 @@ defmodule SymphonyElixir.Hub.Runtime do
             requested_at,
             activation_preflight,
             state.provider_executor,
+            state.writeback_executor,
             state.worker_start_starter,
             state.activation_probe,
             state.operator_acknowledgements,
@@ -1649,6 +1708,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_replay_request_audit: state.cutover_replay_request_audit,
         provider_queue: state.provider_queue,
         provider_executor: state.provider_executor,
+        writeback_executor: state.writeback_executor,
         worker_start_starter: state.worker_start_starter,
         runtime_ledger: state.runtime_ledger,
         candidate_intake: state.candidate_intake,
@@ -1946,13 +2006,13 @@ defmodule SymphonyElixir.Hub.Runtime do
     ]
   end
 
-  defp writeback_summary(runtime_ledger, provider_queue, provider_executor) do
+  defp writeback_summary(runtime_ledger, provider_queue, writeback_executor) do
     replay = RuntimeLedger.replay(runtime_ledger)
     projects = Enum.map(replay.projects, &project_writeback_summary/1)
     counts = sum_writeback_counts(projects)
 
     %{
-      executor: provider_executor_summary(provider_executor),
+      executor: writeback_executor_summary(writeback_executor),
       counts: counts,
       projects: projects,
       queue: provider_writeback_queue_summary(provider_queue),
@@ -2072,17 +2132,19 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp hub_runtime_observability(opts) do
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    writeback_executor = Keyword.get(opts, :writeback_executor, provider_executor)
     activation_probe = Keyword.get(opts, :activation_probe)
     activation_preflight = Keyword.get(opts, :activation_preflight)
     worker_start_starter = Keyword.get(opts, :worker_start_starter)
     provider_summary = provider_executor_summary(provider_executor)
+    writeback_summary = writeback_executor_summary(writeback_executor)
 
     %{
       enabled: true,
       mode: "hub",
       read_only: Keyword.get(opts, :read_only, false) == true,
       provider_executor: provider_summary,
-      writeback_executor: provider_summary,
+      writeback_executor: writeback_summary,
       worker_starter: worker_starter_summary(worker_start_starter),
       activation_probe: activation_probe_summary(activation_probe, activation_preflight)
     }
@@ -2238,9 +2300,28 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
+  defp writeback_executor_summary(ProviderExecutor), do: provider_executor_summary(ProviderExecutor)
+
+  defp writeback_executor_summary(nil), do: provider_executor_summary(ProviderExecutor)
+
+  defp writeback_executor_summary(RealWritebackExecutor), do: provider_executor_summary(RealWritebackExecutor)
+
+  defp writeback_executor_summary(RealCandidateScanExecutor), do: provider_executor_summary(RealCandidateScanExecutor)
+
+  defp writeback_executor_summary(executor) when is_function(executor, 2) do
+    %{
+      mode: "custom_writeback_function",
+      executor: "anonymous_function",
+      provider_io: "unknown",
+      supported_operations: []
+    }
+  end
+
+  defp writeback_executor_summary(executor), do: provider_executor_summary(executor)
+
   defp authorization_consumption_guard_required?(state, executable_entries) do
     (executable_entries != [] and real_candidate_scan_executor?(state.provider_executor)) or
-      real_writeback_executor?(state.provider_executor) or
+      real_writeback_executor?(state.writeback_executor) or
       real_worker_start_starter?(state.worker_start_starter) or
       dispatch_application_pending?(state.dispatch_planning)
   end

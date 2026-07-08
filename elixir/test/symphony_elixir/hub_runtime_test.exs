@@ -13,6 +13,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
+    RealWorkerStarter,
     RealWritebackExecutor,
     Runtime,
     RuntimeLedger
@@ -62,7 +63,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
         id: :hub_runtime_ready_paused_error
       )
 
-      snapshot = Runtime.snapshot(runtime_name, 100)
+      snapshot = Runtime.snapshot(runtime_name, 15_000)
 
       assert snapshot.running == []
       assert snapshot.retrying == []
@@ -1056,6 +1057,98 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "raw_provider"
       refute safe_text =~ "full prompt"
       refute safe_text =~ "transcript"
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "Hub runtime exposes separate production candidate scan and writeback executors" do
+    root = tmp_root("hub-runtime-split-executors")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      activation_probe = %{
+        projects: [
+          %{
+            project_id: "alpha",
+            status: "safe_to_manage",
+            safe_to_manage: true,
+            reason: "hub_managed_no_conflict",
+            probe_source: "host_service_probe",
+            checked_at: "2026-06-30T09:00:00Z",
+            detected_legacy_ownership: [],
+            unknown_probe_results: []
+          }
+        ]
+      }
+
+      operator_acknowledgements =
+        cutover_acknowledgements!(hub_path,
+          provider_executor: RealCandidateScanExecutor,
+          writeback_executor: RealWritebackExecutor,
+          worker_start_starter: RealWorkerStarter,
+          activation_probe: activation_probe,
+          scheduler_enabled: true
+        )
+
+      runtime_name = Module.concat(__MODULE__, :SplitExecutorsRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         provider_executor: RealCandidateScanExecutor,
+         writeback_executor: RealWritebackExecutor,
+         worker_start_starter: RealWorkerStarter,
+         activation_probe: activation_probe,
+         operator_acknowledgements: operator_acknowledgements,
+         scheduler_enabled: false},
+        id: :hub_runtime_split_executors
+      )
+
+      snapshot = Runtime.snapshot(runtime_name, 15_000)
+
+      assert snapshot.hub_runtime.provider_executor.mode == "real_candidate_scan"
+      assert snapshot.hub_runtime.provider_executor.supported_operations == ["candidate_scan"]
+      assert snapshot.hub_runtime.writeback_executor.mode == "real_writeback"
+      assert "stage_writeback" in snapshot.hub_runtime.writeback_executor.supported_operations
+      assert snapshot.hub_runtime.writeback.executor.mode == "real_writeback"
+      assert snapshot.hub_runtime.worker_starter.mode == "real_worker_starter"
+
+      {:ok, loaded_registry} = ProjectRegistry.load(hub_path)
+
+      gate_snapshot =
+        Runtime.build_snapshot(hub_path, ~U[2026-06-30 09:02:00Z], loaded_registry,
+          now: ~U[2026-06-30 09:02:00Z],
+          activation_probe: activation_probe,
+          activation_preflight: ActivationPreflight.build(loaded_registry, now: ~U[2026-06-30 09:02:00Z], probe: activation_probe),
+          provider_executor: RealCandidateScanExecutor,
+          writeback_executor: RealWritebackExecutor,
+          worker_start_starter: RealWorkerStarter,
+          operator_acknowledgements: operator_acknowledgements,
+          scheduler: %{enabled: true, status: "scheduled"}
+        )
+
+      [project_gate] = gate_snapshot.hub_cutover_gate.projects
+      assert "poll" in project_gate.allowed_operations
+      assert "writeback" in project_gate.allowed_operations
+
+      reason_codes = Enum.map(project_gate.blocking_reasons ++ project_gate.advisory_reasons, & &1.code)
+      refute "provider_executor_candidate_scan_not_real" in reason_codes
+      refute "writeback_executor_not_real" in reason_codes
+
+      payload = Presenter.state_payload(runtime_name, 100)
+      assert payload.hub_runtime.provider_executor.mode == "real_candidate_scan"
+      assert payload.hub_runtime.writeback_executor.mode == "real_writeback"
     after
       File.rm_rf(root)
     end
@@ -3435,6 +3528,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
   defp cutover_acknowledgements!(hub_path, opts) do
     now = Keyword.get(opts, :now, ~U[2026-06-30 09:00:00Z])
     provider_executor = Keyword.get(opts, :provider_executor, ProviderExecutor)
+    writeback_executor = Keyword.get(opts, :writeback_executor, provider_executor)
     worker_start_starter = Keyword.get(opts, :worker_start_starter)
     activation_probe = Keyword.get(opts, :activation_probe)
     scheduler_enabled? = Keyword.get(opts, :scheduler_enabled, false) == true
@@ -3448,6 +3542,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
         activation_probe: activation_probe,
         activation_preflight: activation_preflight,
         provider_executor: provider_executor,
+        writeback_executor: writeback_executor,
         worker_start_starter: worker_start_starter,
         scheduler: %{enabled: scheduler_enabled?, status: if(scheduler_enabled?, do: "scheduled", else: "disabled")}
       )

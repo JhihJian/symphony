@@ -18,9 +18,11 @@ defmodule SymphonyElixir.CLI do
     hub_cutover_execution_outcome_closeout: :string,
     hub_cutover_operation_request: :string,
     hub_cutover_replay_request: :string,
+    hub_executor_profile: :string,
     hub_manual_attention_closeout: :string,
     hub_provider_executor: :string,
     hub_scheduler: :boolean,
+    hub_writeback_executor: :string,
     hub_worker_starter: :string,
     host: :string,
     logs_root: :string,
@@ -35,6 +37,7 @@ defmodule SymphonyElixir.CLI do
           set_tracker_config_file_path: (String.t() -> :ok | {:error, term()}),
           set_hub_config_path: (String.t() -> :ok | {:error, term()}),
           set_hub_provider_executor: (module() | nil -> :ok | {:error, term()}),
+          set_hub_writeback_executor: (module() | nil -> :ok | {:error, term()}),
           set_hub_activation_probe: (keyword() -> :ok | {:error, term()}),
           load_hub_activation_ack: (String.t() -> :ok | {:error, term()}),
           load_hub_cutover_operation_request: (String.t() -> :ok | {:error, term()}),
@@ -109,7 +112,9 @@ defmodule SymphonyElixir.CLI do
          :ok <- maybe_set_server_host(opts, deps),
          :ok <- maybe_set_server_port(opts, deps),
          :ok <- maybe_set_hub_scheduler(opts, deps),
+         :ok <- maybe_set_hub_executor_profile(opts, deps),
          :ok <- maybe_set_hub_provider_executor(opts, deps),
+         :ok <- maybe_set_hub_writeback_executor(opts, deps),
          :ok <- maybe_set_hub_worker_starter(opts, deps),
          :ok <- maybe_set_hub_activation_probe(opts, deps),
          :ok <- maybe_load_hub_activation_ack(opts, deps),
@@ -152,7 +157,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--host <host>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--host <host>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-provider-executor skeleton|real-candidate-scan] --hub-config <path-to-HUB.yaml>"
+    "Usage: symphony [--logs-root <path>] [--host <host>] [--port <port>] [--tracker-config <path-to-TRACKER.yaml>] [path-to-WORKFLOW.md]\n       symphony [--logs-root <path>] [--host <host>] [--port <port>] [--hub-scheduler] [--hub-activation-probe host-service] [--hub-activation-ack <path-to-ack.json-or-yaml>] [--hub-cutover-operation-request <path-to-request.json-or-yaml>] [--hub-cutover-audit-history <path-to-history.json-or-yaml>] [--hub-manual-attention-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-execution-authorization-request <path-to-request.json-or-yaml>] [--hub-cutover-execution-outcome-closeout <path-to-closeout.json-or-yaml>] [--hub-cutover-replay-request <path-to-request.json-or-yaml>] [--hub-executor-profile production] [--hub-provider-executor skeleton|real-candidate-scan] [--hub-writeback-executor skeleton|real-writeback] --hub-config <path-to-HUB.yaml>"
   end
 
   @spec runtime_deps() :: deps()
@@ -163,6 +168,7 @@ defmodule SymphonyElixir.CLI do
       set_tracker_config_file_path: &TrackerConfig.set_tracker_file_path/1,
       set_hub_config_path: &HubRuntime.set_config_path/1,
       set_hub_provider_executor: &HubRuntime.set_provider_executor/1,
+      set_hub_writeback_executor: &HubRuntime.set_writeback_executor/1,
       set_hub_activation_probe: &HubRuntime.set_host_service_activation_probe/1,
       load_hub_activation_ack: &HubRuntime.load_operator_acknowledgements/1,
       load_hub_cutover_operation_request: &HubRuntime.load_cutover_operation_requests/1,
@@ -291,6 +297,34 @@ defmodule SymphonyElixir.CLI do
     end
   end
 
+  defp maybe_set_hub_executor_profile(opts, deps) do
+    case Keyword.get_values(opts, :hub_executor_profile) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_executor_profile()
+        |> case do
+          {:ok, :production} ->
+            with :ok <- deps.set_hub_provider_executor.(SymphonyElixir.Hub.RealCandidateScanExecutor),
+                 :ok <- deps.set_hub_writeback_executor.(SymphonyElixir.Hub.RealWritebackExecutor) do
+              deps.set_hub_worker_starter.(SymphonyElixir.Hub.RealWorkerStarter)
+            end
+
+          {:ok, :skeleton} ->
+            with :ok <- deps.set_hub_provider_executor.(nil),
+                 :ok <- deps.set_hub_writeback_executor.(nil) do
+              deps.set_hub_worker_starter.(nil)
+            end
+
+          {:error, message} ->
+            {:error, message}
+        end
+    end
+  end
+
   defp maybe_set_hub_provider_executor(opts, deps) do
     case Keyword.get_values(opts, :hub_provider_executor) do
       [] ->
@@ -301,7 +335,31 @@ defmodule SymphonyElixir.CLI do
         |> List.last()
         |> hub_provider_executor_module()
         |> case do
-          {:ok, module} -> deps.set_hub_provider_executor.(module)
+          {:ok, SymphonyElixir.Hub.RealWritebackExecutor = module} ->
+            with :ok <- deps.set_hub_provider_executor.(module) do
+              deps.set_hub_writeback_executor.(module)
+            end
+
+          {:ok, module} ->
+            deps.set_hub_provider_executor.(module)
+
+          {:error, message} ->
+            {:error, message}
+        end
+    end
+  end
+
+  defp maybe_set_hub_writeback_executor(opts, deps) do
+    case Keyword.get_values(opts, :hub_writeback_executor) do
+      [] ->
+        :ok
+
+      values ->
+        values
+        |> List.last()
+        |> hub_writeback_executor_module()
+        |> case do
+          {:ok, module} -> deps.set_hub_writeback_executor.(module)
           {:error, message} -> {:error, message}
         end
     end
@@ -455,6 +513,24 @@ defmodule SymphonyElixir.CLI do
 
   defp hub_worker_starter_module(_value), do: {:error, usage_message()}
 
+  defp hub_executor_profile(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "production" ->
+        {:ok, :production}
+
+      "skeleton" ->
+        {:ok, :skeleton}
+
+      other ->
+        {:error, "Unsupported --hub-executor-profile #{inspect(other)}. Use `production` or omit the option for explicit per-executor flags."}
+    end
+  end
+
+  defp hub_executor_profile(_value), do: {:error, usage_message()}
+
   defp hub_provider_executor_module(value) when is_binary(value) do
     case String.trim(value) do
       "" ->
@@ -481,6 +557,27 @@ defmodule SymphonyElixir.CLI do
   end
 
   defp hub_provider_executor_module(_value), do: {:error, usage_message()}
+
+  defp hub_writeback_executor_module(value) when is_binary(value) do
+    case String.trim(value) do
+      "" ->
+        {:error, usage_message()}
+
+      "real-writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
+      "real_writeback" ->
+        {:ok, SymphonyElixir.Hub.RealWritebackExecutor}
+
+      "skeleton" ->
+        {:ok, nil}
+
+      other ->
+        {:error, "Unsupported --hub-writeback-executor #{inspect(other)}. Use `real-writeback` or omit the option for the default skeleton."}
+    end
+  end
+
+  defp hub_writeback_executor_module(_value), do: {:error, usage_message()}
 
   defp hub_activation_probe_opts(value) when is_binary(value) do
     case String.trim(value) do

@@ -346,8 +346,8 @@ service、provider scope、workspace/runtime/log/state/port owner、writeback、
 executor/writeback executor/worker starter 模式，并确认 cutover gate 对目标 operation 显示 allowed
 或 staged_ready，必须由 operator 手工执行。本片不提供一键迁移，
 也不会自动修改 `HUB.yaml`、项目配置、systemd unit 或 provider 状态。
-如果要把 Hub Dashboard/API 作为本机正式观测入口，先以 sidecar 方式安装独立服务，不直接替换已有
-`symphony@<project>.service`：
+如果要把 Hub Dashboard/API 作为本机正式入口，安装独立的 `symphony-hub.service`。安装动作本身
+不会停止或替换已有 `symphony@<project>.service`：
 
 ```bash
 scripts/install-hub-systemd-service.sh \
@@ -363,10 +363,11 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
 }'
 ```
 
-该服务默认只传 `--hub-activation-probe host-service`，不会传 `--hub-scheduler`、
-`--hub-provider-executor real-*`、`--hub-worker-starter real`，因此不会自动 poll、dispatch、启动
-worker、writeback、停止/disable/restart legacy service，也不会修改 `HUB.yaml` 或项目配置。
-生产切换到 `hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
+该服务是正式 Hub production 入口，默认传 `--hub-scheduler`、
+`--hub-provider-executor real-candidate-scan`、`--hub-writeback-executor real-writeback`、
+`--hub-worker-starter real` 和 `--hub-activation-probe host-service`。安装脚本不会自动停止、
+disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置。生产切换到
+`hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
 workspace/runtime/log/state 路径和 cutover gate。
 如果手动试运行 Hub 并传入
 `--hub-provider-executor real-candidate-scan`，Hub candidate scan 会在 `ProviderGovernance`
@@ -374,13 +375,14 @@ workspace/runtime/log/state 路径和 cutover gate。
 `/api/v1/state` 中暴露 executor 模式、候选计数、错误分类、backoff/manual attention 等安全摘要。
 该 opt-in 只覆盖候选读取，不实现 provider 写回、dynamic tools 路由迁移、真实 agent 派发，也不会改变
 `symphony@project.service` 多实例部署的默认行为。
-如果手动试运行 Hub 并传入 `--hub-provider-executor real-writeback`，Hub 只会启用第一版受控写回
+如果手动试运行 Hub 并传入 `--hub-writeback-executor real-writeback`，Hub 只会启用第一版受控写回
 executor：在 `WritebackProcessor` 判定可执行后，处理 status/stage 写回、GitHub workpad marker
 upsert 和 GitHub label add；PR 创建、普通追加评论、冲突 intent、未知非幂等结果和 unsupported
 operation 会进入 governed manual-attention / lookup-required / permanent-failure 摘要。该 opt-in
 同样按 registry project 重新加载对应 `WORKFLOW.md` / `TRACKER.yaml`，不会使用其他项目的 repo、
-token、项目号或 stage/label 映射；单项目写回失败只影响对应 project/scope。本文档的 systemd
-template 不会默认启用该模式，也不会把 legacy 多实例写回迁移到 Hub。
+token、项目号或 stage/label 映射；单项目写回失败只影响对应 project/scope。旧的
+`--hub-provider-executor real-writeback` 拼写仍作为兼容别名保留，但正式 Hub 启动应使用独立的
+writeback executor 参数。
 
 Hub 设备/项目明细仍只展示脱敏摘要：不会显示 token、Authorization/cookie、secret env、raw env/raw
 config、完整 prompt/transcript、完整 issue/comment/PR/provider body、raw provider response、raw systemd
