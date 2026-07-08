@@ -498,7 +498,9 @@ The formal production entrypoint is `symphony-hub.service`, installed with
 `scripts/install-hub-systemd-service.sh`. The generated service passes `--hub-scheduler`,
 `--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
 `--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
-`--host`/`--port`. Production Hub-only operation expects projects in `HUB.yaml` to be
+`--host`/`--port`. It can also load optional activation ack, cutover operation request, and
+execution authorization request files when a gate requires operator evidence. Production Hub-only
+operation expects projects in `HUB.yaml` to be
 `hub_managed` with `dispatch_enabled: true`, after the operator has stopped/disabled legacy
 `symphony@<project>.service` owners and verified the cutover gate. The legacy
 `symphony@<project>.service` path is retained only for migration compatibility and rollback, not as

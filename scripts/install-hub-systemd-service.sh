@@ -13,6 +13,11 @@ Options:
   --logs-root <path>        Hub logs root. Default: $HOME/.codex/symphony/projects/hub/logs.
   --source-root <path>      Symphony source root. Default: $HOME/.codex/symphony.
   --service-name <name>     User systemd service name. Default: symphony-hub.service.
+  --activation-ack <path>   Optional Hub activation acknowledgement file.
+  --cutover-operation-request <path>
+                            Optional cutover operation dry-run request file.
+  --execution-authorization-request <path>
+                            Optional cutover execution authorization request file.
   --skip-build              Do not run mix setup/build when bin/symphony is missing.
   --no-systemd              Write unit/env files only; skip systemctl commands.
   --no-start                Do not enable/start the service.
@@ -31,6 +36,9 @@ host="0.0.0.0"
 logs_root="$HOME/.codex/symphony/projects/hub/logs"
 source_root="${SYMPHONY_SOURCE_ROOT:-$HOME/.codex/symphony}"
 service_name="symphony-hub.service"
+activation_ack=""
+cutover_operation_request=""
+execution_authorization_request=""
 skip_build=0
 run_systemd=1
 start_service=1
@@ -59,6 +67,18 @@ while [ "$#" -gt 0 ]; do
       ;;
     --service-name)
       service_name="${2:?missing value for --service-name}"
+      shift 2
+      ;;
+    --activation-ack)
+      activation_ack="${2:?missing value for --activation-ack}"
+      shift 2
+      ;;
+    --cutover-operation-request)
+      cutover_operation_request="${2:?missing value for --cutover-operation-request}"
+      shift 2
+      ;;
+    --execution-authorization-request)
+      execution_authorization_request="${2:?missing value for --execution-authorization-request}"
       shift 2
       ;;
     --skip-build)
@@ -114,6 +134,13 @@ if [ ! -f "$hub_config" ]; then
   exit 1
 fi
 
+for optional_file in "$activation_ack" "$cutover_operation_request" "$execution_authorization_request"; do
+  if [ -n "$optional_file" ] && [ ! -f "$optional_file" ]; then
+    echo "Optional Hub input file not found: $optional_file" >&2
+    exit 1
+  fi
+done
+
 source_root="${source_root%/}"
 app_dir="${source_root}/elixir"
 systemd_user_dir="$HOME/.config/systemd/user"
@@ -157,8 +184,16 @@ mkdir -p "$logs_root" "$hub_config_dir" "$systemd_user_dir"
   printf 'SYMPHONY_HUB_PROVIDER_EXECUTOR=real-candidate-scan\n'
   printf 'SYMPHONY_HUB_WRITEBACK_EXECUTOR=real-writeback\n'
   printf 'SYMPHONY_HUB_WORKER_STARTER=real\n'
+  [ -z "$activation_ack" ] || printf 'SYMPHONY_HUB_ACTIVATION_ACK=%s\n' "$activation_ack"
+  [ -z "$cutover_operation_request" ] || printf 'SYMPHONY_HUB_CUTOVER_OPERATION_REQUEST=%s\n' "$cutover_operation_request"
+  [ -z "$execution_authorization_request" ] || printf 'SYMPHONY_HUB_EXECUTION_AUTHORIZATION_REQUEST=%s\n' "$execution_authorization_request"
 } > "$env_file"
 chmod 600 "$env_file"
+
+extra_flags=""
+[ -z "$activation_ack" ] || extra_flags="${extra_flags} --hub-activation-ack \${SYMPHONY_HUB_ACTIVATION_ACK}"
+[ -z "$cutover_operation_request" ] || extra_flags="${extra_flags} --hub-cutover-operation-request \${SYMPHONY_HUB_CUTOVER_OPERATION_REQUEST}"
+[ -z "$execution_authorization_request" ] || extra_flags="${extra_flags} --hub-cutover-execution-authorization-request \${SYMPHONY_HUB_EXECUTION_AUTHORIZATION_REQUEST}"
 
 cat > "$unit_file" <<UNIT
 [Unit]
@@ -171,7 +206,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${app_dir}
 EnvironmentFile=${env_file}
-ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_HUB_LOGS_ROOT} --hub-config \${SYMPHONY_HUB_CONFIG} --hub-scheduler --hub-provider-executor \${SYMPHONY_HUB_PROVIDER_EXECUTOR} --hub-writeback-executor \${SYMPHONY_HUB_WRITEBACK_EXECUTOR} --hub-worker-starter \${SYMPHONY_HUB_WORKER_STARTER} --hub-activation-probe \${SYMPHONY_HUB_ACTIVATION_PROBE} --host \${SYMPHONY_HUB_HOST} --port \${SYMPHONY_HUB_PORT}
+ExecStart=%h/.local/bin/mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --logs-root \${SYMPHONY_HUB_LOGS_ROOT} --hub-config \${SYMPHONY_HUB_CONFIG} --hub-scheduler --hub-provider-executor \${SYMPHONY_HUB_PROVIDER_EXECUTOR} --hub-writeback-executor \${SYMPHONY_HUB_WRITEBACK_EXECUTOR} --hub-worker-starter \${SYMPHONY_HUB_WORKER_STARTER} --hub-activation-probe \${SYMPHONY_HUB_ACTIVATION_PROBE} --host \${SYMPHONY_HUB_HOST} --port \${SYMPHONY_HUB_PORT}${extra_flags}
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT

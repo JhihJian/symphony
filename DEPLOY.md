@@ -15,6 +15,18 @@ scripts/install-hub-systemd-service.sh \
   --port 21000
 ```
 
+如果当前 cutover gate 要求 operator ack 或显式 request，可在安装时加载文件：
+
+```bash
+scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
+  --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
+  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
 生成的 `symphony-hub.service` 默认启用 production Hub 参数：
 
 ```text
@@ -397,7 +409,8 @@ curl -sS http://127.0.0.1:21000/api/v1/state | jq '{
 该服务是正式 Hub production 入口，默认传 `--hub-scheduler`、
 `--hub-provider-executor real-candidate-scan`、`--hub-writeback-executor real-writeback`、
 `--hub-worker-starter real` 和 `--hub-activation-probe host-service`。安装脚本不会自动停止、
-disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置。生产切换到
+disable 或 restart legacy service，也不会修改 `HUB.yaml` 或项目配置；可选 ack/request 参数只把
+operator 输入传给 Hub API 的 gate/audit/authorization 摘要。生产切换到
 `hub_managed` 前，仍必须由 operator 明确处理 legacy owner、provider scope、端口、
 workspace/runtime/log/state 路径和 cutover gate。所有项目暂停、配置无效或被 activation/cutover
 门禁阻断时，Hub scheduler 只按默认间隔复查，不应出现因暂停项目 `next_due_at` 已到而连续空转。

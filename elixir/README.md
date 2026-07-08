@@ -819,10 +819,23 @@ For the formal long-running Hub-only production entrypoint, install `symphony-hu
   --port 21000
 ```
 
+Optional operator evidence can be loaded into the generated unit:
+
+```bash
+../scripts/install-hub-systemd-service.sh \
+  --hub-config ~/.config/symphony/hub/HUB.yaml \
+  --activation-ack ~/.config/symphony/hub/activation-ack.yaml \
+  --cutover-operation-request ~/.config/symphony/hub/cutover-operation-request.yaml \
+  --execution-authorization-request ~/.config/symphony/hub/execution-authorization-request.yaml \
+  --host 0.0.0.0 \
+  --port 21000
+```
+
 The generated `symphony-hub.service` passes `--hub-scheduler`,
 `--hub-provider-executor real-candidate-scan`, `--hub-writeback-executor real-writeback`,
 `--hub-worker-starter real`, `--hub-activation-probe host-service`, and the configured
-`--host`/`--port`. Hub-only production expects all managed projects to live in `HUB.yaml` and the
+`--host`/`--port`; optional files append the corresponding Hub ack/request CLI flags. Hub-only
+production expects all managed projects to live in `HUB.yaml` and the
 legacy `symphony@<project>.service` units to be stopped and disabled after readiness and ownership
 checks. The installer itself does not stop those units so rollback remains explicit.
 
