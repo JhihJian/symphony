@@ -48,10 +48,26 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             </p>
           </div>
 
-          <div class="status-stack">
+          <div class="status-stack" role="status" aria-live="polite">
+            <span class="status-badge">页面连接</span>
+            <span class="status-badge status-badge-connecting">
+              <span class="status-badge-dot"></span>
+              连接中
+            </span>
+            <span class="status-badge status-badge-live">
+              <span class="status-badge-dot"></span>
+              实时连接
+            </span>
+            <span class="status-badge status-badge-offline">
+              <span class="status-badge-dot"></span>
+              连接断开
+            </span>
+            <span class="status-badge">
+              当前访问：<%= @access_role %>
+            </span>
             <span class="status-badge">只读</span>
-            <span class={if @projection[:error], do: "state-badge state-badge-danger", else: "state-badge state-badge-active"}>
-              <%= if @projection[:error], do: "配置不可用", else: "配置可读" %>
+            <span class={workflow_config_badge_class(@projection)}>
+              <%= workflow_config_state_text(@projection) %>
             </span>
           </div>
         </div>
@@ -91,6 +107,14 @@ defmodule SymphonyElixirWeb.WorkflowLive do
             <p class="metric-value metric-value-stage"><%= if @projection.runtime.available?, do: "可用", else: "不可用" %></p>
             <p class="metric-detail">
               <%= if @projection.runtime.available?, do: "已叠加运行态 stage 分布。", else: @projection.runtime.error.message %>
+            </p>
+          </article>
+
+          <article class={workflow_diagnostic_metric_class(@projection.diagnostics)}>
+            <p class="metric-label">诊断提醒</p>
+            <p class="metric-value numeric"><%= workflow_problem_diagnostic_count(@projection.diagnostics) %></p>
+            <p class="metric-detail">
+              <a class="issue-link" href="#workflow-diagnostics"><%= workflow_diagnostic_summary_text(@projection.diagnostics) %></a>
             </p>
           </article>
         </section>
@@ -260,7 +284,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
 
   defp diagnostics_panel(assigns) do
     ~H"""
-    <section class="section-card">
+    <section class="section-card" id="workflow-diagnostics">
       <div class="section-header">
         <div>
           <h2 class="section-title">配置诊断</h2>
@@ -274,6 +298,9 @@ defmodule SymphonyElixirWeb.WorkflowLive do
           <div>
             <strong class="mono"><%= diagnostic.code %></strong>
             <p><%= diagnostic.message %></p>
+            <p :if={diagnostic_operator_guidance(diagnostic)} class="diagnostic-guidance">
+              <%= diagnostic_operator_guidance(diagnostic) %>
+            </p>
           </div>
         </article>
       </div>
@@ -474,6 +501,59 @@ defmodule SymphonyElixirWeb.WorkflowLive do
   defp diagnostic_class(%{severity: :error}), do: "diagnostic-item diagnostic-error"
   defp diagnostic_class(%{severity: :warning}), do: "diagnostic-item diagnostic-warning"
   defp diagnostic_class(_diagnostic), do: "diagnostic-item"
+
+  defp workflow_config_badge_class(%{error: _error}), do: "state-badge state-badge-danger"
+
+  defp workflow_config_badge_class(%{diagnostics: diagnostics}) do
+    if workflow_problem_diagnostic_count(diagnostics) > 0 do
+      "state-badge state-badge-warning"
+    else
+      "state-badge state-badge-active"
+    end
+  end
+
+  defp workflow_config_state_text(%{error: _error}), do: "配置不可用"
+
+  defp workflow_config_state_text(%{diagnostics: diagnostics}) do
+    if workflow_problem_diagnostic_count(diagnostics) > 0 do
+      "配置有提醒"
+    else
+      "配置可读"
+    end
+  end
+
+  defp workflow_diagnostic_metric_class(diagnostics) do
+    if workflow_problem_diagnostic_count(diagnostics) > 0 do
+      "metric-card metric-card-warning"
+    else
+      "metric-card"
+    end
+  end
+
+  defp workflow_diagnostic_summary_text(diagnostics) do
+    case workflow_problem_diagnostic_count(diagnostics) do
+      0 -> "没有阻断项或 warning"
+      count -> "查看 #{count} 条配置提醒"
+    end
+  end
+
+  defp workflow_problem_diagnostic_count(diagnostics) when is_list(diagnostics) do
+    Enum.count(diagnostics, fn diagnostic -> diagnostic.severity in [:error, :warning] end)
+  end
+
+  defp diagnostic_operator_guidance(%{code: :unreachable_stage}) do
+    "这类 stage 不会从 start stage 自动抵达；确认它是不是废弃阶段，或缺少一条 transition。"
+  end
+
+  defp diagnostic_operator_guidance(%{code: :terminal_stage_unreached}) do
+    "如果这是正常终点，应检查是否有 transition 或 missing-outcome fallback 能够抵达它。"
+  end
+
+  defp diagnostic_operator_guidance(%{code: :tracker_config_unavailable}) do
+    "运行态仍可展示静态流程图，但无法确认 provider-visible state 映射是否完整。"
+  end
+
+  defp diagnostic_operator_guidance(_diagnostic), do: nil
 
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
 

@@ -64,7 +64,11 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   def handle_event("toggle_create_form", _params, socket) do
-    {:noreply, assign(socket, :create_form_open?, !socket.assigns.create_form_open?)}
+    if socket.assigns.local_admin? do
+      {:noreply, assign(socket, :create_form_open?, !socket.assigns.create_form_open?)}
+    else
+      {:noreply, assign(socket, :notice, "管理操作只允许本机客户端访问")}
+    end
   end
 
   def handle_event("create_instance", %{"instance" => params}, socket) do
@@ -139,7 +143,17 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
   end
 
   def handle_event("update_timer", %{"action" => action}, socket) do
-    message = guarded(socket, fn -> action_message(run_update_timer_action(action), action) end)
+    message =
+      cond do
+        !socket.assigns.local_admin? ->
+          "管理操作只允许本机客户端访问"
+
+        reason = update_timer_action_disabled_reason(socket.assigns.update_timer, action) ->
+          reason
+
+        true ->
+          action_message(run_update_timer_action(action), action)
+      end
 
     {:noreply, refresh_admin_state(socket, message)}
   end
@@ -157,7 +171,23 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               集中观察多个独立 Symphony 实例的 systemd 状态、运行压力、健康摘要和运维入口。
             </p>
           </div>
-          <div class="status-stack">
+          <div class="status-stack" role="status" aria-live="polite">
+            <span class="status-badge">页面连接</span>
+            <span class="status-badge status-badge-connecting">
+              <span class="status-badge-dot"></span>
+              连接中
+            </span>
+            <span class="status-badge status-badge-live">
+              <span class="status-badge-dot"></span>
+              实时连接
+            </span>
+            <span class="status-badge status-badge-offline">
+              <span class="status-badge-dot"></span>
+              连接断开
+            </span>
+            <span class="status-badge">
+              当前访问：<%= @access_role %>
+            </span>
             <span class={if @local_admin?, do: "state-badge state-badge-active", else: "state-badge state-badge-warning"}>
               <%= if @local_admin?, do: "可执行管理操作", else: "只读预览" %>
             </span>
@@ -212,11 +242,21 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
           <p class="metric-value numeric"><%= total_count(@instances, :blocked) %></p>
           <p class="metric-detail">等待操作员输入或批准的会话数。</p>
         </article>
-        <article class="metric-card">
+        <article class="metric-card metric-card-warning">
           <p class="metric-label">不可达/未知实例</p>
           <p class="metric-value numeric"><%= unavailable_instance_count(@instances) %></p>
           <p class="metric-detail">这些实例的 Issue 数可能未知，不应被解读为 0 风险。</p>
         </article>
+      </section>
+
+      <section
+        :if={@instances_loaded? && unavailable_instance_count(@instances) > 0}
+        class="notice-banner notice-banner-warning fleet-risk-banner"
+        role="alert"
+        aria-live="polite"
+      >
+        <strong><%= unavailable_instance_count(@instances) %>/<%= length(@instances) %> 实例不可达或状态未知</strong>
+        <p>这些实例的 `/api/v1/state` 没有可用快照，Issue 数可能未知；先恢复实例健康，再把聚合数量当成全局风险判断。</p>
       </section>
 
       <%= instance_overview(assigns) %>
@@ -357,11 +397,15 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             <p class="section-copy">查看和管理 `symphony-update.timer` 与 `symphony-update.service`。</p>
           </div>
           <div class="instance-actions">
-            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="启用 symphony-update.timer 自动更新定时器" title={admin_disabled_title(@local_admin?)} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="禁用 symphony-update.timer 自动更新定时器" title={admin_disabled_title(@local_admin?)} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
-            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!@local_admin?} aria-disabled={aria_disabled(@local_admin?)} aria-describedby={admin_disabled_reason_id(@local_admin?)} aria-label="手动触发 symphony-update.service" title={admin_disabled_title(@local_admin?)} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
+            <button type="button" class="lifecycle-button lifecycle-button-primary" phx-click="update_timer" phx-value-action="enable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "enable")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "enable"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "enable")} aria-label="启用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "enable")} phx-confirm="确认启用并立即启动 symphony-update.timer？此操作会改变用户 systemd 自动更新定时器状态，之后会按计划检查 GitHub main 更新。" phx-disable-with="启用中...">启用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-danger" phx-click="update_timer" phx-value-action="disable" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "disable")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "disable"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "disable")} aria-label="禁用 symphony-update.timer 自动更新定时器" title={update_timer_action_title(@local_admin?, @update_timer, "disable")} phx-confirm="确认禁用 symphony-update.timer？禁用后不会自动检查 GitHub main 更新。" phx-disable-with="禁用中...">禁用</button>
+            <button type="button" class="lifecycle-button lifecycle-button-neutral" phx-click="update_timer" phx-value-action="trigger" disabled={!update_timer_action_enabled?(@local_admin?, @update_timer, "trigger")} aria-disabled={aria_disabled(update_timer_action_enabled?(@local_admin?, @update_timer, "trigger"))} aria-describedby={update_timer_action_describedby(@local_admin?, @update_timer, "trigger")} aria-label="手动触发 symphony-update.service" title={update_timer_action_title(@local_admin?, @update_timer, "trigger")} phx-confirm="确认手动触发 symphony-update.service？" phx-disable-with="触发中...">手动触发</button>
           </div>
         </div>
+
+        <p :if={update_timer_action_notice(@local_admin?, @update_timer)} id="update-timer-action-note" class="lifecycle-action-note">
+          <%= update_timer_action_notice(@local_admin?, @update_timer) %>
+        </p>
 
         <div class="instance-meta-grid timer-grid">
           <section class="instance-panel">
@@ -479,8 +523,18 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
               <section class="instance-panel">
                 <p class="panel-label">Dashboard / API</p>
                 <div class="detail-stack">
-                  <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
-                  <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
+                  <%= if instance_entry_link_enabled?(@local_admin?, instance, :dashboard) do %>
+                    <a :if={instance.dashboard_url} class="issue-link" href={instance.dashboard_url}>Dashboard</a>
+                  <% else %>
+                    <span :if={instance.dashboard_url} class="disabled-link" title={instance_entry_disabled_reason(@local_admin?, instance, :dashboard)}>Dashboard 暂不可用</span>
+                  <% end %>
+
+                  <%= if instance_entry_link_enabled?(@local_admin?, instance, :api) do %>
+                    <a :if={instance.api_url} class="issue-link" href={instance.api_url}>API</a>
+                  <% else %>
+                    <span :if={instance.api_url} class="disabled-link" title={instance_entry_disabled_reason(@local_admin?, instance, :api)}>API 暂不可用</span>
+                  <% end %>
+
                   <span class="muted">端口 <%= Map.get(instance, :port) || "未知" %></span>
                   <span class="muted"><%= instance.dashboard_url || "未配置端口" %></span>
                 </div>
@@ -606,6 +660,10 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
             type="button"
             phx-click="toggle_create_form"
             phx-disable-with="切换中..."
+            disabled={!@local_admin?}
+            aria-disabled={aria_disabled(@local_admin?)}
+            aria-describedby={admin_disabled_reason_id(@local_admin?)}
+            title={admin_disabled_title(@local_admin?)}
             aria-expanded={if(@create_form_open?, do: "true", else: "false")}
             aria-controls="create-instance-form"
           ><%= if @create_form_open?, do: "收起表单", else: "新建实例" %></button>
@@ -1178,6 +1236,46 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     end)
   end
 
+  defp instance_entry_link_enabled?(local_admin?, instance, kind) do
+    is_nil(instance_entry_disabled_reason(local_admin?, instance, kind))
+  end
+
+  defp instance_entry_disabled_reason(local_admin?, instance, kind) do
+    url = instance_entry_url(instance, kind)
+
+    cond do
+      url in [nil, ""] ->
+        "实例未配置 #{instance_entry_label(kind)} 入口。"
+
+      not instance_dashboard_endpoint_available?(instance) ->
+        "实例未运行或状态不可达，入口暂不可用。"
+
+      not local_admin? and local_loopback_url?(url) ->
+        "当前浏览器不是运行主机本机时，127.0.0.1 链接不会指向该实例。"
+
+      true ->
+        nil
+    end
+  end
+
+  defp instance_entry_url(instance, :dashboard), do: Map.get(instance, :dashboard_url) || Map.get(instance, "dashboard_url")
+  defp instance_entry_url(instance, :api), do: Map.get(instance, :api_url) || Map.get(instance, "api_url")
+
+  defp instance_entry_label(:dashboard), do: "Dashboard"
+  defp instance_entry_label(:api), do: "API"
+
+  defp instance_dashboard_endpoint_available?(instance) do
+    health_status = get_in(instance, [:health, :status]) || get_in(instance, ["health", "status"])
+    instance_running?(instance) and health_status == "reachable"
+  end
+
+  defp local_loopback_url?(url) when is_binary(url) do
+    uri = URI.parse(url)
+    uri.host in ["127.0.0.1", "localhost", "::1"]
+  end
+
+  defp local_loopback_url?(_url), do: false
+
   defp count(instance, key) do
     counts = Map.get(instance, :counts, %{})
     Map.get(counts, key, Map.get(counts, to_string(key), 0))
@@ -1262,6 +1360,58 @@ defmodule SymphonyElixirWeb.AdminInstancesLive do
     enabled = get_in(instance, [:systemd, :enabled]) || get_in(instance, ["systemd", "enabled"])
     enabled in ["disabled", "masked"]
   end
+
+  defp update_timer_action_enabled?(false, _snapshot, _action), do: false
+
+  defp update_timer_action_enabled?(true, snapshot, action) do
+    is_nil(update_timer_action_disabled_reason(snapshot, action))
+  end
+
+  defp update_timer_action_describedby(false, _snapshot, _action), do: "admin-readonly-reason"
+
+  defp update_timer_action_describedby(true, snapshot, action) do
+    if update_timer_action_disabled_reason(snapshot, action), do: "update-timer-action-note", else: nil
+  end
+
+  defp update_timer_action_title(false, _snapshot, _action), do: "管理操作只允许本机客户端访问"
+  defp update_timer_action_title(true, snapshot, action), do: update_timer_action_disabled_reason(snapshot, action)
+
+  defp update_timer_action_notice(false, _snapshot), do: "管理操作只允许本机客户端访问。"
+
+  defp update_timer_action_notice(true, snapshot) do
+    Enum.find_value(["enable", "disable", "trigger"], &update_timer_action_disabled_reason(snapshot, &1))
+  end
+
+  defp update_timer_action_disabled_reason(snapshot, action) do
+    cond do
+      update_timer_loading?(snapshot) ->
+        "自动更新 timer 状态仍在加载。"
+
+      update_timer_unavailable?(snapshot) ->
+        "自动更新 timer 状态不可用，需先恢复用户 systemd。"
+
+      action == "enable" and update_timer_enabled?(snapshot) and update_timer_active?(snapshot) ->
+        "自动更新 timer 已启用并处于等待状态，无需重复启用。"
+
+      action == "disable" and update_timer_disabled?(snapshot) ->
+        "自动更新 timer 已禁用，无需重复禁用。"
+
+      true ->
+        nil
+    end
+  end
+
+  defp update_timer_loading?(snapshot) do
+    Map.get(snapshot, :enabled) == "loading" or Map.get(snapshot, :active) == "loading"
+  end
+
+  defp update_timer_unavailable?(snapshot) do
+    Map.get(snapshot, :enabled) in ["not-found", "unknown"] or Map.get(snapshot, :active) in ["not-found", "unknown"]
+  end
+
+  defp update_timer_enabled?(snapshot), do: Map.get(snapshot, :enabled) == "enabled"
+  defp update_timer_active?(snapshot), do: Map.get(snapshot, :active) == "active"
+  defp update_timer_disabled?(snapshot), do: Map.get(snapshot, :enabled) in ["disabled", "masked"]
 
   defp auto_update_action_enabled?(false, _snapshot, _action), do: false
 

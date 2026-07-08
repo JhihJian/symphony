@@ -1071,6 +1071,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, view, html} = live(build_conn(), "/workflow")
 
     assert html =~ "阶段流向图"
+    assert html =~ "当前访问：本机管理员"
+    assert html =~ "诊断提醒"
+    assert html =~ "配置有提醒"
+    assert html =~ "查看"
+    assert html =~ ~s(href="#workflow-diagnostics")
+    assert html =~ ~s(id="workflow-diagnostics")
     assert html =~ "workflow-mermaid"
     assert html =~ "workflow-graph-inspector"
     assert html =~ "workflow-mobile-flow-list"
@@ -1236,8 +1242,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(conn, "/workflow")
 
     assert html =~ "远程只读"
+    assert html =~ "当前访问：远程只读"
     assert html =~ "只读流程配置"
-    assert html =~ "配置可读"
+    assert html =~ "配置"
   end
 
   test "workflow dashboard wraps long snake case stage labels in the Mermaid graph" do
@@ -1333,8 +1340,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "阶段流向图"
     assert html =~ "Snapshot"
     assert html =~ "Snapshot unavailable"
+    assert html =~ "配置有提醒"
+    assert html =~ "诊断提醒"
+    assert html =~ "查看"
     assert html =~ "TRACKER.yaml 不可用"
     assert html =~ "tracker_config_unavailable"
+    assert html =~ "运行态仍可展示静态流程图"
     assert html =~ "ready"
   end
 

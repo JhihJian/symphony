@@ -3190,6 +3190,8 @@ If provided:
   outcomes, missing terminal stages, non-terminal stages without transitions, stages unreachable
   from `workflow.start_stage`, and terminal stages not reachable from normal or missing-outcome
   paths.
+- The first workflow summary view SHOULD surface the count of warning/error diagnostics and link to
+  the full diagnostics list, so operator attention items are visible before the detailed stage list.
 - When `TRACKER.yaml` is available, the page SHOULD summarize tracker kind, stage-to-provider-state
   mapping, and whether every workflow stage has a provider-visible state mapping.
 - The page MUST NOT render raw credential values, including `api_key`, token, env secret, password,
@@ -3365,8 +3367,12 @@ If implemented:
   directories and MAY aggregate service-manager state plus each instance's observability API.
 - Stopped, failed, or unreachable instances MUST be represented as per-instance health states and
   MUST NOT prevent other instances from being shown.
+- Dashboard/API entry links for instances SHOULD degrade to disabled text when the instance is not
+  running, is unreachable, or would point a remote browser at a loopback-only address.
 - Lifecycle actions such as start, stop, and restart MAY be exposed as operational triggers, but
   failures MUST be reported with operator-readable errors.
+- Timer and lifecycle controls SHOULD be disabled with an operator-readable reason when the current
+  state makes the requested action a no-op, for example enabling an already enabled timer.
 - The management surface MAY coordinate deployment updates for the Symphony program itself. If it
   does, it SHOULD poll the upstream source with conditional requests where available, serialize
   update execution, refuse updates when the source checkout has local changes, build before any

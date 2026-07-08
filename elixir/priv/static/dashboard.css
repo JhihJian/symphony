@@ -37,7 +37,7 @@ body {
   min-height: 100vh;
   overflow-x: clip;
   background:
-    radial-gradient(circle at top, rgba(8, 121, 95, 0.11) 0%, rgba(8, 121, 95, 0) 30%),
+    radial-gradient(circle at top, rgba(110, 110, 128, 0.12) 0%, rgba(110, 110, 128, 0) 30%),
     linear-gradient(180deg, var(--page-soft) 0%, var(--page) 24%, #f3f4f6 100%);
   color: var(--ink);
   font-family: "Sohne", "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
@@ -437,7 +437,11 @@ code {
   position: absolute;
   inset: 0 0 auto;
   height: 3px;
-  background: linear-gradient(90deg, var(--accent), rgba(8, 121, 95, 0));
+  background: linear-gradient(90deg, rgba(110, 110, 128, 0.28), rgba(110, 110, 128, 0));
+}
+
+.metric-card-warning::before {
+  background: linear-gradient(90deg, #e08600, rgba(224, 134, 0, 0));
 }
 
 .fleet-summary {
@@ -785,6 +789,18 @@ code {
 .issue-link {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.disabled-link {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-decoration: none;
+  opacity: 0.72;
+  cursor: not-allowed;
 }
 
 .action-row {
@@ -1257,6 +1273,10 @@ code {
 
 .notice-banner-warning strong {
   color: #8a5a00;
+}
+
+.fleet-risk-banner {
+  border-color: #e8c277;
 }
 
 .notice-banner-error {
@@ -1831,6 +1851,10 @@ code {
 .diagnostic-item p {
   margin: 0.2rem 0 0;
   color: var(--muted);
+}
+
+.diagnostic-guidance {
+  color: #6f4b00;
 }
 
 .stage-detail-grid {

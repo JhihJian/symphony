@@ -453,6 +453,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     {:ok, document} = Floki.parse_document(html)
 
     assert html =~ "远程只读"
+    assert html =~ "当前访问：远程只读"
     assert html =~ "只读预览"
     assert html =~ "管理操作已限制"
     assert html =~ "JSON API 仅本机"
@@ -461,7 +462,8 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert document |> Floki.find(~s(button[phx-click="auto_update"][disabled])) |> length() == 2
     assert document |> Floki.find(~s(button[phx-click="lifecycle"][disabled])) |> length() == 10
     assert document |> Floki.find(~s(button[phx-click="logs"][disabled])) |> length() == 2
-    assert document |> Floki.find(~s(button[aria-describedby="admin-readonly-reason"][disabled])) |> length() >= 14
+    assert document |> Floki.find(~s(button[aria-controls="create-instance-form"][disabled])) |> length() == 1
+    assert document |> Floki.find(~s(button[aria-describedby="admin-readonly-reason"][disabled])) |> length() >= 15
 
     assert Floki.attribute(document, ~s(button[phx-click="auto_update"][phx-value-action="update"]), "title") == [
              "管理操作只允许本机客户端访问"
@@ -563,15 +565,20 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
   test "admin dashboard renders multi-instance overview and links" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
     html = render_async(view, 1_000)
+    {:ok, document} = Floki.parse_document(html)
 
     assert html =~ "Symphony 实例管理"
     assert html =~ "实例管理工作台"
     assert html =~ "当前实例运行"
+    assert html =~ "当前访问：本机管理员"
     assert html =~ "流程配置"
     assert html =~ "集中观察"
     assert html =~ "fleet-summary"
     assert html =~ "不可达/未知实例"
     assert html =~ "不应被解读为 0 风险"
+    assert html =~ "1/2 实例不可达或状态未知"
+    assert html =~ "Dashboard 暂不可用"
+    assert html =~ "API 暂不可用"
     assert html =~ "instance-card-grid"
     assert html =~ "instance-identity"
     assert html =~ "health-panel"
@@ -592,6 +599,7 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "阻塞 1"
     assert html =~ "http://127.0.0.1:20001/"
     assert html =~ "端口 20001"
+    assert html =~ "http://127.0.0.1:20002/"
     assert html =~ "/config/project-a/WORKFLOW.md"
     assert html =~ "/runtime/project-a/workspaces"
     assert html =~ "/runtime/project-b/logs"
@@ -632,6 +640,11 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert html =~ "立即检查"
     assert html =~ "执行更新"
     assert html =~ "空闲自动重启"
+
+    assert document |> Floki.find(~s(a[href="http://127.0.0.1:20001/"])) |> length() == 1
+    assert document |> Floki.find(~s(a[href="http://127.0.0.1:20001/api/v1/state"])) |> length() == 1
+    assert document |> Floki.find(~s(a[href="http://127.0.0.1:20002/"])) |> length() == 0
+    assert document |> Floki.find(~s(a[href="http://127.0.0.1:20002/api/v1/state"])) |> length() == 0
 
     assert_order(html, "实例总览", "GitHub main 自动更新")
     assert_order(html, "GitHub main 自动更新", "新增实例")
@@ -846,15 +859,18 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
 
   test "admin dashboard controls update timer" do
     {:ok, view, _html} = live(build_conn(), "/admin/instances")
-    render_async(view, 1_000)
+    html = render_async(view, 1_000)
+    {:ok, document} = Floki.parse_document(html)
 
-    html =
-      view
-      |> element(~s(button[type="button"][phx-click="update_timer"][phx-value-action="enable"]))
-      |> render_click()
+    assert document
+           |> Floki.find(~s(button[type="button"][phx-click="update_timer"][phx-value-action="enable"][disabled]))
+           |> length() == 1
 
-    assert_receive {:update_timer_action, "enable --now", "symphony-update.timer", _opts}
-    assert html =~ "已请求 enable symphony-update.timer"
+    assert Floki.attribute(
+             document,
+             ~s(button[type="button"][phx-click="update_timer"][phx-value-action="enable"]),
+             "title"
+           ) == ["自动更新 timer 已启用并处于等待状态，无需重复启用。"]
 
     html =
       view
@@ -909,6 +925,10 @@ defmodule SymphonyElixir.AdminInstanceDashboardTest do
     assert css =~ ".form-error-summary"
     assert css =~ ".lifecycle-action-note"
     assert css =~ ".lifecycle-button-danger"
+    assert css =~ ".metric-card-warning"
+    assert css =~ ".fleet-risk-banner"
+    assert css =~ ".disabled-link"
+    assert css =~ ".diagnostic-guidance"
     assert css =~ ".workspace-nav"
     assert css =~ ".notice-banner"
     assert css =~ ".operator-attention-card"

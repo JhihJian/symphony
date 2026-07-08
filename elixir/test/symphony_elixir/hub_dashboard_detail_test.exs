@@ -52,23 +52,24 @@ defmodule SymphonyElixir.HubDashboardDetailTest do
 
     {:ok, _view, html} = live(build_conn(), "/")
 
-    assert html =~ "当前工作队列"
+    assert html =~ "当前需要关注的工作"
     assert html =~ "Hub 活跃尝试"
     assert html =~ "pending start 0 · workspace lease 1"
+    assert html =~ "查看 Hub 活跃尝试"
     assert html =~ "Hub 仍在收敛"
     assert html =~ "普通运行中会话为 0"
     assert html =~ "attempt 1 · lease 1 · lifecycle 1"
     assert html =~ ~s(href="#hub-project-alpha")
     assert html =~ "Hub 项目焦点"
-    assert html =~ "下一步：resolve_writeback_manual_attention"
+    assert html =~ "下一步：处理 writeback 人工关注"
     assert html =~ ~s(href="#hub-project-gamma")
     assert html =~ ~s(id="hub-project-alpha")
-    assert html =~ ~s(href="#running-sessions")
+    refute html =~ ~s(href="#running-sessions">查看运行明细)
     assert html =~ ~s(href="#blocked-sessions")
     assert html =~ ~s(href="#retry-queue")
-    assert_order(html, "当前工作队列", "Hub 项目焦点")
+    assert_order(html, "当前需要关注的工作", "Hub 项目焦点")
     assert_order(html, "Hub 项目焦点", "当前上下文")
-    assert_order(html, "当前工作队列", "Hub 设备总览")
+    assert_order(html, "当前需要关注的工作", "Hub 设备总览")
     assert_order(html, "Hub 项目焦点", "Hub 设备总览")
     refute html =~ "速率限制"
 

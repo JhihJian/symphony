@@ -919,19 +919,19 @@ http://127.0.0.1:<port>/api/v1/admin/instances
 
 这个页面是 operator 管理面，不是多租户 orchestrator：
 
-- `/` 是当前进程的执行 Dashboard，首屏优先展示当前工作队列和 Hub 项目焦点；Hub 项目焦点会把活跃尝试、workspace lease、manual attention 和下一步 project action 放在 Hub 设备诊断前。空的速率限制快照不显示，完整 Hub 诊断矩阵默认收在可展开区域里。
+- `/` 是当前进程的执行 Dashboard，首屏优先展示当前需要关注的工作和 Hub 项目焦点；Hub 项目焦点会把活跃尝试、workspace lease、manual attention 和下一步 project action 放在 Hub 设备诊断前。下一步 action 会转换成面向操作员的人话说明；如果运行中 Issue 为 0 但 Hub 仍有活跃尝试，首屏链接会跳到对应 Hub 项目，而不是跳到空的运行明细。空的速率限制快照不显示，完整 Hub 诊断矩阵默认收在可展开区域里。
 - `/workflow` 是当前实例的只读 workflow-stage 配置可视化页面，读取该实例的 `WORKFLOW.md`
   和 `TRACKER.yaml`，展示阶段图、transition、missing outcome fallback、tracker 映射覆盖和可用的
-  `current_stage` 运行态分布；桌面端的 Mermaid 图和当前阶段检查器同屏展示，便于点击节点后立即看到阶段详情。页面不展示 token、`api_key` 或 env secret 原始值。
+  `current_stage` 运行态分布；桌面端的 Mermaid 图和当前阶段检查器同屏展示，便于点击节点后立即看到阶段详情。首屏指标会显示配置 warning/error 数量并链接到“配置诊断”；如果存在 unreachable stage、tracker 映射缺失等提醒，顶部状态会显示“配置有提醒”。页面不展示 token、`api_key` 或 env secret 原始值。
 - `/admin/instances` 从 `~/.config/symphony/projects` 发现已登记实例，聚合 systemd user service 状态和各实例 `/api/v1/state`。
 - 实例总览在页面首屏之后后台加载，并带有总超时和单实例探测隔离；慢实例会显示成该实例自己的不可达/未知健康状态，不会让整个管理页或列表 API 长时间无响应。
 - 页面顶部固定提供“当前实例运行 / 流程配置 / 实例管理”三类入口，并标出当前访问身份是“本机管理员”还是“远程只读”。
 - 每个 `symphony@<project>.service` 仍然独立拥有自己的 `WORKFLOW.md`、`TRACKER.yaml`、环境变量、日志目录、workspace root、端口和内存调度账本。
-- 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示。
+- 停止、失败或 API 不可达的实例会显示为该实例自己的健康状态，不会影响其他实例展示；这类实例的 Dashboard/API 入口会降级成不可点击文本，仍保留 URL 方便排查，避免点到不可用或远程浏览器上的 `127.0.0.1`。
 - 管理面可以请求 `start`、`stop`、`restart`，失败时 API 返回可读错误；issue 派发、重试、reconciliation 和 workspace 隔离仍由对应实例内部 `Orchestrator` 负责。
 - 只有 loopback 本机客户端可以执行创建实例、自动更新、systemd lifecycle、timer 和日志读取操作；局域网或其他远程浏览器只能看到只读总览，相关按钮会禁用，管理 JSON API 链接不作为可点击入口展示，并且后端仍会拒绝执行。
 - `stop`、`restart`、`disable`、执行 GitHub main 更新、手动触发 update service 等高影响操作在 LiveView 页面中需要二次确认，确认文案会带上目标 service 或操作。
-- 管理页按钮还会按当前状态降级：自动更新不可用或没有可执行更新时不会把“执行更新”表现为可用；legacy unit 已归档或 `not-found` 时实例 lifecycle/log 操作会禁用并显示原因。新建实例表单会在调用安装脚本前显示字段级错误和错误摘要，避免无效输入直接进入 systemd/install 流程。
+- 管理页按钮还会按当前状态降级：自动更新不可用或没有可执行更新时不会把“执行更新”表现为可用；`symphony-update.timer` 已启用时不会把“启用”表现为可用，已禁用时不会把“禁用”表现为可用；legacy unit 已归档或 `not-found` 时实例 lifecycle/log 操作会禁用并显示原因。远程只读浏览器不能打开新建实例表单；新建实例表单会在本机提交安装脚本前显示字段级错误和错误摘要，避免无效输入直接进入 systemd/install 流程。
 
 管理 API 示例：
 

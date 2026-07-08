@@ -1366,7 +1366,10 @@ The single-instance dashboard at `/` is the execution dashboard for the current 
 it shows the local orchestrator snapshot, running/retrying/blocked issues, token totals, and issue
 detail links. In Hub mode the first operator section prioritizes the current work queue and a
 compact Hub project focus list, so active attempts, workspace leases, manual attention, and the
-next project-level action are visible before lower-level Hub diagnostics. The context panel remains
+next project-level action are visible before lower-level Hub diagnostics. Hub project next actions
+are rendered as operator-readable action text, and when the normal running-session count is zero but
+Hub attempts are still active, the first-screen link points to the relevant Hub project instead of
+the empty running-session section. The context panel remains
 available for traceability and summarizes whether the view is a single instance or Hub device
 runtime, the active `WORKFLOW.md` path, the selected `TRACKER.yaml` path, the snapshot timestamp,
 and the `/api/v1/state` entry. Empty rate-limit snapshots are hidden, and the full Hub device
@@ -1384,7 +1387,9 @@ each stage, runtime count, and `outcome -> target` transition without horizontal
 zooming. Missing-outcome handling and tracker stage-state mapping sit below it. It
 also previews each stage prompt, lists outcome targets, reports semantic warnings such as
 unreachable stages or non-terminal stages without transitions, and summarizes `TRACKER.yaml`
-stage-state coverage. Tracker provider details are
+stage-state coverage. The first summary row includes the warning/error diagnostic count and links
+directly to the diagnostics section; when diagnostics contain operator warnings, the header marks the
+configuration as needing attention instead of only saying it is readable. Tracker provider details are
 limited to non-secret hints such as kind, owner/repo/project number or label prefix; token,
 `api_key`, env secret, and credential fields are not rendered. When an orchestrator snapshot is
 available, the page overlays running/retrying/blocked
@@ -1398,7 +1403,13 @@ registered instances from `~/.config/symphony/projects` by default, checks each
 bounded background refresh so slow probes do not block the first screen. Stopped, failed, slow, or
 unreachable instances are rendered as per-instance health states and do not block the rest of the
 overview. The fleet summary also shows an
-unreachable/unknown instance count so missing state snapshots are not mistaken for zero issue risk.
+unreachable/unknown instance count and a warning banner so missing state snapshots are not mistaken
+for zero issue risk. Dashboard/API links are clickable only when the instance is running and
+reachable; stopped, failed, unreachable, or remote-browser `127.0.0.1` targets are shown as disabled
+entries with the URL still visible for inspection. The update timer buttons are also gated by
+current state, so an already enabled/active timer does not present “enable” as an available action.
+Remote read-only sessions cannot open the create-instance form because submission would still be
+rejected server-side.
 The page can create GitHub-backed instances by delegating to
 `scripts/install-systemd-template.sh`, auto-allocates ports after checking existing env files and
 listening sockets, and exposes `start`, `stop`, `restart`, `enable`, `disable`, and recent-log

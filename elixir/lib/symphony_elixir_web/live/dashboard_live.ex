@@ -99,8 +99,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card operator-priority-panel">
           <div class="section-header">
             <div>
-              <h2 class="section-title">当前工作队列</h2>
-              <p class="section-copy">先看有没有正在处理、等待人工输入或即将重试的工作；Hub 内部诊断放在后面。</p>
+              <h2 class="section-title">当前需要关注的工作</h2>
+              <p class="section-copy">先看正在处理、等待人工输入或即将重试的工作；Hub 内部诊断放在后面。</p>
             </div>
           </div>
 
@@ -109,7 +109,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <p class="metric-label">运行中 Issue 会话</p>
               <p class="metric-value numeric"><%= @payload.counts.running %></p>
               <p class="metric-detail">
-                <a class="issue-link" href="#running-sessions">查看运行明细</a>
+                <%= if @payload.counts.running > 0 do %>
+                  <a class="issue-link" href="#running-sessions">查看运行明细</a>
+                <% else %>
+                  <%= if hub_active_attempt_count(@payload) > 0 do %>
+                    <a class="issue-link" href={"##{hub_primary_attention_anchor(@payload)}"}>查看 Hub 活跃尝试</a>
+                  <% else %>
+                    暂无运行中会话
+                  <% end %>
+                <% end %>
               </p>
             </article>
 
@@ -1260,6 +1268,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp hub_project_next_action(project) do
+    project
+    |> hub_project_next_action_code()
+    |> hub_operator_action_text()
+  end
+
+  defp hub_project_next_action_code(project) do
     if hub_project_writeback_manual_attention?(project) do
       "resolve_writeback_manual_attention"
     else
@@ -1287,6 +1301,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
       true ->
         "继续观察"
+    end
+  end
+
+  defp hub_operator_action_text("resolve_writeback_manual_attention"), do: "处理 writeback 人工关注"
+  defp hub_operator_action_text("resolve_manual_attention"), do: "处理人工关注并关闭阻塞"
+  defp hub_operator_action_text("release_workspace_or_capacity"), do: "检查并释放 workspace / 容量占用"
+  defp hub_operator_action_text("confirm_hub_executor_modes"), do: "确认 Hub 执行器模式"
+  defp hub_operator_action_text("record_cutover_replay_request_audit"), do: "记录 cutover replay request 审计"
+  defp hub_operator_action_text("request_explicit_retry_consideration"), do: "人工确认是否重试"
+  defp hub_operator_action_text("fix_malformed_chain_input"), do: "修正 closure chain 输入"
+  defp hub_operator_action_text("manual attention"), do: "处理人工关注"
+  defp hub_operator_action_text("blocked"), do: "查看阻塞原因"
+  defp hub_operator_action_text("backoff"), do: "等待或检查退避重试"
+  defp hub_operator_action_text("继续观察"), do: "继续观察"
+
+  defp hub_operator_action_text("summary error " <> code), do: "检查 Hub 摘要错误：" <> code
+
+  defp hub_operator_action_text(code) when is_binary(code) and code != "", do: "检查 " <> code
+  defp hub_operator_action_text(_code), do: "继续观察"
+
+  defp hub_primary_attention_anchor(payload) do
+    payload
+    |> hub_active_attempt_projects()
+    |> List.first()
+    |> case do
+      nil -> "hub-project-focus"
+      project -> hub_project_anchor(project)
     end
   end
 
