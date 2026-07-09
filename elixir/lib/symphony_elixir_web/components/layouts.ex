@@ -58,7 +58,18 @@ defmodule SymphonyElixirWeb.Layouts do
     ~H"""
     <main class="app-shell">
       <.workspace_nav active_nav={@active_nav} access_role={@access_role} />
-      {@inner_content}
+      <div class="app-layout">
+        <aside class="page-outline" data-page-outline hidden aria-label="页面大纲">
+          <div class="page-outline-inner">
+            <p class="page-outline-kicker">页面大纲</p>
+            <nav class="page-outline-list" data-page-outline-list aria-label="当前页面主要区域"></nav>
+          </div>
+        </aside>
+
+        <div class="app-content">
+          {@inner_content}
+        </div>
+      </div>
     </main>
     """
   end

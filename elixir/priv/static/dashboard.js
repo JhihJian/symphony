@@ -1,6 +1,34 @@
 (function () {
   var mermaidInitialized = false;
   var renderSequence = 0;
+  var revealObserver = null;
+  var revealQueued = false;
+  var pageOutlineObserver = null;
+  var pageOutlineMutationObserver = null;
+  var pageOutlineQueued = false;
+  var pageOutlineEntries = [];
+  var revealSelector = [
+    ".hero-card",
+    ".section-card",
+    ".metric-card",
+    ".hub-summary-panel",
+    ".instance-card",
+    ".workflow-status-chip",
+    ".stage-detail-card",
+    ".notice-banner",
+    ".admin-control-boundary"
+  ].join(",");
+  var pageOutlineTargetSelector = [
+    ".dashboard-shell > .hero-card",
+    ".dashboard-shell > .error-card",
+    ".dashboard-shell > .notice-banner",
+    ".dashboard-shell > .admin-control-boundary",
+    ".dashboard-shell > .workflow-status-strip",
+    ".dashboard-shell > .workflow-layout > .section-card",
+    ".dashboard-shell > .workflow-detail-strip > .section-card",
+    ".dashboard-shell > .section-card",
+    ".dashboard-shell > details.hub-diagnostic-disclosure"
+  ].join(",");
 
   function initializeMermaid() {
     if (!window.mermaid) return false;
@@ -19,11 +47,11 @@
       },
       themeVariables: {
         primaryColor: "#ffffff",
-        primaryTextColor: "#202123",
-        primaryBorderColor: "#d9d9e3",
-        lineColor: "#7c8597",
+        primaryTextColor: "#111111",
+        primaryBorderColor: "#eaeaea",
+        lineColor: "#787774",
         fontSize: "16px",
-        fontFamily: "Sohne, SF Pro Text, Helvetica Neue, Segoe UI, sans-serif"
+        fontFamily: "SF Pro Display, Geist Sans, Helvetica Neue, Switzer, sans-serif"
       }
     });
 
@@ -193,6 +221,285 @@
     watchWorkflowMermaid();
   }
 
+  function prefersReducedMotion() {
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function revealElement(element) {
+    element.classList.add("reveal-visible");
+    element.classList.remove("reveal-ready");
+    if (revealObserver) revealObserver.unobserve(element);
+  }
+
+  function initializeRevealObserver() {
+    if (prefersReducedMotion()) {
+      document.querySelectorAll(revealSelector).forEach(revealElement);
+      return;
+    }
+
+    if (!("IntersectionObserver" in window)) {
+      document.querySelectorAll(revealSelector).forEach(revealElement);
+      return;
+    }
+
+    if (!revealObserver) {
+      revealObserver = new window.IntersectionObserver(
+        function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) revealElement(entry.target);
+          });
+        },
+        {rootMargin: "0px 0px -8% 0px", threshold: 0.08}
+      );
+    }
+
+    document.querySelectorAll(revealSelector).forEach(function (element, index) {
+      if (element.getAttribute("data-reveal-bound") === "true") return;
+
+      element.setAttribute("data-reveal-bound", "true");
+      element.style.setProperty("--reveal-delay", Math.min(index % 6, 4) * 80 + "ms");
+      element.classList.add("reveal-ready");
+      revealObserver.observe(element);
+    });
+  }
+
+  function queueRevealObserver() {
+    if (revealQueued) return;
+
+    revealQueued = true;
+    window.setTimeout(function () {
+      revealQueued = false;
+      initializeRevealObserver();
+    }, 0);
+  }
+
+  function watchRevealTargets() {
+    if (!window.MutationObserver || !document.body) return;
+
+    var observer = new window.MutationObserver(queueRevealObserver);
+    observer.observe(document.body, {childList: true, subtree: true});
+  }
+
+  function compactText(value) {
+    return String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function firstText(element, selectors) {
+    for (var index = 0; index < selectors.length; index += 1) {
+      var node = element.querySelector(selectors[index]);
+      var text = node ? compactText(node.textContent) : "";
+      if (text) return text;
+    }
+
+    return "";
+  }
+
+  function pageOutlineTitle(element) {
+    return (
+      compactText(element.getAttribute("data-outline-label")) ||
+      firstText(element, [".hero-title", ".section-title", ".error-title", "summary > span", "h1", "h2"]) ||
+      compactText(element.getAttribute("aria-label")) ||
+      firstText(element, ["strong"])
+    );
+  }
+
+  function pageOutlineIdBase(title, index) {
+    var pageName = window.location.pathname.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "") || "dashboard";
+    var slug =
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 36) || "section";
+
+    return "outline-" + pageName + "-" + slug + "-" + (index + 1);
+  }
+
+  function ensurePageOutlineId(element, title, index) {
+    if (element.id) return element.id;
+
+    var base = pageOutlineIdBase(title, index);
+    var candidate = base;
+    var suffix = 2;
+
+    while (document.getElementById(candidate) && document.getElementById(candidate) !== element) {
+      candidate = base + "-" + suffix;
+      suffix += 1;
+    }
+
+    element.id = candidate;
+    element.setAttribute("data-outline-generated-id", "true");
+    return candidate;
+  }
+
+  function isPageOutlineTarget(element) {
+    if (!element || !element.matches) return false;
+    if (element.closest(".page-outline")) return false;
+    if (element.hidden) return false;
+    return true;
+  }
+
+  function pageOutlineTargets() {
+    var root = document.querySelector(".dashboard-shell");
+    if (!root) return [];
+
+    return Array.prototype.slice
+      .call(root.querySelectorAll(pageOutlineTargetSelector))
+      .filter(isPageOutlineTarget)
+      .map(function (element, index) {
+        var title = pageOutlineTitle(element);
+        if (!title) return null;
+
+        return {
+          id: ensurePageOutlineId(element, title, index),
+          title: title,
+          target: element
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function setActivePageOutline(id) {
+    var outline = document.querySelector("[data-page-outline]");
+    if (!outline || !id) return;
+
+    outline.querySelectorAll(".page-outline-link").forEach(function (link) {
+      var active = link.getAttribute("data-outline-target") === id;
+      link.classList.toggle("page-outline-link-active", active);
+
+      if (active) {
+        link.setAttribute("aria-current", "location");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  function updatePageOutlineFromViewport() {
+    if (pageOutlineEntries.length === 0) return;
+
+    var focusLine = Math.max(120, window.innerHeight * 0.34);
+    var current = null;
+    var next = null;
+
+    pageOutlineEntries.forEach(function (entry) {
+      var rect = entry.target.getBoundingClientRect();
+
+      if (rect.top <= focusLine && rect.bottom > 80) {
+        current = entry;
+      }
+
+      if (!next && rect.top > focusLine) {
+        next = entry;
+      }
+    });
+
+    setActivePageOutline((current || next || pageOutlineEntries[pageOutlineEntries.length - 1]).id);
+  }
+
+  function observePageOutlineTargets() {
+    if (pageOutlineObserver) {
+      pageOutlineObserver.disconnect();
+      pageOutlineObserver = null;
+    }
+
+    if (!("IntersectionObserver" in window)) {
+      updatePageOutlineFromViewport();
+      return;
+    }
+
+    pageOutlineObserver = new window.IntersectionObserver(
+      function () {
+        updatePageOutlineFromViewport();
+      },
+      {
+        rootMargin: "-18% 0px -58% 0px",
+        threshold: [0, 0.08, 0.2, 0.55, 1]
+      }
+    );
+
+    pageOutlineEntries.forEach(function (entry) {
+      pageOutlineObserver.observe(entry.target);
+    });
+
+    window.setTimeout(updatePageOutlineFromViewport, 0);
+  }
+
+  function buildPageOutline() {
+    var outline = document.querySelector("[data-page-outline]");
+    var list = document.querySelector("[data-page-outline-list]");
+
+    if (!outline || !list) return;
+
+    pageOutlineEntries = pageOutlineTargets();
+    list.replaceChildren();
+
+    if (pageOutlineEntries.length < 2) {
+      outline.hidden = true;
+      if (pageOutlineObserver) pageOutlineObserver.disconnect();
+      return;
+    }
+
+    pageOutlineEntries.forEach(function (entry) {
+      var link = document.createElement("a");
+      link.className = "page-outline-link";
+      link.href = "#" + encodeURIComponent(entry.id);
+      link.textContent = entry.title;
+      link.setAttribute("data-outline-target", entry.id);
+      list.appendChild(link);
+    });
+
+    outline.hidden = false;
+    observePageOutlineTargets();
+  }
+
+  function queuePageOutlineBuild() {
+    if (pageOutlineQueued) return;
+
+    pageOutlineQueued = true;
+    window.setTimeout(function () {
+      pageOutlineQueued = false;
+      buildPageOutline();
+    }, 0);
+  }
+
+  function mutationInsidePageOutline(mutation) {
+    var outline = document.querySelector("[data-page-outline]");
+    return outline && outline.contains(mutation.target);
+  }
+
+  function watchPageOutlineTargets() {
+    if (!window.MutationObserver || !document.body || pageOutlineMutationObserver) return;
+
+    pageOutlineMutationObserver = new window.MutationObserver(function (mutations) {
+      var outlineOnly = mutations.every(mutationInsidePageOutline);
+      if (!outlineOnly) queuePageOutlineBuild();
+    });
+
+    pageOutlineMutationObserver.observe(document.body, {childList: true, subtree: true});
+  }
+
+  function handlePageOutlineClick(event) {
+    var link = event.target.closest(".page-outline-link[data-outline-target]");
+    if (!link) return;
+
+    var targetId = link.getAttribute("data-outline-target");
+    if (!targetId || !elementById(targetId)) return;
+
+    event.preventDefault();
+
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, "", "#" + encodeURIComponent(targetId));
+    } else {
+      window.location.hash = targetId;
+    }
+
+    focusTargetById(targetId);
+    setActivePageOutline(targetId);
+  }
+
   function fragmentFromHref(href) {
     if (!href) return null;
 
@@ -324,16 +631,25 @@
   });
 
   document.addEventListener("click", handleDetailsAnchorClick);
+  document.addEventListener("click", handlePageOutlineClick);
   window.addEventListener("hashchange", openDetailsForCurrentHash);
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () {
       startWorkflowMermaidRendering();
+      initializeRevealObserver();
+      watchRevealTargets();
       openDetailsForCurrentHash();
+      buildPageOutline();
+      watchPageOutlineTargets();
     });
   } else {
     startWorkflowMermaidRendering();
+    initializeRevealObserver();
+    watchRevealTargets();
     openDetailsForCurrentHash();
+    buildPageOutline();
+    watchPageOutlineTargets();
   }
 
   window.SymphonyDashboardHooks = Object.assign(window.SymphonyDashboardHooks || {}, {

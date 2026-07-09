@@ -11,6 +11,13 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
 
+## 仪表盘界面
+
+Phoenix 观测界面使用内嵌静态资源提供，不需要 Node 构建链。`/`、`/workflow`
+和 `/admin/instances` 共享一套极简操作台视觉系统：暖白画布、细边框卡片、克制
+状态色、编辑感标题字体和基于 IntersectionObserver 的轻量进入动效。样式入口仍是
+`priv/static/dashboard.css`，交互入口仍是 `priv/static/dashboard.js`。
+
 ## How it works
 
 1. Polls Linear, GitHub Issues, or GitLab Issues for candidate work
@@ -1361,6 +1368,11 @@ All LiveView pages share a compact workspace navigation bar with three operator 
 
 The navigation bar also shows whether the browser session is a loopback `本机管理员` session or a
 `远程只读` session, so operators can tell whether visible controls are executable or only a preview.
+On wide screens, the same shell renders a compact left-side page outline built from the current
+page's main sections. The outline highlights the section near the current scroll position and its
+links jump directly to the section; links targeting collapsed diagnostic details open the containing
+detail panel before focusing the target. Narrow screens keep the single-column layout and hide the
+outline so content width is preserved.
 
 The dashboard at `/` is the Hub 运行总览 for the current Symphony process:
 it shows the local orchestrator snapshot, current attention items, Hub active attempts, retry/blocking

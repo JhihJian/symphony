@@ -646,12 +646,12 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     definition =
       ([
          "flowchart LR",
-         "  classDef stage fill:#ffffff,stroke:#d9d9e3,stroke-width:1.5px,color:#202123;",
-         "  classDef selected fill:#e8faf4,stroke:#10a37f,stroke-width:3px,color:#202123;",
-         "  classDef start fill:#f0fbf7,stroke:#10a37f,stroke-width:2px,color:#202123;",
-         "  classDef terminal fill:#ffffff,stroke:#7c8597,stroke-width:2px,color:#202123;",
-         "  classDef blocked fill:#fef3f2,stroke:#f0aaa3,stroke-width:2px,color:#202123;",
-         "  classDef unreachable fill:#f5f5f7,stroke:#d9d9e3,stroke-width:1.5px,color:#6e6e80;"
+         "  classDef stage fill:#ffffff,stroke:#eaeaea,stroke-width:1.5px,color:#111111;",
+         "  classDef selected fill:#edf3ec,stroke:#346538,stroke-width:3px,color:#111111;",
+         "  classDef start fill:#edf3ec,stroke:#346538,stroke-width:2px,color:#111111;",
+         "  classDef terminal fill:#ffffff,stroke:#787774,stroke-width:2px,color:#111111;",
+         "  classDef blocked fill:#fdebec,stroke:#9f2f2d,stroke-width:2px,color:#111111;",
+         "  classDef unreachable fill:#f9f9f8,stroke:#eaeaea,stroke-width:1.5px,color:#787774;"
        ] ++
          Enum.flat_map(stages, &mermaid_node_lines(&1, node_ids, selected_stage_id)) ++
          mermaid_edge_lines(Map.get(projection, :transitions, []), node_ids))
