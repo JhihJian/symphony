@@ -2930,15 +2930,18 @@ defmodule SymphonyElixir.HubRuntimeTest do
       send(provider_pid, :release_blocking_provider)
       assert_receive {:blocking_provider_released, "alpha"}, 1_000
 
-      assert eventually(fn ->
-               case Runtime.snapshot(runtime_name, 1_000) do
-                 %{hub_scheduler: scheduler, hub_dispatch_plan_application: application} ->
-                   scheduler.counts.run_count >= 1 and application.counts.applied_count == 2
+      assert eventually(
+               fn ->
+                 case Runtime.snapshot(runtime_name, 1_000) do
+                   %{hub_scheduler: scheduler, hub_dispatch_plan_application: application} ->
+                     scheduler.counts.run_count >= 1 and application.counts.applied_count == 2
 
-                 _snapshot ->
-                   false
-               end
-             end)
+                   _snapshot ->
+                     false
+                 end
+               end,
+               100
+             )
 
       snapshot = Runtime.snapshot(runtime_name, 100)
       assert snapshot.hub_scheduler.counts.coalesced_count == 1
@@ -3029,7 +3032,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
       write_project!(root, "alpha",
         tracker_kind: "memory",
         workspace_root: Path.join([root, "workspaces", "alpha"]),
-        poll_interval_ms: 100
+        poll_interval_ms: 1_100
       )
 
       File.write!(hub_path, """
@@ -3067,6 +3070,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
       first = Runtime.snapshot(runtime_name, 1_000)
       first_run_count = first.hub_scheduler.counts.run_count
       first_closure = first.hub_cutover_closure_chain
+      first_candidate_intake = first.hub_candidate_intake
+      first_dispatch_planning = first.hub_dispatch_planning
       first_poll_fact_count = length(first.hub_poll_coordination.facts)
 
       assert eventually(
@@ -3079,6 +3084,8 @@ defmodule SymphonyElixir.HubRuntimeTest do
 
       second = Runtime.snapshot(runtime_name, 1_000)
       assert second.hub_cutover_closure_chain == first_closure
+      assert second.hub_candidate_intake == first_candidate_intake
+      assert second.hub_dispatch_planning == first_dispatch_planning
       assert length(second.hub_poll_coordination.facts) > first_poll_fact_count
       assert second.hub_candidate_intake.counts.candidate_count == 0
       assert second.hub_scheduler.next_delay_ms > 0

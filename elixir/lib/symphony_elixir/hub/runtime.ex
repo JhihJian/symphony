@@ -1459,8 +1459,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         required?: false
       )
 
-    {poll_facts, provider_queue, result_summaries, intake_sources} =
-      Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, [], []}, fn entry, {facts, queue, summaries, intake_sources} ->
+    {poll_facts, provider_queue, result_summaries, intake_sources, poll_results_changed?} =
+      Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, [], [], false}, fn entry, {facts, queue, summaries, intake_sources, changed?} ->
         attempt = PollCoordinator.attempt_fact(entry, attempted_at: requested_at)
         request = request_from_entry(entry)
 
@@ -1490,82 +1490,38 @@ defmodule SymphonyElixir.Hub.Runtime do
             backoff_until: result.backoff_until
           )
 
+        changed? = changed? or poll_result_changed?(facts, result_fact)
         facts = trim_poll_facts([result_fact, attempt | facts])
         summary = poll_result_summary(result, attempt, result_fact, finished_at)
         intake_source = poll_intake_source(entry, request, result, attempt, result_fact, finished_at)
 
-        {facts, queue, [summary | summaries], [intake_source | intake_sources]}
+        {facts, queue, [summary | summaries], [intake_source | intake_sources], changed?}
       end)
 
     finished_at = DateTime.utc_now()
 
-    candidate_intake =
-      CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
-        now: finished_at,
-        runtime_ledger: state.runtime_ledger,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate
-      )
-
-    dispatch_planning =
-      DispatchPlanning.build(state.registry, candidate_intake,
-        now: finished_at,
-        runtime_ledger: state.runtime_ledger,
-        previous_plan: state.dispatch_planning,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate
-      )
-
-    {runtime_ledger, dispatch_plan_application} =
-      DispatchPlanApplication.apply_plan(state.registry, dispatch_planning, state.runtime_ledger,
-        now: finished_at,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard,
-        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
-        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout
-      )
-
-    {runtime_ledger, worker_start_handoff} =
-      WorkerStartHandoff.run(state.registry, runtime_ledger,
-        now: finished_at,
-        starter: state.worker_start_starter,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate,
-        authorization_consumption_guard: authorization_consumption_guard,
-        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
-        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout
-      )
-
-    {runtime_ledger, worker_lifecycle_reconciliation} =
-      WorkerLifecycleReconciliation.run(state.registry, runtime_ledger,
-        now: finished_at,
-        result_source: state.worker_lifecycle_result_source
-      )
-
-    {candidate_intake, dispatch_planning} =
-      if runtime_ledger == state.runtime_ledger do
-        {candidate_intake, dispatch_planning}
+    projection_result =
+      if not poll_results_changed? and not runtime_projection_required?(state) do
+        {
+          state.candidate_intake,
+          state.dispatch_planning,
+          state.runtime_ledger,
+          state.dispatch_plan_application,
+          state.worker_start_handoff,
+          state.worker_lifecycle_reconciliation
+        }
       else
-        candidate_intake =
-          CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
-            now: finished_at,
-            runtime_ledger: runtime_ledger,
-            activation_preflight: state.activation_preflight,
-            cutover_gate: state.cutover_gate
-          )
-
-        dispatch_planning =
-          DispatchPlanning.build(state.registry, candidate_intake,
-            now: finished_at,
-            runtime_ledger: runtime_ledger,
-            previous_plan: dispatch_planning,
-            activation_preflight: state.activation_preflight,
-            cutover_gate: state.cutover_gate
-          )
-
-        {candidate_intake, dispatch_planning}
+        run_poll_projection_pipeline(state, intake_sources, finished_at, authorization_consumption_guard)
       end
+
+    {
+      candidate_intake,
+      dispatch_planning,
+      runtime_ledger,
+      dispatch_plan_application,
+      worker_start_handoff,
+      worker_lifecycle_reconciliation
+    } = projection_result
 
     tick =
       finished_tick(
@@ -1646,6 +1602,118 @@ defmodule SymphonyElixir.Hub.Runtime do
       end
 
     {state, tick}
+  end
+
+  defp poll_result_changed?(facts, result_fact) do
+    project_id = value(result_fact, :project_id)
+
+    previous =
+      Enum.find(facts, fn fact ->
+        status_string(value(fact, :fact_type)) == "poll_result" and
+          value(fact, :project_id) == project_id
+      end)
+
+    is_nil(previous) or
+      {
+        status_string(value(previous, :status)),
+        value(previous, :config_fingerprint),
+        stable_projection_identity(value(previous, :result_summary) || %{})
+      } !=
+        {
+          status_string(value(result_fact, :status)),
+          value(result_fact, :config_fingerprint),
+          stable_projection_identity(value(result_fact, :result_summary) || %{})
+        }
+  end
+
+  defp runtime_projection_required?(state) do
+    state.runtime_ledger
+    |> RuntimeLedger.replay()
+    |> list_value(:projects)
+    |> Enum.any?(fn project ->
+      list_value(project, :active_attempts) != [] or
+        list_value(project, :pending_start_intents) != [] or
+        list_value(project, :retry_backoff) != []
+    end)
+  end
+
+  defp run_poll_projection_pipeline(state, intake_sources, finished_at, authorization_consumption_guard) do
+    candidate_intake =
+      CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
+        now: finished_at,
+        runtime_ledger: state.runtime_ledger,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
+      )
+
+    dispatch_planning =
+      DispatchPlanning.build(state.registry, candidate_intake,
+        now: finished_at,
+        runtime_ledger: state.runtime_ledger,
+        previous_plan: state.dispatch_planning,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate
+      )
+
+    {runtime_ledger, dispatch_plan_application} =
+      DispatchPlanApplication.apply_plan(state.registry, dispatch_planning, state.runtime_ledger,
+        now: finished_at,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate,
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
+        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout
+      )
+
+    {runtime_ledger, worker_start_handoff} =
+      WorkerStartHandoff.run(state.registry, runtime_ledger,
+        now: finished_at,
+        starter: state.worker_start_starter,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate,
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
+        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout
+      )
+
+    {runtime_ledger, worker_lifecycle_reconciliation} =
+      WorkerLifecycleReconciliation.run(state.registry, runtime_ledger,
+        now: finished_at,
+        result_source: state.worker_lifecycle_result_source
+      )
+
+    {candidate_intake, dispatch_planning} =
+      if runtime_ledger == state.runtime_ledger do
+        {candidate_intake, dispatch_planning}
+      else
+        candidate_intake =
+          CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
+            now: finished_at,
+            runtime_ledger: runtime_ledger,
+            activation_preflight: state.activation_preflight,
+            cutover_gate: state.cutover_gate
+          )
+
+        dispatch_planning =
+          DispatchPlanning.build(state.registry, candidate_intake,
+            now: finished_at,
+            runtime_ledger: runtime_ledger,
+            previous_plan: dispatch_planning,
+            activation_preflight: state.activation_preflight,
+            cutover_gate: state.cutover_gate
+          )
+
+        {candidate_intake, dispatch_planning}
+      end
+
+    {
+      candidate_intake,
+      dispatch_planning,
+      runtime_ledger,
+      dispatch_plan_application,
+      worker_start_handoff,
+      worker_lifecycle_reconciliation
+    }
   end
 
   defp request_scheduled_refresh(state, requested_at) do

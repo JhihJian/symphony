@@ -1289,6 +1289,9 @@ Runtime entrypoint:
 - 成功且没有 runtime ledger、配置、activation、cutover 或错误状态变化的 poll tick 应更新
   poll facts、候选、计划、handoff、lifecycle 和 scheduler 动态子快照，并复用昂贵审计、闭环和
   设备投影。默认完整投影刷新周期为 5 分钟；业务状态或安全边界变化必须立即刷新。
+- Provider 候选结果与同项目上一轮结果一致，且 runtime ledger 没有 active attempt、pending
+  start intent 或 retry backoff 时，应复用候选、计划、dispatch application、handoff 和 lifecycle
+  结果，只追加本轮 poll fact 与调度时间。
 - Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
   `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
   status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,
