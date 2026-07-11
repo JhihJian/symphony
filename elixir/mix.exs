@@ -151,6 +151,7 @@ defmodule SymphonyElixir.MixProject do
   defp escript do
     [
       app: nil,
+      emu_args: "+sbwt none +sbwtdcpu none +sbwtdio none",
       main_module: SymphonyElixir.CLI,
       name: "symphony",
       path: "bin/symphony"

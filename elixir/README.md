@@ -520,6 +520,8 @@ registry、不执行 provider candidate scan，也不刷新 Host Service Probe�
 worker 边界结果也直接复用。配置、activation、cutover 或错误状态变化会立即触发完整刷新。Runtime 生成的安全快照带内部
 契约标记，Presenter 可直接复用已清洗的 Hub 子快照，同时仍对 legacy/string-key 快照执行原有
 兼容投影。若 `/refresh` 在自动 tick 运行或排队时到达，请求仍会合并而不会并发执行第二轮。
+escript 内嵌 `+sbwt none +sbwtdcpu none +sbwtdio none`，用于降低长驻 Hub 在间歇轮询间隔中的
+Erlang scheduler busy-wait CPU；调度周期和业务执行语义不变。
 Paused projects, config-invalid projects, and projects blocked by activation or cutover gates do not
 force an immediate next tick just because their safe snapshot has a current `next_due_at`; if no
 project can become due from time/backoff alone, Hub uses the default scheduler interval.

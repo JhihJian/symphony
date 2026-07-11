@@ -1292,6 +1292,8 @@ Runtime entrypoint:
 - Provider 候选结果与同项目上一轮结果一致，且 runtime ledger 没有 active attempt、pending
   start intent 或 retry backoff 时，应复用候选、计划、dispatch application、handoff 和 lifecycle
   结果，只追加本轮 poll fact 与调度时间。
+- 长驻 Hub 的发布产物 SHOULD 关闭 Erlang scheduler 和 dirty scheduler busy-wait，以降低间歇
+  tick 之间的空闲自旋；该运行参数不得改变 poll/retry 时间语义。
 - Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
   `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
   status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,

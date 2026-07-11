@@ -526,6 +526,8 @@ poll/调度子快照；provider 候选结果与上次一致时复用候选和计
 执行原因、间隔、耗时、最早重试时间、非法重试数和探测次数。真实 worker 在 start
 acknowledgement 后由独立生命周期监控器继续跟踪：正常结束会释放 active attempt，异常结束
 会生成带有效 `due_at` 的 retry；已结束 worker 不会长期冒充实时状态维持 1 秒循环。
+构建出的 escript 默认关闭 Erlang scheduler 与 dirty scheduler busy-wait，降低长驻 Hub 在间歇
+轮询负载下的空闲自旋 CPU。
 
 ---
 
