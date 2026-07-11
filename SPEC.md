@@ -1279,6 +1279,9 @@ Runtime entrypoint:
   reconciliation，不得执行 provider candidate scan，也不得重新运行未到期的 Host Service
   Probe。重复执行仍必须依赖同一 ledger/replay 幂等语义，不能创建重复 attempt、workspace
   lease 或 start intent。
+- 已 acknowledgement 的真实 worker 必须在 task 结束后产生可消费的 lifecycle 结果。正常结束
+  必须从 active attempts 中移除并释放容量；异常结束若选择 retry，必须携带有效 `due_at`。
+  已结束且已产生终态结果的 worker 不得继续作为实时状态触发短周期 reconciliation。
 - Host Service Probe 应与业务 tick 解耦或使用有界缓存。默认实现的缓存周期为 30 秒；项目
   配置身份变化时必须立即失效，探测失败仍按 fail-closed 的 unknown/manual-attention 语义处理。
 - Scheduler 状态变化应局部更新已发布快照；没有 ledger 变化的 reconciliation 不应反复构建
@@ -1444,6 +1447,10 @@ Runtime entrypoint:
   enter retry/backoff or an equivalent recoverable state. Blocked/manual-attention failures SHOULD
   remain observable. Lost, unknown, or manual-attention outcomes MUST NOT be silently released and
   blindly redispatched; they SHOULD retain enough safe evidence for later reconciliation.
+- An opt-in real worker starter MUST continue monitoring the worker task after start acknowledgement
+  and make the terminal result available to lifecycle reconciliation. A normal task exit SHOULD
+  produce a released terminal result. An abnormal exit MAY produce a retryable failure only when it
+  includes a valid retry `due_at`; otherwise it MUST become manual attention.
 - Lifecycle reconciliation summaries SHOULD expose running attempt to acknowledged start-intent
   associations, succeeded/failed/cancelled/timeout/stopped/lost/unknown/manual-attention counts,
   reason counts, workspace released/retained counts, retry/backoff, blocked, released, and

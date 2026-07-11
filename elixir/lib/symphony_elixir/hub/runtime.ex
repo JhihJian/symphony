@@ -37,6 +37,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
+    RealWorkerLifecycleStore,
     RealWritebackExecutor,
     RuntimeLedger,
     Scheduler,
@@ -399,7 +400,11 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   @spec worker_lifecycle_result_source() :: WorkerLifecycleReconciliation.result_source()
   def worker_lifecycle_result_source do
-    Application.get_env(:symphony_elixir, @worker_lifecycle_result_source_env_key)
+    Application.get_env(
+      :symphony_elixir,
+      @worker_lifecycle_result_source_env_key,
+      RealWorkerLifecycleStore
+    )
   end
 
   @spec provider_executor() :: module() | function()

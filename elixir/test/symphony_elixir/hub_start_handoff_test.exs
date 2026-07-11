@@ -7,8 +7,10 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     CutoverExecutionOutcomeLedger,
     DispatchBoundary,
     IssueRef,
+    RealWorkerLifecycleStore,
     RealWorkerStarter,
     RuntimeLedger,
+    WorkerLifecycleReconciliation,
     WorkerStartHandoff
   }
 
@@ -376,6 +378,112 @@ defmodule SymphonyElixir.HubStartHandoffTest do
     safe_text = inspect(handoff)
     refute safe_text =~ "Authorization"
     refute safe_text =~ "cookie"
+  end
+
+  test "acknowledged real worker completion closes the active runtime attempt" do
+    start_supervised!(RealWorkerLifecycleStore)
+    parent = self()
+
+    RealWorkerStarter.set_runner(fn issue, _request, runtime, recipient, _opts ->
+      send(parent, {:lifecycle_runner, self()})
+
+      send(recipient, {
+        :worker_runtime_info,
+        issue.id,
+        %{workspace_path: runtime.workspace_path, worker_host: runtime.worker_host}
+      })
+
+      send(recipient, {
+        :codex_worker_update,
+        issue.id,
+        %{
+          event: :session_started,
+          session_id: "session-lifecycle-success",
+          codex_app_server_pid: "24680",
+          timestamp: @now
+        }
+      })
+
+      receive do
+        :finish_worker -> :ok
+      end
+    end)
+
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+    assert {acked_ledger, handoff} = WorkerStartHandoff.run(registry(), ledger, now: @now, starter: RealWorkerStarter)
+    assert handoff.counts.acked_count == 1
+    assert_receive {:lifecycle_runner, worker_pid}, 1_000
+
+    send(worker_pid, :finish_worker)
+    assert eventually(fn -> RealWorkerLifecycleStore.count() == 1 end)
+
+    assert {completed_ledger, lifecycle} =
+             WorkerLifecycleReconciliation.run(registry(), acked_ledger,
+               now: DateTime.add(@now, 60, :second),
+               result_source: RealWorkerLifecycleStore
+             )
+
+    assert lifecycle.counts.succeeded_count == 1
+    assert lifecycle.counts.released_workspace_count == 1
+    assert [%{status: "succeeded", reason: "worker_completed"}] = lifecycle.results
+
+    [project] = RuntimeLedger.replay(completed_ledger).projects
+    assert project.active_attempts == []
+    assert project.retry_backoff == []
+    assert project.counts.released == 1
+  end
+
+  test "acknowledged real worker crash creates a scheduled lifecycle retry" do
+    start_supervised!(RealWorkerLifecycleStore)
+    parent = self()
+
+    RealWorkerStarter.set_runner(fn issue, _request, runtime, recipient, _opts ->
+      send(parent, {:crashing_lifecycle_runner, self()})
+
+      send(recipient, {
+        :worker_runtime_info,
+        issue.id,
+        %{workspace_path: runtime.workspace_path, worker_host: runtime.worker_host}
+      })
+
+      send(recipient, {
+        :codex_worker_update,
+        issue.id,
+        %{
+          event: :session_started,
+          session_id: "session-lifecycle-failed",
+          codex_app_server_pid: "13579",
+          timestamp: @now
+        }
+      })
+
+      receive do
+        :crash_worker -> exit(:boom)
+      end
+    end)
+
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+    assert {acked_ledger, handoff} = WorkerStartHandoff.run(registry(), ledger, now: @now, starter: RealWorkerStarter)
+    assert handoff.counts.acked_count == 1
+    assert_receive {:crashing_lifecycle_runner, worker_pid}, 1_000
+
+    send(worker_pid, :crash_worker)
+    assert eventually(fn -> RealWorkerLifecycleStore.count() == 1 end)
+
+    assert {retry_ledger, lifecycle} =
+             WorkerLifecycleReconciliation.run(registry(), acked_ledger,
+               now: DateTime.add(@now, 60, :second),
+               result_source: RealWorkerLifecycleStore
+             )
+
+    assert lifecycle.counts.failed_count == 1
+    assert [%{status: "failed", recovery_status: "retry_queued", due_at: due_at}] = lifecycle.results
+    assert {:ok, _due_at, 0} = DateTime.from_iso8601(due_at)
+
+    [project] = RuntimeLedger.replay(retry_ledger).projects
+    assert project.active_attempts == []
+    assert [%{due_at: ^due_at}] = project.retry_backoff
+    refute Enum.any?(project.conflicts, &(&1.code in [:retry_backoff_missing_due_at, :retry_backoff_invalid_due_at]))
   end
 
   test "real worker starter controls runner env and rejects invalid handoff requests" do
@@ -915,6 +1023,19 @@ defmodule SymphonyElixir.HubStartHandoffTest do
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
+
+  defp eventually(fun, attempts \\ 50)
+
+  defp eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
+  end
+
+  defp eventually(_fun, 0), do: false
 
   defp cutover_gate(project_id, decision, opts) do
     %{

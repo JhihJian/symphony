@@ -13,6 +13,7 @@ defmodule SymphonyElixir.HubRuntimeTest do
     ProviderExecutor,
     ProviderGovernance,
     RealCandidateScanExecutor,
+    RealWorkerLifecycleStore,
     RealWorkerStarter,
     RealWritebackExecutor,
     Runtime,
@@ -20,6 +21,17 @@ defmodule SymphonyElixir.HubRuntimeTest do
   }
 
   alias SymphonyElixirWeb.Presenter
+
+  test "uses the real worker lifecycle store as the default reconciliation source" do
+    previous = Application.get_env(:symphony_elixir, :hub_worker_lifecycle_result_source)
+    Application.delete_env(:symphony_elixir, :hub_worker_lifecycle_result_source)
+
+    on_exit(fn ->
+      restore_app_env(:hub_worker_lifecycle_result_source, previous)
+    end)
+
+    assert Runtime.worker_lifecycle_result_source() == RealWorkerLifecycleStore
+  end
 
   test "builds Hub snapshot with ready paused and project-level config error entries" do
     root = tmp_root("hub-runtime")
@@ -3906,6 +3918,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
   defp tmp_root(name) do
     Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive, :monotonic])}")
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defp eventually(fun, attempts \\ 20)
 

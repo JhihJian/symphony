@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
   require Logger
 
   alias SymphonyElixir.{AgentRunner, TrackerConfig, Workflow}
+  alias SymphonyElixir.Hub.RealWorkerLifecycleStore
   alias SymphonyElixir.Linear.Issue
 
   @runner_env_key :hub_worker_start_runner
@@ -86,7 +87,8 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
             "pid=#{inspect(pid)} worker_host=#{runtime.worker_host || "local"}"
         )
 
-        await_worker_start(pid, issue.id, request, runtime)
+        lifecycle_monitor = start_lifecycle_monitor(pid, request, runtime)
+        await_worker_start(pid, issue.id, request, runtime, lifecycle_monitor)
 
       {:error, reason} ->
         {:error, {:worker_spawn_failed, reason}}
@@ -104,7 +106,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
   defp execute_runner(runner, issue, request, runtime, recipient) when is_atom(runner), do: runner.run(issue, request, runtime, recipient)
   defp execute_runner(_runner, _issue, _request, _runtime, _recipient), do: raise(ArgumentError, "invalid Hub worker runner")
 
-  defp await_worker_start(pid, issue_id, request, runtime) do
+  defp await_worker_start(pid, issue_id, request, runtime, lifecycle_monitor) do
     ref = Process.monitor(pid)
     timeout_ms = start_timeout_ms()
 
@@ -114,6 +116,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
       issue_id,
       request,
       runtime,
+      lifecycle_monitor,
       %{
         workspace_path: nil,
         worker_host: runtime.worker_host
@@ -122,7 +125,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
     )
   end
 
-  defp receive_worker_start(pid, ref, issue_id, request, runtime, observed, timeout_ms) do
+  defp receive_worker_start(pid, ref, issue_id, request, runtime, lifecycle_monitor, observed, timeout_ms) do
     receive do
       {:worker_runtime_info, ^issue_id, runtime_info} when is_map(runtime_info) ->
         observed =
@@ -132,38 +135,157 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
 
         case validate_observed_workspace(request, observed.workspace_path) do
           :ok ->
-            receive_worker_start(pid, ref, issue_id, request, runtime, observed, timeout_ms)
+            receive_worker_start(pid, ref, issue_id, request, runtime, lifecycle_monitor, observed, timeout_ms)
 
           {:error, reason} ->
+            cancel_lifecycle_monitor(lifecycle_monitor)
             terminate_task(pid, ref)
             {:error, reason}
         end
 
       {:codex_worker_update, ^issue_id, %{event: :session_started} = update} ->
+        worker = %{
+          session_id: optional_string(update, :session_id),
+          codex_app_server_pid: optional_string(update, :codex_app_server_pid),
+          workspace_path: observed.workspace_path || runtime.workspace_path,
+          worker_host: observed.worker_host,
+          started_at: value(update, :timestamp)
+        }
+
+        acknowledge_lifecycle_monitor(lifecycle_monitor, worker)
         Process.demonitor(ref, [:flush])
 
-        {:ok,
-         %{
-           pid: pid,
-           ref: ref,
-           session_id: optional_string(update, :session_id),
-           codex_app_server_pid: optional_string(update, :codex_app_server_pid),
-           workspace_path: observed.workspace_path || runtime.workspace_path,
-           worker_host: observed.worker_host,
-           started_at: value(update, :timestamp)
-         }}
+        {:ok, Map.merge(worker, %{pid: pid, ref: ref})}
 
       {:codex_worker_update, ^issue_id, %{event: event} = update}
       when event in [:startup_failed, :turn_ended_with_error, :turn_failed, :turn_cancelled] ->
+        cancel_lifecycle_monitor(lifecycle_monitor)
         terminate_task(pid, ref)
         {:error, {:worker_start_failed, safe_update_reason(update)}}
 
       {:DOWN, ^ref, :process, ^pid, reason} ->
+        cancel_lifecycle_monitor(lifecycle_monitor)
         {:error, {:worker_exited_before_ack, reason}}
     after
       timeout_ms ->
+        cancel_lifecycle_monitor(lifecycle_monitor)
         terminate_task(pid, ref)
         {:error, {:worker_start_timeout, timeout_ms}}
+    end
+  end
+
+  defp start_lifecycle_monitor(worker_pid, request, runtime) do
+    if is_pid(Process.whereis(RealWorkerLifecycleStore)) and
+         is_pid(Process.whereis(SymphonyElixir.TaskSupervisor)) do
+      case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+             monitor_worker_lifecycle(worker_pid, request, runtime)
+           end) do
+        {:ok, monitor_pid} -> monitor_pid
+        {:error, _reason} -> nil
+      end
+    end
+  end
+
+  defp monitor_worker_lifecycle(worker_pid, request, runtime) do
+    ref = Process.monitor(worker_pid)
+    await_worker_lifecycle(worker_pid, ref, request, runtime, nil, nil)
+  end
+
+  defp await_worker_lifecycle(worker_pid, ref, request, runtime, worker, down_reason) do
+    receive do
+      {:worker_start_acknowledged, metadata} when is_map(metadata) ->
+        if is_nil(down_reason) do
+          await_worker_lifecycle(worker_pid, ref, request, runtime, metadata, nil)
+        else
+          record_worker_lifecycle(request, runtime, metadata, down_reason)
+        end
+
+      :cancel_worker_lifecycle_monitor ->
+        Process.demonitor(ref, [:flush])
+        :ok
+
+      {:DOWN, ^ref, :process, ^worker_pid, reason} ->
+        if is_map(worker) do
+          record_worker_lifecycle(request, runtime, worker, reason)
+        else
+          await_worker_lifecycle(worker_pid, ref, request, runtime, nil, reason)
+        end
+    end
+  end
+
+  defp acknowledge_lifecycle_monitor(pid, worker) when is_pid(pid) and is_map(worker) do
+    send(pid, {:worker_start_acknowledged, worker})
+    :ok
+  end
+
+  defp acknowledge_lifecycle_monitor(_pid, _worker), do: :ok
+
+  defp cancel_lifecycle_monitor(pid) when is_pid(pid) do
+    send(pid, :cancel_worker_lifecycle_monitor)
+    :ok
+  end
+
+  defp cancel_lifecycle_monitor(_pid), do: :ok
+
+  defp record_worker_lifecycle(request, runtime, worker, reason) do
+    finished_at = DateTime.utc_now()
+
+    request
+    |> lifecycle_result(runtime, worker, reason, finished_at)
+    |> RealWorkerLifecycleStore.record()
+  end
+
+  defp lifecycle_result(request, runtime, worker, reason, finished_at) do
+    base = %{
+      project_id: optional_string(request, :project_id),
+      issue_key: optional_string(request, :issue_key),
+      attempt_id: optional_string(request, :attempt_id),
+      start_intent_id: optional_string(request, :start_intent_id),
+      workspace_lease_id: optional_string(request, :workspace_lease_id),
+      workspace_path: worker.workspace_path || runtime.workspace_path,
+      session_id: worker.session_id,
+      worker_host: worker.worker_host,
+      finished_at: iso8601(finished_at),
+      source: "real_worker_starter_monitor"
+    }
+
+    case reason do
+      :normal ->
+        Map.merge(base, %{
+          status: "succeeded",
+          recovery_status: "released",
+          reason: "worker_completed",
+          exit_status: "normal",
+          exit_category: "completed"
+        })
+
+      reason when reason in [:shutdown, :noproc] ->
+        Map.merge(base, %{
+          status: "stopped",
+          recovery_status: "released",
+          reason: "worker_stopped",
+          exit_status: safe_exit_reason(reason),
+          exit_category: "stopped"
+        })
+
+      {:shutdown, _detail} = reason ->
+        Map.merge(base, %{
+          status: "stopped",
+          recovery_status: "released",
+          reason: "worker_stopped",
+          exit_status: safe_exit_reason(reason),
+          exit_category: "stopped"
+        })
+
+      reason ->
+        Map.merge(base, %{
+          status: "failed",
+          recovery_status: "retry_queued",
+          reason: "worker_runtime_failed",
+          due_at: finished_at |> DateTime.add(@retry_delay_ms, :millisecond) |> iso8601(),
+          exit_status: safe_exit_reason(reason),
+          exit_category: "worker_runtime_error"
+        })
     end
   end
 

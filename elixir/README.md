@@ -506,7 +506,10 @@ backoff、最早有效重试 `due_at` 与实时 worker 状态。只有活动 att
 使用 1 秒 `runtime_reconciliation`；未来重试直接等待最早到期时间，manual attention 不会
 触发短循环。缺失或非法重试时间不会生成 `retry_queued`：新失败转入 `manual_attention`，历史
 坏记录在加载时隔离并以 30 秒有界错误退避持续暴露诊断。RealWorkerStarter 的可重试启动失败
-默认生成 30 秒后的明确 `due_at`。
+默认生成 30 秒后的明确 `due_at`。真实 worker acknowledgement 后，Hub 的进程内生命周期存储
+继续接收 worker task 的终止结果：正常结束由 WorkerLifecycleReconciliation 释放 attempt 和
+workspace lease，异常结束转入带明确 `due_at` 的 retry。结果被账本消费后即从临时存储移除，
+runtime ledger 仍是后续 replay 的权威来源。
 
 `runtime_reconciliation` 只运行 WorkerStartHandoff 与 WorkerLifecycleReconciliation，不加载
 registry、不执行 provider candidate scan，也不刷新 Host Service Probe。Host Service Probe
@@ -524,8 +527,8 @@ GitHub/GitLab/Linear adapters. The opt-in real candidate-scan executor uses thos
 project-local reads behind Hub governance. The opt-in real writeback executor covers only the safe
 subset above; it does not migrate all dynamic tools, PR creation, ordinary append comments, legacy
 polling, legacy service ownership, or systemd unit lifecycle.
-The lifecycle reconciliation source is likewise injectable and
-safe-summary based. The existing per-project services and their poll loops keep running until a later
+The lifecycle reconciliation source remains injectable and safe-summary based; real Hub workers use
+the supervised process-local lifecycle store by default. The existing per-project services and their poll loops keep running until a later
 migration explicitly changes ownership.
 #203 adds the Hub runtime ledger restart/replay safe fixture baseline for #74 remaining gap 2. The
 fixture lives in `test/support/hub_runtime_ledger_restart_replay_fixture.exs` and is exercised by

@@ -19,6 +19,7 @@ defmodule SymphonyElixir.Application do
 
   use Application
 
+  alias SymphonyElixir.Hub.RealWorkerLifecycleStore
   alias SymphonyElixir.Hub.Runtime, as: HubRuntime
 
   @impl true
@@ -53,6 +54,7 @@ defmodule SymphonyElixir.Application do
       [
         {Phoenix.PubSub, name: SymphonyElixir.PubSub},
         {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+        RealWorkerLifecycleStore,
         HubRuntime,
         {SymphonyElixir.HttpServer, orchestrator: HubRuntime},
         {SymphonyElixir.StatusDashboard, orchestrator: HubRuntime, mode: :hub}
