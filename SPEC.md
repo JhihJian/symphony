@@ -1282,7 +1282,7 @@ Runtime entrypoint:
 - 已 acknowledgement 的真实 worker 必须在 task 结束后产生可消费的 lifecycle 结果。正常结束
   必须从 active attempts 中移除并释放容量；异常结束若选择 retry，必须携带有效 `due_at`。
   已结束且已产生终态结果的 worker 不得继续作为实时状态触发短周期 reconciliation。
-- Host Service Probe 应与业务 tick 解耦或使用有界缓存。默认实现的缓存周期为 30 秒；项目
+- Host Service Probe 应与业务 tick 解耦或使用有界缓存。默认实现的缓存周期为 60 秒；项目
   配置身份变化时必须立即失效，探测失败仍按 fail-closed 的 unknown/manual-attention 语义处理。
 - Scheduler 状态变化应局部更新已发布快照；没有 ledger 变化的 reconciliation 不应反复构建
   完整审计、回放、闭环和设备投影。

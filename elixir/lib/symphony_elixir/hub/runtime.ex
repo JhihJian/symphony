@@ -64,7 +64,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_unresolved_delay_ms 1_000
   @scheduler_error_backoff_ms 30_000
   @scheduler_default_delay_ms 30_000
-  @activation_probe_interval_ms 30_000
+  @activation_probe_interval_ms 60_000
   @snapshot_refresh_interval_ms 300_000
   @empty_codex_totals %{
     input_tokens: 0,
@@ -1543,22 +1543,29 @@ defmodule SymphonyElixir.Hub.Runtime do
         result_source: state.worker_lifecycle_result_source
       )
 
-    candidate_intake =
-      CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
-        now: finished_at,
-        runtime_ledger: runtime_ledger,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate
-      )
+    {candidate_intake, dispatch_planning} =
+      if runtime_ledger == state.runtime_ledger do
+        {candidate_intake, dispatch_planning}
+      else
+        candidate_intake =
+          CandidateIntake.build(state.registry, Enum.reverse(intake_sources),
+            now: finished_at,
+            runtime_ledger: runtime_ledger,
+            activation_preflight: state.activation_preflight,
+            cutover_gate: state.cutover_gate
+          )
 
-    dispatch_planning =
-      DispatchPlanning.build(state.registry, candidate_intake,
-        now: finished_at,
-        runtime_ledger: runtime_ledger,
-        previous_plan: dispatch_planning,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate
-      )
+        dispatch_planning =
+          DispatchPlanning.build(state.registry, candidate_intake,
+            now: finished_at,
+            runtime_ledger: runtime_ledger,
+            previous_plan: dispatch_planning,
+            activation_preflight: state.activation_preflight,
+            cutover_gate: state.cutover_gate
+          )
+
+        {candidate_intake, dispatch_planning}
+      end
 
     tick =
       finished_tick(
