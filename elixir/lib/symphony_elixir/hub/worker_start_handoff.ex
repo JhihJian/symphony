@@ -466,6 +466,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
 
   defp apply_failed_result(ledger, request, result, now, authorization_decision, replay_decision) do
     failure_status = failure_status(result)
+    result = Map.put(result, :failure_status, Atom.to_string(failure_status))
 
     failure =
       %{
@@ -574,7 +575,9 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   end
 
   defp normalize_starter_result({:ok, result}), do: normalize_starter_result(result)
-  defp normalize_starter_result({:error, reason}), do: %{status: "failed", reason: "starter_error", error_summary: safe_error(reason), failure_status: :retry_queued}
+
+  defp normalize_starter_result({:error, reason}),
+    do: %{status: "failed", reason: "starter_error", error_summary: safe_error(reason), failure_status: :manual_attention}
 
   defp normalize_starter_result(result) when is_map(result) do
     status = safe_status(value(result, :status) || value(result, :result) || value(result, :outcome)) || "unknown"
@@ -1271,13 +1274,20 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
     status = safe_status(value(result, :failure_status) || value(result, :start_failure_status))
 
     case status do
-      "retry_queued" -> :retry_queued
-      "retry" -> :retry_queued
-      "backoff" -> :retry_queued
-      "blocked" -> :blocked
-      "released" -> :released
-      "manual_attention" -> :manual_attention
-      _status -> :retry_queued
+      retry when retry in ["retry_queued", "retry", "backoff"] ->
+        if normalize_datetime(value(result, :due_at)), do: :retry_queued, else: :manual_attention
+
+      "blocked" ->
+        :blocked
+
+      "released" ->
+        :released
+
+      "manual_attention" ->
+        :manual_attention
+
+      _status ->
+        :manual_attention
     end
   end
 
@@ -1476,7 +1486,7 @@ defmodule SymphonyElixir.Hub.WorkerStartHandoff do
   defp iso8601(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
       {:ok, datetime, _offset} -> iso8601(datetime)
-      {:error, _reason} -> safe_optional_string(value)
+      {:error, _reason} -> nil
     end
   end
 

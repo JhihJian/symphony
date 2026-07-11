@@ -496,8 +496,9 @@ defmodule SymphonyElixir.HubStartHandoffTest do
                status: "failed",
                reason: "worker_start_failed",
                failure_status: "retry_queued",
-               error_summary: "worker start failed before acknowledgement: worker_runtime_error"
-             } = RealWorkerStarter.start(real_worker_request())
+               error_summary: "worker start failed before acknowledgement: worker_runtime_error",
+               due_at: "2026-06-29T09:00:30Z"
+             } = RealWorkerStarter.start(real_worker_request(), now: @now)
     end
   end
 
@@ -532,8 +533,9 @@ defmodule SymphonyElixir.HubStartHandoffTest do
                status: "failed",
                reason: "worker_exited_before_ack",
                failure_status: "retry_queued",
-               error_summary: error_summary
-             } = RealWorkerStarter.start(real_worker_request())
+               error_summary: error_summary,
+               due_at: "2026-06-29T09:00:30Z"
+             } = RealWorkerStarter.start(real_worker_request(), now: @now)
 
       assert error_summary in allowed_summaries
     end
@@ -550,8 +552,39 @@ defmodule SymphonyElixir.HubStartHandoffTest do
              status: "failed",
              reason: "worker_start_timeout",
              failure_status: "retry_queued",
-             error_summary: "worker did not acknowledge start within 10ms"
-           } = RealWorkerStarter.start(real_worker_request())
+             error_summary: "worker did not acknowledge start within 10ms",
+             due_at: "2026-06-29T09:00:30Z"
+           } = RealWorkerStarter.start(real_worker_request(), now: @now)
+  end
+
+  test "worker exit before acknowledgement becomes a scheduled retry through the full handoff boundary" do
+    RealWorkerStarter.set_runner(fn _issue, _request, _runtime, _recipient, _opts -> exit(:boom) end)
+    assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    assert {retry_ledger, handoff} = WorkerStartHandoff.run(registry(), ledger, now: @now, starter: RealWorkerStarter)
+    assert [%{failure_status: "retry_queued"}] = handoff.results
+
+    [project] = RuntimeLedger.replay(retry_ledger).projects
+    assert [%{attempt_id: attempt_id, due_at: "2026-06-29T09:00:30Z"}] = project.retry_backoff
+    assert attempt_id == context.attempt_id
+    refute Enum.any?(project.conflicts, &(&1.code in [:retry_backoff_missing_due_at, :retry_backoff_invalid_due_at]))
+  end
+
+  test "retryable starter results without a valid schedule become manual attention" do
+    assert {:ok, ledger, _context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate(), now: @now)
+
+    for due_at <- [nil, "not-a-datetime"] do
+      starter = fn _request, _opts ->
+        %{status: "failed", failure_status: "retry_queued", due_at: due_at, error_summary: "missing retry plan"}
+      end
+
+      assert {manual_ledger, handoff} = WorkerStartHandoff.run(registry(), ledger, now: @now, starter: starter)
+      assert [%{failure_status: "manual_attention"}] = handoff.results
+
+      [project] = RuntimeLedger.replay(manual_ledger).projects
+      assert project.counts.manual_attention == 1
+      assert project.retry_backoff == []
+    end
   end
 
   test "records manual attention while preserving unresolved start intent" do

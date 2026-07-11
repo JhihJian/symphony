@@ -259,6 +259,25 @@ defmodule SymphonyElixir.HubDispatchBoundaryTest do
     assert released_project.workspace_leases == []
   end
 
+  test "retry failures require a valid due_at at the ledger boundary" do
+    assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
+
+    for due_at <- [nil, "not-a-datetime"] do
+      failure =
+        %{
+          project_id: context.project_id,
+          issue_key: context.issue_key,
+          attempt_id: context.attempt_id,
+          start_intent_id: context.start_intent_id,
+          error_summary: "worker unavailable"
+        }
+        |> then(fn failure -> if due_at, do: Map.put(failure, :due_at, due_at), else: failure end)
+
+      assert {:error, :invalid_retry_due_at} = DispatchBoundary.record_start_failure(ledger, failure, :retry_queued)
+      assert RuntimeLedger.replay(ledger).projects |> hd() |> Map.fetch!(:retry_backoff) == []
+    end
+  end
+
   test "expired retry backoff allows a later dispatch attempt" do
     assert {:ok, ledger, context} = DispatchBoundary.dispatch(RuntimeLedger.new(), candidate())
 

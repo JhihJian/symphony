@@ -501,14 +501,19 @@ project definition and rollback material. The host-service probe treats config-d
 provider/workspace/runtime/log/state ownership as a blocker only when the legacy service is still
 active/enabled/failed or its legacy port is still listening; config presence alone is not a legacy
 owner for a `hub_managed` project.
-When `--hub-scheduler` is present, Hub mode also owns a baseline tick loop: it schedules an initial
-tick after startup, runs the same refresh chain in one non-reentrant task, then schedules the next
-tick from the Hub poll plan's due time/backoff plus unresolved runtime-ledger state such as pending
-or unknown start intents, running attempts, retry/backoff, and manual attention. If `/refresh` or
-`SymphonyElixir.Hub.Runtime.request_refresh/1` arrives while an automatic tick is running or already
-queued, the request returns a diagnostic queued/coalesced summary with `requested_at`,
-`next_tick_at`, and scheduler state instead of running a second concurrent tick. Without
-`--hub-scheduler`, manual refresh remains synchronous and keeps the previous behavior.
+启用 `--hub-scheduler` 后，Hub 会在启动时执行一次完整 tick，随后比较项目轮询计划、provider
+backoff、最早有效重试 `due_at` 与实时 worker 状态。只有活动 attempt 和待确认 start intent
+使用 1 秒 `runtime_reconciliation`；未来重试直接等待最早到期时间，manual attention 不会
+触发短循环。缺失或非法重试时间不会生成 `retry_queued`：新失败转入 `manual_attention`，历史
+坏记录在加载时隔离并以 30 秒有界错误退避持续暴露诊断。RealWorkerStarter 的可重试启动失败
+默认生成 30 秒后的明确 `due_at`。
+
+`runtime_reconciliation` 只运行 WorkerStartHandoff 与 WorkerLifecycleReconciliation，不加载
+registry、不执行 provider candidate scan，也不刷新 Host Service Probe。Host Service Probe
+默认缓存 30 秒，项目配置身份变化时立即失效。调度状态切换只局部更新已发布快照；没有 ledger
+变化的 reconciliation 不重建完整审计、回放、闭环和设备投影。Runtime 生成的安全快照带内部
+契约标记，Presenter 可直接复用已清洗的 Hub 子快照，同时仍对 legacy/string-key 快照执行原有
+兼容投影。若 `/refresh` 在自动 tick 运行或排队时到达，请求仍会合并而不会并发执行第二轮。
 Paused projects, config-invalid projects, and projects blocked by activation or cutover gates do not
 force an immediate next tick just because their safe snapshot has a current `next_due_at`; if no
 project can become due from time/backoff alone, Hub uses the default scheduler interval.

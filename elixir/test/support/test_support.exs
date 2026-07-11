@@ -33,6 +33,13 @@ defmodule SymphonyElixir.TestSupport do
         ]
 
       setup do
+        provider_env =
+          Enum.map(["GITHUB_TOKEN", "GITLAB_TOKEN", "LINEAR_API_KEY"], fn key ->
+            {key, System.get_env(key)}
+          end)
+
+        Enum.each(provider_env, fn {key, _value} -> System.delete_env(key) end)
+
         client_modules =
           SymphonyElixir.TestSupport.snapshot_app_env_keys([
             :linear_client_module,
@@ -66,6 +73,7 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
           Application.delete_env(:symphony_elixir, :e2e_tracker_double)
           SymphonyElixir.TestSupport.restore_app_env_keys(client_modules)
+          Enum.each(provider_env, fn {key, value} -> restore_env(key, value) end)
           File.rm_rf(workflow_root)
         end)
 

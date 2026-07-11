@@ -39,6 +39,7 @@ defmodule SymphonyElixir.Hub.Runtime do
     RealCandidateScanExecutor,
     RealWritebackExecutor,
     RuntimeLedger,
+    Scheduler,
     WorkerLifecycleReconciliation,
     WorkerStartHandoff
   }
@@ -62,6 +63,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_unresolved_delay_ms 1_000
   @scheduler_error_backoff_ms 30_000
   @scheduler_default_delay_ms 30_000
+  @activation_probe_interval_ms 30_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -79,6 +81,9 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:writeback_executor) => module() | function(),
           required(:worker_start_starter) => WorkerStartHandoff.starter(),
           required(:activation_probe) => map() | function() | nil,
+          required(:activation_probe_checked_at) => DateTime.t(),
+          required(:activation_probe_interval_ms) => pos_integer(),
+          required(:activation_probe_count) => non_neg_integer(),
           required(:operator_acknowledgements) => term(),
           required(:cutover_operation_requests) => term(),
           required(:cutover_audit_history_entries) => term(),
@@ -561,7 +566,10 @@ defmodule SymphonyElixir.Hub.Runtime do
         Keyword.get(opts, :cutover_replay_requests, cutover_replay_requests())
 
       worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
+      activation_probe_interval_ms = positive_integer(Keyword.get(opts, :activation_probe_interval_ms)) || @activation_probe_interval_ms
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
+      activation_probe_count = if is_function(activation_probe, 1), do: 1, else: 0
+      scheduler = Map.put(scheduler, :activation_probe_count, activation_probe_count)
 
       cutover_gate =
         build_cutover_gate(
@@ -623,6 +631,9 @@ defmodule SymphonyElixir.Hub.Runtime do
         writeback_executor: writeback_executor,
         worker_start_starter: worker_start_starter,
         activation_probe: activation_probe,
+        activation_probe_checked_at: loaded_at,
+        activation_probe_interval_ms: activation_probe_interval_ms,
+        activation_probe_count: activation_probe_count,
         operator_acknowledgements: operator_acknowledgements,
         cutover_operation_requests: cutover_operation_requests,
         cutover_audit_history_entries: cutover_audit_history_entries,
@@ -728,7 +739,6 @@ defmodule SymphonyElixir.Hub.Runtime do
 
         state
         |> Map.put(:scheduler, scheduler)
-        |> refresh_snapshot(now)
         |> schedule_next_tick(now, "error_backoff", @scheduler_error_backoff_ms)
       else
         state
@@ -742,6 +752,11 @@ defmodule SymphonyElixir.Hub.Runtime do
       {:ok, registry} ->
         activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
 
+        activation_probe_count =
+          state.activation_probe_count + if(is_function(state.activation_probe, 1), do: 1, else: 0)
+
+        scheduler = Map.put(state.scheduler, :activation_probe_count, activation_probe_count)
+
         cutover_gate =
           build_cutover_gate(
             registry,
@@ -752,12 +767,20 @@ defmodule SymphonyElixir.Hub.Runtime do
             state.worker_start_starter,
             state.activation_probe,
             state.operator_acknowledgements,
-            state.scheduler
+            scheduler
           )
 
         {state, tick_summary} =
           state
-          |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight, cutover_gate: cutover_gate})
+          |> Map.merge(%{
+            loaded_at: requested_at,
+            registry: registry,
+            activation_preflight: activation_preflight,
+            activation_probe_checked_at: requested_at,
+            activation_probe_count: activation_probe_count,
+            scheduler: scheduler,
+            cutover_gate: cutover_gate
+          })
           |> run_poll_tick(requested_at)
 
         {:reply,
@@ -1112,6 +1135,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       |> DeviceObservability.to_snapshot()
 
     %{
+      hub_snapshot_contract: 1,
       running: [],
       retrying: [],
       blocked: [],
@@ -1294,6 +1318,103 @@ defmodule SymphonyElixir.Hub.Runtime do
     kind, reason -> %{status: "unknown", source: "activation_probe", error: "#{kind}: #{safe_error(reason)}"}
   end
 
+  defp maybe_refresh_activation_probe(state, registry, now) do
+    refresh? =
+      registry_probe_identity(registry) != registry_probe_identity(state.registry) or
+        DateTime.diff(now, state.activation_probe_checked_at, :millisecond) >= state.activation_probe_interval_ms
+
+    if refresh? do
+      activation_preflight = build_activation_preflight(registry, state.activation_probe, now)
+      activation_probe_count = state.activation_probe_count + if(is_function(state.activation_probe, 1), do: 1, else: 0)
+
+      %{
+        state
+        | activation_preflight: activation_preflight,
+          activation_probe_checked_at: now,
+          activation_probe_count: activation_probe_count,
+          scheduler: Map.put(state.scheduler, :activation_probe_count, activation_probe_count)
+      }
+    else
+      state
+    end
+  end
+
+  defp registry_probe_identity(registry) do
+    registry
+    |> list_value(:projects)
+    |> Enum.map(fn project ->
+      {
+        value(project, :project_id),
+        value(project, :fingerprint),
+        value(project, :snapshot_version),
+        status_string(value(project, :status))
+      }
+    end)
+    |> Enum.sort()
+  end
+
+  defp run_reconciliation_tick(state, requested_at) do
+    started_tick = running_tick(requested_at)
+
+    authorization_consumption_guard =
+      authorization_consumption_guard_context(
+        state.cutover_execution_authorization_ledger,
+        required?: false
+      )
+
+    {runtime_ledger, worker_start_handoff} =
+      WorkerStartHandoff.run(state.registry, state.runtime_ledger,
+        now: requested_at,
+        starter: state.worker_start_starter,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: state.cutover_gate,
+        authorization_consumption_guard: authorization_consumption_guard,
+        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
+        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout
+      )
+
+    {runtime_ledger, worker_lifecycle_reconciliation} =
+      WorkerLifecycleReconciliation.run(state.registry, runtime_ledger,
+        now: requested_at,
+        result_source: state.worker_lifecycle_result_source
+      )
+
+    finished_at = DateTime.utc_now()
+
+    tick =
+      finished_tick(
+        started_tick,
+        finished_at,
+        0,
+        [],
+        state.candidate_intake,
+        state.dispatch_planning,
+        state.dispatch_plan_application,
+        worker_start_handoff,
+        worker_lifecycle_reconciliation
+      )
+      |> Map.put(:operations, reconciliation_tick_operations())
+
+    ledger_changed? = runtime_ledger != state.runtime_ledger
+
+    state = %{
+      state
+      | runtime_ledger: runtime_ledger,
+        worker_start_handoff: worker_start_handoff,
+        worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
+        tick: tick
+    }
+
+    state =
+      if ledger_changed? do
+        refresh_snapshot(state, finished_at)
+      else
+        refresh_scheduler_snapshot(state, finished_at)
+      end
+
+    {state, tick}
+  end
+
   defp run_poll_tick(state, requested_at) do
     started_tick = running_tick(requested_at)
 
@@ -1427,6 +1548,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         worker_start_handoff,
         worker_lifecycle_reconciliation
       )
+      |> Map.put(:operations, tick_operations())
 
     snapshot =
       build_snapshot(state.config_path, state.loaded_at, state.registry,
@@ -1497,7 +1619,7 @@ defmodule SymphonyElixir.Hub.Runtime do
             coalesced_count: state.scheduler.coalesced_count + 1
           })
 
-        state = state |> Map.put(:scheduler, scheduler) |> refresh_snapshot(requested_at)
+        state = state |> Map.put(:scheduler, scheduler) |> refresh_scheduler_snapshot(requested_at)
         {state, scheduler_reply(state, requested_at, true)}
 
       state.scheduler.tick_queued? ->
@@ -1510,7 +1632,7 @@ defmodule SymphonyElixir.Hub.Runtime do
             coalesced_count: state.scheduler.coalesced_count + 1
           })
 
-        state = state |> Map.put(:scheduler, scheduler) |> refresh_snapshot(requested_at)
+        state = state |> Map.put(:scheduler, scheduler) |> refresh_scheduler_snapshot(requested_at)
         {state, scheduler_reply(state, requested_at, true)}
 
       true ->
@@ -1571,22 +1693,29 @@ defmodule SymphonyElixir.Hub.Runtime do
         run_count: state.scheduler.run_count + 1
       })
 
-    state = state |> Map.put(:scheduler, scheduler) |> refresh_snapshot(requested_at)
+    state = state |> Map.put(:scheduler, scheduler) |> refresh_scheduler_snapshot(requested_at)
 
     task =
       Task.Supervisor.async_nolink(SymphonyElixir.TaskSupervisor, fn ->
-        result = run_async_tick(state, requested_at)
+        result = run_async_tick(state, requested_at, reason)
         {:hub_scheduler_tick_result, result}
       end)
 
     scheduler = %{state.scheduler | running_ref: task.ref}
-    state |> Map.put(:scheduler, scheduler) |> refresh_snapshot(requested_at)
+    Map.put(state, :scheduler, scheduler)
   end
 
-  defp run_async_tick(state, requested_at) do
+  defp run_async_tick(state, requested_at, reason) when reason in ["runtime_reconciliation", "invalid_retry_backoff"] do
+    state
+    |> run_reconciliation_tick(requested_at)
+    |> then(fn {state, tick_summary} -> {:ok, state, tick_summary} end)
+  end
+
+  defp run_async_tick(state, requested_at, _reason) do
     case load_registry(state.config_path) do
       {:ok, registry} ->
-        activation_preflight = build_activation_preflight(registry, state.activation_probe, requested_at)
+        state = maybe_refresh_activation_probe(state, registry, requested_at)
+        activation_preflight = state.activation_preflight
 
         cutover_gate =
           build_cutover_gate(
@@ -1619,7 +1748,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
   defp finish_async_tick(state, {:ok, tick_state, tick_summary}) do
     finished_at = DateTime.utc_now()
-    {next_delay_ms, next_reason} = next_schedule_delay(tick_state, finished_at)
+    schedule = next_schedule(tick_state, finished_at)
 
     scheduler =
       state.scheduler
@@ -1632,13 +1761,15 @@ defmodule SymphonyElixir.Hub.Runtime do
         last_duration_ms: scheduler_duration_ms(state.scheduler.running_started_at, finished_at),
         last_error: nil,
         last_operations: Map.get(tick_summary, :operations, tick_operations()),
-        project_summaries: scheduler_project_summaries(tick_state, finished_at)
+        project_summaries: scheduler_project_summaries(tick_state, finished_at),
+        earliest_retry_due_at: schedule.earliest_retry_due_at,
+        invalid_retry_count: schedule.invalid_retry_count,
+        realtime_count: schedule.realtime_count
       })
 
     tick_state
     |> Map.put(:scheduler, scheduler)
-    |> refresh_snapshot(finished_at)
-    |> schedule_next_tick(finished_at, next_reason, next_delay_ms)
+    |> schedule_next_tick(finished_at, schedule.reason, schedule.delay_ms)
   end
 
   defp finish_async_tick(state, {:error, message}) do
@@ -1659,7 +1790,6 @@ defmodule SymphonyElixir.Hub.Runtime do
 
     state
     |> Map.put(:scheduler, scheduler)
-    |> refresh_snapshot(finished_at)
     |> schedule_next_tick(finished_at, "error_backoff", @scheduler_error_backoff_ms)
   end
 
@@ -1682,7 +1812,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         project_summaries: scheduler_project_summaries(state, now)
       })
 
-    state |> Map.put(:scheduler, scheduler) |> refresh_snapshot(now)
+    state |> Map.put(:scheduler, scheduler) |> refresh_scheduler_snapshot(now)
   end
 
   defp refresh_snapshot(state, now) do
@@ -1729,7 +1859,57 @@ defmodule SymphonyElixir.Hub.Runtime do
     }
   end
 
-  defp next_schedule_delay(state, now) do
+  defp refresh_scheduler_snapshot(state, now) do
+    scheduler =
+      normalize_scheduler(
+        state.scheduler,
+        PollCoordinator.build_plan(state.registry,
+          now: now,
+          facts: state.poll_facts,
+          queue: state.provider_queue,
+          activation_preflight: state.activation_preflight,
+          cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
+        ),
+        state.runtime_ledger,
+        state.worker_start_handoff,
+        state.worker_lifecycle_reconciliation,
+        now
+      )
+
+    snapshot =
+      state.snapshot
+      |> Map.put(:hub_scheduler, scheduler)
+      |> Map.update(:hub_runtime, %{}, fn runtime ->
+        runtime
+        |> Map.put(:scheduler, scheduler)
+        |> Map.put(:poll_tick, state.tick)
+      end)
+      |> Map.update(:hub_device_observability, %{}, fn device ->
+        Map.update(device, :overview, %{}, &Map.put(&1, :scheduler, scheduler_device_overview(scheduler)))
+      end)
+
+    %{state | snapshot: snapshot}
+  end
+
+  defp scheduler_device_overview(scheduler) do
+    %{
+      enabled: scheduler.enabled,
+      status: scheduler.status,
+      queued: scheduler.queued,
+      running: scheduler.running?,
+      coalesced: scheduler.coalesced,
+      next_tick_at: scheduler.next_tick_at,
+      next_reason: scheduler.next_reason,
+      last_reason: get_in(scheduler, [:last_tick, :reason]),
+      last_error: Map.get(scheduler, :last_error),
+      counts: scheduler.counts,
+      unresolved_runtime: scheduler.unresolved_runtime
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp next_schedule(state, now) do
     plan =
       PollCoordinator.build_plan(state.registry,
         now: now,
@@ -1739,19 +1919,11 @@ defmodule SymphonyElixir.Hub.Runtime do
         cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
       )
 
-    cond do
-      unresolved_runtime_count(state) > 0 ->
-        {@scheduler_unresolved_delay_ms, "runtime_reconciliation"}
-
-      due_project_count(plan) > 0 ->
-        {0, "poll_due"}
-
-      true ->
-        case earliest_project_due_at(plan, now) do
-          nil -> {@scheduler_default_delay_ms, "default_interval"}
-          due_at -> {DateTime.diff(due_at, now, :millisecond), "next_project_due"}
-        end
-    end
+    Scheduler.next_schedule(plan, state.runtime_ledger, now,
+      realtime_delay_ms: @scheduler_unresolved_delay_ms,
+      invalid_retry_delay_ms: @scheduler_error_backoff_ms,
+      default_delay_ms: @scheduler_default_delay_ms
+    )
   end
 
   defp scheduler_project_summaries(state, now) do
@@ -1788,35 +1960,6 @@ defmodule SymphonyElixir.Hub.Runtime do
     end)
   end
 
-  defp due_project_count(plan), do: Enum.count(plan.projects, &(&1.allow_poll == true))
-
-  defp earliest_project_due_at(plan, now) do
-    plan.projects
-    |> Enum.filter(&reschedulable_project?/1)
-    |> Enum.map(fn project -> project.backoff_until || project.next_due_at end)
-    |> Enum.reject(&(is_nil(&1) or DateTime.compare(&1, now) == :lt))
-    |> Enum.min_by(&DateTime.to_unix(&1, :millisecond), fn -> nil end)
-  end
-
-  defp reschedulable_project?(%{allow_poll: true}), do: true
-
-  defp reschedulable_project?(project) do
-    reason = project |> value(:eligibility) |> value(:reason) |> status_string()
-    reason in ["not_due", "backoff", "rate_limited", "circuit_open", "provider_unavailable", "scope_concurrency"]
-  end
-
-  defp unresolved_runtime_count(state) do
-    replay = RuntimeLedger.replay(state.runtime_ledger)
-
-    Enum.reduce(replay.projects, 0, fn project, count ->
-      count +
-        length(list_value(project, :pending_start_intents)) +
-        length(list_value(project, :active_attempts)) +
-        length(list_value(project, :retry_backoff)) +
-        length(list_value(project, :manual_attention))
-    end)
-  end
-
   defp scheduler_duration_ms(nil, _finished_at), do: nil
 
   defp scheduler_duration_ms(%DateTime{} = started_at, %DateTime{} = finished_at) do
@@ -1826,6 +1969,9 @@ defmodule SymphonyElixir.Hub.Runtime do
   defp normalize_delay_ms(delay_ms) when is_integer(delay_ms) and delay_ms <= 0, do: 0
   defp normalize_delay_ms(delay_ms) when is_integer(delay_ms) and delay_ms < @scheduler_min_delay_ms, do: @scheduler_min_delay_ms
   defp normalize_delay_ms(delay_ms) when is_integer(delay_ms), do: delay_ms
+
+  defp positive_integer(value) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value), do: nil
 
   defp new_scheduler(enabled?, now) do
     %{
@@ -1853,6 +1999,10 @@ defmodule SymphonyElixir.Hub.Runtime do
       coalesced_count: 0,
       skipped_count: 0,
       error_count: 0,
+      activation_probe_count: 0,
+      earliest_retry_due_at: nil,
+      invalid_retry_count: 0,
+      realtime_count: 0,
       project_summaries: [],
       updated_at: now
     }
@@ -1903,6 +2053,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       next_tick_at: iso8601(value(scheduler, :next_tick_at)),
       next_delay_ms: non_negative_integer(value(scheduler, :next_delay_ms)),
       next_reason: status_string(value(scheduler, :next_reason)),
+      earliest_retry_due_at: iso8601(value(scheduler, :earliest_retry_due_at)),
       last_tick: %{
         started_at: iso8601(value(scheduler, :last_started_at)),
         finished_at: iso8601(value(scheduler, :last_finished_at)),
@@ -1914,7 +2065,10 @@ defmodule SymphonyElixir.Hub.Runtime do
         run_count: non_negative_integer(value(scheduler, :run_count)) || 0,
         coalesced_count: non_negative_integer(value(scheduler, :coalesced_count)) || 0,
         skipped_count: non_negative_integer(value(scheduler, :skipped_count)) || 0,
-        error_count: non_negative_integer(value(scheduler, :error_count)) || 0
+        error_count: non_negative_integer(value(scheduler, :error_count)) || 0,
+        activation_probe_count: non_negative_integer(value(scheduler, :activation_probe_count)) || 0,
+        invalid_retry_count: non_negative_integer(value(scheduler, :invalid_retry_count)) || 0,
+        realtime_count: non_negative_integer(value(scheduler, :realtime_count)) || 0
       },
       last_error: safe_optional_error(value(scheduler, :last_error)),
       projects: list_value(scheduler, :project_summaries),
@@ -2011,6 +2165,14 @@ defmodule SymphonyElixir.Hub.Runtime do
       "hub_cutover_closure_conclusion",
       "hub_cutover_closure_report_packet",
       "hub_device_observability"
+    ]
+  end
+
+  defp reconciliation_tick_operations do
+    [
+      "hub_worker_start_handoff",
+      "hub_worker_lifecycle_reconciliation",
+      "hub_scheduler_reconciliation"
     ]
   end
 
@@ -2583,6 +2745,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_plan_application: DispatchPlanApplication.tick_summary(%{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(%{}),
       worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(%{}),
+      operations: [],
       updated_at: iso8601(now)
     }
   end
@@ -2601,6 +2764,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_plan_application: DispatchPlanApplication.tick_summary(%{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(%{}),
       worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(%{}),
+      operations: [],
       updated_at: iso8601(started_at)
     }
   end
@@ -2631,6 +2795,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_plan_application: DispatchPlanApplication.tick_summary(dispatch_plan_application),
       worker_start_handoff: WorkerStartHandoff.tick_summary(worker_start_handoff),
       worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(worker_lifecycle_reconciliation),
+      operations: [],
       updated_at: iso8601(finished_at)
     }
   end
@@ -2651,6 +2816,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       dispatch_plan_application: DispatchPlanApplication.tick_summary(Map.get(tick, :dispatch_plan_application) || Map.get(tick, "dispatch_plan_application") || %{}),
       worker_start_handoff: WorkerStartHandoff.tick_summary(Map.get(tick, :worker_start_handoff) || Map.get(tick, "worker_start_handoff") || %{}),
       worker_lifecycle_reconciliation: WorkerLifecycleReconciliation.tick_summary(Map.get(tick, :worker_lifecycle_reconciliation) || Map.get(tick, "worker_lifecycle_reconciliation") || %{}),
+      operations: Map.get(tick, :operations) || Map.get(tick, "operations") || [],
       updated_at: Map.get(tick, :updated_at) || Map.get(tick, "updated_at")
     }
   end

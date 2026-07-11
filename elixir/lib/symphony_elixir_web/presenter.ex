@@ -30,6 +30,32 @@ defmodule SymphonyElixirWeb.Presenter do
     WorkerStartHandoff
   }
 
+  @trusted_hub_keys [
+    :hub_runtime,
+    :hub_scheduler,
+    :hub_activation_preflight,
+    :hub_cutover_gate,
+    :hub_cutover_operation_audit,
+    :hub_cutover_audit_history,
+    :hub_cutover_readiness_permit,
+    :hub_cutover_execution_authorization_ledger,
+    :hub_cutover_authorization_consumption_guard,
+    :hub_cutover_execution_outcome_ledger,
+    :hub_cutover_execution_outcome_closeout,
+    :hub_cutover_replay_decision,
+    :hub_cutover_replay_request_audit,
+    :hub_cutover_closure_chain,
+    :hub_cutover_closure_conclusion,
+    :hub_cutover_closure_report_packet,
+    :hub_project_registry,
+    :hub_device_observability,
+    :hub_candidate_intake,
+    :hub_dispatch_planning,
+    :hub_dispatch_plan_application,
+    :hub_worker_start_handoff,
+    :hub_worker_lifecycle_reconciliation
+  ]
+
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
@@ -53,31 +79,7 @@ defmodule SymphonyElixirWeb.Presenter do
           codex_totals: map_field(snapshot, :codex_totals),
           rate_limits: field(snapshot, :rate_limits)
         }
-        |> maybe_put_hub_runtime(snapshot)
-        |> maybe_put_hub_scheduler(snapshot)
-        |> maybe_put_hub_activation_preflight(snapshot)
-        |> maybe_put_hub_cutover_gate(snapshot)
-        |> maybe_put_hub_cutover_operation_audit(snapshot)
-        |> maybe_put_hub_cutover_audit_history(snapshot)
-        |> maybe_put_hub_cutover_readiness_permit(snapshot)
-        |> maybe_put_hub_cutover_execution_authorization_ledger(snapshot)
-        |> maybe_put_hub_cutover_authorization_consumption_guard(snapshot)
-        |> maybe_put_hub_cutover_execution_outcome_ledger(snapshot)
-        |> maybe_put_hub_cutover_execution_outcome_closeout(snapshot)
-        |> maybe_put_hub_cutover_replay_decision(snapshot)
-        |> maybe_put_hub_cutover_replay_request_audit(snapshot)
-        |> maybe_put_hub_cutover_closure_chain(snapshot)
-        |> maybe_put_hub_cutover_closure_conclusion(snapshot)
-        |> maybe_put_hub_cutover_closure_report_packet(snapshot)
-        |> maybe_put_hub_project_registry(snapshot)
-        |> maybe_put_hub_device_observability(snapshot)
-        |> maybe_put_hub_poll_coordination(snapshot)
-        |> maybe_put_hub_candidate_intake(snapshot)
-        |> maybe_put_hub_dispatch_planning(snapshot)
-        |> maybe_put_hub_dispatch_plan_application(snapshot)
-        |> maybe_put_hub_worker_start_handoff(snapshot)
-        |> maybe_put_hub_worker_lifecycle_reconciliation(snapshot)
-        |> maybe_put_hub_dispatch_boundary(snapshot)
+        |> put_hub_payload(snapshot)
 
       :timeout ->
         %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
@@ -85,6 +87,47 @@ defmodule SymphonyElixirWeb.Presenter do
       :unavailable ->
         %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
     end
+  end
+
+  defp put_hub_payload(payload, %{hub_snapshot_contract: 1} = snapshot) do
+    @trusted_hub_keys
+    |> Enum.reduce(payload, fn key, payload ->
+      case Map.get(snapshot, key) do
+        value when is_map(value) -> Map.put(payload, key, value)
+        _value -> payload
+      end
+    end)
+    |> maybe_put_hub_poll_coordination(snapshot)
+    |> maybe_put_hub_dispatch_boundary(snapshot)
+  end
+
+  defp put_hub_payload(payload, snapshot) do
+    payload
+    |> maybe_put_hub_runtime(snapshot)
+    |> maybe_put_hub_scheduler(snapshot)
+    |> maybe_put_hub_activation_preflight(snapshot)
+    |> maybe_put_hub_cutover_gate(snapshot)
+    |> maybe_put_hub_cutover_operation_audit(snapshot)
+    |> maybe_put_hub_cutover_audit_history(snapshot)
+    |> maybe_put_hub_cutover_readiness_permit(snapshot)
+    |> maybe_put_hub_cutover_execution_authorization_ledger(snapshot)
+    |> maybe_put_hub_cutover_authorization_consumption_guard(snapshot)
+    |> maybe_put_hub_cutover_execution_outcome_ledger(snapshot)
+    |> maybe_put_hub_cutover_execution_outcome_closeout(snapshot)
+    |> maybe_put_hub_cutover_replay_decision(snapshot)
+    |> maybe_put_hub_cutover_replay_request_audit(snapshot)
+    |> maybe_put_hub_cutover_closure_chain(snapshot)
+    |> maybe_put_hub_cutover_closure_conclusion(snapshot)
+    |> maybe_put_hub_cutover_closure_report_packet(snapshot)
+    |> maybe_put_hub_project_registry(snapshot)
+    |> maybe_put_hub_device_observability(snapshot)
+    |> maybe_put_hub_poll_coordination(snapshot)
+    |> maybe_put_hub_candidate_intake(snapshot)
+    |> maybe_put_hub_dispatch_planning(snapshot)
+    |> maybe_put_hub_dispatch_plan_application(snapshot)
+    |> maybe_put_hub_worker_start_handoff(snapshot)
+    |> maybe_put_hub_worker_lifecycle_reconciliation(snapshot)
+    |> maybe_put_hub_dispatch_boundary(snapshot)
   end
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}

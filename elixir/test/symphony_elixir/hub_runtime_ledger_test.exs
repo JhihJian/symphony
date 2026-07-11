@@ -467,6 +467,7 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
         issue_ref: ref,
         claim_status: :retry_queued,
         attempts: [%{attempt_id: "attempt-1", status: :failed}, %{attempt_id: "attempt-2", status: :pending}],
+        retry_backoff: %{attempt_id: "attempt-2", due_at: "2026-06-27T09:00:00Z", error_summary: "writeback retry"},
         writebacks: [
           %{
             intent_key: stable_key,
@@ -496,6 +497,7 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
         issue_ref: ref,
         claim_status: :retry_queued,
         attempts: [%{attempt_id: "attempt-1", status: :failed}, %{attempt_id: "attempt-2", status: :pending}],
+        retry_backoff: %{attempt_id: "attempt-2", due_at: "2026-06-27T09:00:00Z", error_summary: "writeback retry"},
         writebacks: [
           %{
             intent_key: stable_key <> ":attempt-1",
@@ -520,6 +522,27 @@ defmodule SymphonyElixir.HubRuntimeLedgerTest do
 
     assert {:error, diagnostics} = RuntimeLedger.validate(unstable_ledger)
     assert Enum.any?(diagnostics, &(&1.code == :writeback_intent_key_unstable))
+  end
+
+  test "isolates historical retries with missing or malformed due_at as manual attention" do
+    for {due_at, diagnostic_code} <- [
+          {nil, :retry_backoff_missing_due_at},
+          {"not-a-datetime", :retry_backoff_invalid_due_at}
+        ] do
+      ledger =
+        ledger_with_issue(%{
+          issue_ref: issue_ref("alpha", "github", "github:jhihjian/symphony", "123", "jhihjian/symphony#77"),
+          claim_status: :retry_queued,
+          attempts: [%{attempt_id: "attempt-1", status: :failed}],
+          retry_backoff: %{attempt_id: "attempt-1", due_at: due_at, error_summary: "legacy retry"}
+        })
+
+      [project] = RuntimeLedger.replay(ledger).projects
+      assert project.counts.retry == 0
+      assert project.counts.manual_attention == 1
+      assert Enum.any?(project.conflicts, &(&1.code == diagnostic_code))
+      assert Enum.any?(project.manual_attention, &(&1.code == diagnostic_code))
+    end
   end
 
   test "rejects sensitive fields and values in snapshots" do

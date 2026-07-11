@@ -423,6 +423,8 @@ Retry/backoff fields:
 - `attempt_id`
   - MUST reference an attempt in the same issue ledger scope.
 - `due_at`
+  - `retry_queued` 状态下必须存在，并且必须是可解析的 ISO 8601 UTC 时间。
+  - 缺失或格式错误时，不得创建可调度重试；新失败必须进入 `manual_attention`，历史记录在加载时隔离为人工处理并持续暴露诊断。
 - `error_summary`
 - `preferred_worker_host`, `preferred_workspace_path`
 
@@ -1258,10 +1260,11 @@ Runtime entrypoint:
   those safe summaries through the existing observability API.
 - A Hub runtime MAY provide an explicit opt-in scheduler flag such as `--hub-scheduler`. When
   enabled, the Hub runtime owns a single in-process tick loop that schedules an initial Hub tick and
-  schedules the next tick after each completed tick from safe Hub summaries: poll-plan
-  `allow_poll`/`next_due_at`, provider backoff/quota/circuit state, and unresolved runtime-ledger
-  state such as pending or unknown start intents, running attempts, retry/backoff, and manual
-  attention.
+  compares poll-plan `allow_poll`/`next_due_at`, provider backoff/quota/circuit state, the earliest
+  valid retry `due_at`, and real-time worker state. Only active attempts and pending start intents
+  use the short reconciliation interval. Future retries wait until their earliest due time; manual
+  attention does not create a short loop. Missing or malformed retry times use a bounded diagnostic
+  backoff and remain observable.
 - Projects that are paused, config-invalid, activation-preflight blocked, or cutover-gate blocked
   MUST NOT by themselves cause an immediate scheduler loop. If no project is pollable and no
   project can become pollable due to time/backoff alone, the scheduler SHOULD use its default
@@ -1271,11 +1274,15 @@ Runtime entrypoint:
   either coalesce with that tick or return another explicit non-concurrent state. The returned
   summary SHOULD include `queued`, `coalesced`, `requested_at`, `next_tick_at`, current scheduler
   status, counts, and last/next tick reason fields.
-- Scheduler-triggered ticks MUST reuse the same registry load, poll coordination, provider
-  governance, candidate intake, dispatch planning/application, worker start handoff, worker
-  lifecycle reconciliation, runtime-ledger replay, and device observability boundaries used by
-  manual refresh. Repeated manual or automatic ticks MUST rely on the same ledger/replay
-  idempotency and MUST NOT create duplicate active attempts, workspace leases, or start intents.
+- 到期轮询、到期重试和人工刷新必须复用完整 Hub 执行边界。仅由活动 worker 或待确认 start
+  intent 触发的 `runtime_reconciliation` 必须只运行 worker start handoff 与 lifecycle
+  reconciliation，不得执行 provider candidate scan，也不得重新运行未到期的 Host Service
+  Probe。重复执行仍必须依赖同一 ledger/replay 幂等语义，不能创建重复 attempt、workspace
+  lease 或 start intent。
+- Host Service Probe 应与业务 tick 解耦或使用有界缓存。默认实现的缓存周期为 30 秒；项目
+  配置身份变化时必须立即失效，探测失败仍按 fail-closed 的 unknown/manual-attention 语义处理。
+- Scheduler 状态变化应局部更新已发布快照；没有 ledger 变化的 reconciliation 不应反复构建
+  完整审计、回放、闭环和设备投影。
 - Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
   `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
   status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,

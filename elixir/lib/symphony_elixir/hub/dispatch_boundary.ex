@@ -215,7 +215,8 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
     error_summary = optional_string(failure, :error_summary) || Atom.to_string(failure_status)
     ledger = RuntimeLedger.to_snapshot(ledger)
 
-    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id) do
+    with :ok <- require_dispatch_target(ledger, project_id, issue_key, attempt_id, start_intent_id),
+         :ok <- require_retry_due_at(failure_status, failure, opts) do
       ledger =
         ledger
         |> update_attempt(project_id, issue_key, attempt_id, fn attempt ->
@@ -1100,6 +1101,15 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
 
   defp maybe_put_retry_backoff(issue, _status, _attempt_id, _failure, _opts), do: issue
 
+  defp require_retry_due_at(:retry_queued, failure, opts) do
+    case parse_datetime(value(failure, :due_at) || Keyword.get(opts, :due_at)) do
+      %DateTime{} -> :ok
+      nil -> {:error, :invalid_retry_due_at}
+    end
+  end
+
+  defp require_retry_due_at(_failure_status, _failure, _opts), do: :ok
+
   defp maybe_put_released_at(issue, :released, now), do: Map.put(issue, :released_at, now)
   defp maybe_put_released_at(issue, _status, _now), do: issue
 
@@ -1208,13 +1218,20 @@ defmodule SymphonyElixir.Hub.DispatchBoundary do
         _status -> nil
       end
 
-    cond do
-      normalized in @lifecycle_recovery_statuses -> normalized
-      status == :succeeded -> :released
-      status == :failed -> :retry_queued
-      status in [:cancelled, :timeout, :stopped] -> :released
-      status in @unresolved_lifecycle_statuses -> :manual_attention
-      true -> nil
+    recovery_status =
+      cond do
+        normalized in @lifecycle_recovery_statuses -> normalized
+        status == :succeeded -> :released
+        status == :failed -> :retry_queued
+        status in [:cancelled, :timeout, :stopped] -> :released
+        status in @unresolved_lifecycle_statuses -> :manual_attention
+        true -> nil
+      end
+
+    if recovery_status == :retry_queued and is_nil(parse_datetime(value(result, :due_at))) do
+      :manual_attention
+    else
+      recovery_status
     end
   end
 

@@ -183,6 +183,20 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute safe_text =~ "transcript"
       refute safe_text =~ "comment body"
 
+      slow_name = Module.concat(__MODULE__, :PresenterSlowProjection)
+      slow_snapshot = runtime_name |> Runtime.snapshot(100) |> Map.delete(:hub_snapshot_contract)
+
+      start_supervised!(
+        {__MODULE__.StaticSnapshot, name: slow_name, snapshot: slow_snapshot},
+        id: :hub_runtime_presenter_slow_projection
+      )
+
+      slow_payload = Presenter.state_payload(slow_name, 100)
+
+      for key <- Map.keys(Map.delete(payload, :generated_at)) do
+        assert Map.fetch!(payload, key) == Map.fetch!(slow_payload, key), "fast Presenter projection differs at #{key}"
+      end
+
       legacy_name = Module.concat(__MODULE__, :LegacySnapshot)
 
       start_supervised!(
@@ -206,6 +220,49 @@ defmodule SymphonyElixir.HubRuntimeTest do
       refute Map.has_key?(legacy_payload, :hub_worker_start_handoff)
       refute Map.has_key?(legacy_payload, :hub_worker_lifecycle_reconciliation)
       refute Map.has_key?(legacy_payload, :hub_device_observability)
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "four-project idle state projection stays below one second and does not grow" do
+    root = tmp_root("hub-runtime-state-performance")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      for project_id <- ["alpha", "beta", "gamma", "delta"] do
+        write_project!(root, project_id,
+          tracker_kind: "memory",
+          workspace_root: Path.join([root, "workspaces", project_id])
+        )
+      end
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+        - project_id: beta
+          workflow_path: beta/WORKFLOW.md
+        - project_id: gamma
+          workflow_path: gamma/WORKFLOW.md
+        - project_id: delta
+          workflow_path: delta/WORKFLOW.md
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :StatePerformanceRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path},
+        id: :hub_runtime_state_performance
+      )
+
+      measurements =
+        Enum.map(1..3, fn _index ->
+          :timer.tc(fn -> runtime_name |> Presenter.state_payload(1_000) |> Jason.encode!() end)
+        end)
+
+      assert measurements |> Enum.map(&elem(&1, 0)) |> Enum.max() < 1_000_000
+      assert measurements |> Enum.map(fn {_duration, body} -> byte_size(body) end) |> Enum.uniq() |> length() == 1
     after
       File.rm_rf(root)
     end
@@ -2952,6 +3009,165 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "scheduler waits for a future retry instead of entering one-second reconciliation" do
+    root = tmp_root("hub-runtime-scheduler-future-retry")
+    hub_path = Path.join(root, "HUB.yaml")
+    due_at = DateTime.utc_now() |> DateTime.add(10, :second) |> DateTime.truncate(:second)
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          dispatch_enabled: false
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerFutureRetryRuntime)
+      runtime_ledger = retry_runtime_ledger(due_at)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, scheduler_enabled: true, runtime_ledger: runtime_ledger},
+        id: :hub_runtime_scheduler_future_retry
+      )
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_scheduler: %{status: "scheduled", next_reason: "retry_due", counts: %{run_count: count}}} -> count >= 1
+                 _snapshot -> false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.next_delay_ms > 1_000
+      assert snapshot.hub_scheduler.next_delay_ms <= 10_000
+      assert snapshot.hub_scheduler.earliest_retry_due_at == DateTime.to_iso8601(due_at)
+
+      run_count = snapshot.hub_scheduler.counts.run_count
+      Process.sleep(100)
+      assert Runtime.snapshot(runtime_name, 100).hub_scheduler.counts.run_count == run_count
+      refute_receive {:provider_candidate_scan, _request}, 100
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "invalid retry data uses bounded error backoff and remains observable" do
+    root = tmp_root("hub-runtime-scheduler-invalid-retry")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          dispatch_enabled: false
+      """)
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerInvalidRetryRuntime)
+      runtime_ledger = retry_runtime_ledger("not-a-datetime")
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, scheduler_enabled: true, runtime_ledger: runtime_ledger},
+        id: :hub_runtime_scheduler_invalid_retry
+      )
+
+      assert eventually(fn ->
+               case Runtime.snapshot(runtime_name, 1_000) do
+                 %{hub_scheduler: %{status: "scheduled", next_reason: "invalid_retry_backoff", next_delay_ms: 30_000}} -> true
+                 _snapshot -> false
+               end
+             end)
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.counts.invalid_retry_count == 1
+      replay = RuntimeLedger.replay(snapshot.hub_dispatch_boundary)
+      assert Enum.any?(replay.conflicts, &(&1.code == :retry_backoff_invalid_due_at))
+      assert Enum.any?(replay.manual_attention, &(&1.code == :retry_backoff_invalid_due_at))
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  test "runtime reconciliation skips provider scans and reuses the cached activation probe" do
+    root = tmp_root("hub-runtime-scheduler-light-reconciliation")
+    hub_path = Path.join(root, "HUB.yaml")
+    workspace_root = Path.join([root, "workspaces", "alpha"])
+    parent = self()
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: workspace_root)
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          dispatch_enabled: false
+      """)
+
+      activation_probe = fn _registry ->
+        send(parent, :host_service_probe_called)
+        %{status: "ok", source: "host_service_probe", projects: %{}}
+      end
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerLightReconciliationRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         scheduler_enabled: true,
+         runtime_ledger: active_runtime_ledger(workspace_root),
+         activation_probe: activation_probe,
+         activation_probe_interval_ms: 30_000},
+        id: :hub_runtime_scheduler_light_reconciliation
+      )
+
+      assert_receive :host_service_probe_called, 1_000
+
+      assert eventually(
+               fn ->
+                 case Runtime.snapshot(runtime_name, 1_000) do
+                   %{
+                     hub_scheduler: %{
+                       status: "scheduled",
+                       counts: %{run_count: count},
+                       last_tick: %{reason: "runtime_reconciliation", operations: operations}
+                     }
+                   } ->
+                     count >= 2 and
+                       operations == [
+                         "hub_worker_start_handoff",
+                         "hub_worker_lifecycle_reconciliation",
+                         "hub_scheduler_reconciliation"
+                       ]
+
+                   _snapshot ->
+                     false
+                 end
+               end,
+               80
+             )
+
+      snapshot = Runtime.snapshot(runtime_name, 100)
+      assert snapshot.hub_scheduler.counts.activation_probe_count == 1
+
+      assert snapshot.hub_scheduler.last_tick.operations == [
+               "hub_worker_start_handoff",
+               "hub_worker_lifecycle_reconciliation",
+               "hub_scheduler_reconciliation"
+             ]
+
+      refute_receive :host_service_probe_called, 100
+      refute_receive {:provider_candidate_scan, _request}, 100
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "scheduler next tick uses provider backoff and isolates provider failures" do
     root = tmp_root("hub-runtime-scheduler-backoff")
     hub_path = Path.join(root, "HUB.yaml")
@@ -3572,6 +3788,26 @@ defmodule SymphonyElixir.HubRuntimeTest do
           workspace_leases: [
             %{lease_id: "lease-active", issue_key: active_key, attempt_id: "attempt-active", workspace_path: Path.join(workspace_root, "active"), status: :active},
             %{lease_id: "lease-shared", issue_key: shared_key, attempt_id: "attempt-shared", workspace_path: Path.join(workspace_root, "shared"), status: :active}
+          ]
+        }
+      ]
+    )
+  end
+
+  defp retry_runtime_ledger(due_at) do
+    issue_ref = memory_issue_ref("alpha", "mem-retry", "MEM-RETRY")
+
+    RuntimeLedger.new(
+      projects: [
+        %{
+          project_id: "alpha",
+          issues: [
+            %{
+              issue_ref: issue_ref,
+              claim_status: :retry_queued,
+              attempts: [%{attempt_id: "attempt-retry", attempt_number: 1, status: :failed}],
+              retry_backoff: %{attempt_id: "attempt-retry", due_at: due_at, error_summary: "worker start failed"}
+            }
           ]
         }
       ]

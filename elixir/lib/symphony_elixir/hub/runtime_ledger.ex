@@ -371,11 +371,14 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp normalize_issue(project_id, issue) when is_map(issue) do
     issue_ref = normalize_issue_ref(project_id, value(issue, :issue_ref) || %{})
     issue_key = optional_string(issue, :issue_key) || issue_key(issue_ref)
+    retry_backoff = normalize_retry_backoff(value(issue, :retry_backoff))
+    claim_status = normalize_atom(value(issue, :claim_status) || value(issue, :status), :unclaimed, @issue_statuses)
+    claim_status = normalize_retry_claim_status(claim_status, retry_backoff)
 
     %{
       issue_key: issue_key,
       issue_ref: issue_ref,
-      claim_status: normalize_atom(value(issue, :claim_status) || value(issue, :status), :unclaimed, @issue_statuses),
+      claim_status: claim_status,
       current_stage: optional_string(issue, :current_stage),
       claimed_at: normalize_time(value(issue, :claimed_at)),
       released_at: normalize_time(value(issue, :released_at)),
@@ -385,7 +388,7 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
         |> list_value(:attempts)
         |> Enum.map(&normalize_attempt/1)
         |> Enum.sort_by(&{&1.attempt_number || 0, &1.attempt_id}),
-      retry_backoff: normalize_retry_backoff(value(issue, :retry_backoff)),
+      retry_backoff: retry_backoff,
       lifecycle_results:
         issue
         |> list_value(:lifecycle_results)
@@ -498,6 +501,12 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   end
 
   defp normalize_retry_backoff(_retry), do: nil
+
+  defp normalize_retry_claim_status(:retry_queued, retry_backoff) do
+    if valid_datetime?(retry_backoff && retry_backoff.due_at), do: :retry_queued, else: :manual_attention
+  end
+
+  defp normalize_retry_claim_status(claim_status, _retry_backoff), do: claim_status
 
   defp normalize_agent_session(nil), do: nil
 
@@ -1001,6 +1010,18 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
                 )
               ]
 
+            not valid_datetime?(retry.due_at) ->
+              [
+                diagnostic(
+                  :error,
+                  :retry_backoff_invalid_due_at,
+                  project.project_id,
+                  issue.issue_key,
+                  attempt_id,
+                  "Retry/backoff record has an invalid due_at"
+                )
+              ]
+
             Enum.any?(issue.attempts, &(&1.attempt_id == attempt_id)) ->
               []
 
@@ -1165,8 +1186,16 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp manual_attention_diagnostics(ledger) do
     Enum.flat_map(ledger.projects, fn project ->
       writeback_manual_attention(project) ++
-        start_intent_manual_attention(project) ++ lifecycle_manual_attention(project)
+        start_intent_manual_attention(project) ++
+        lifecycle_manual_attention(project) ++
+        retry_backoff_manual_attention(project)
     end)
+  end
+
+  defp retry_backoff_manual_attention(project) do
+    project
+    |> retry_backoff_conflicts()
+    |> Enum.filter(&(&1.code in [:retry_backoff_missing_due_at, :retry_backoff_invalid_due_at]))
   end
 
   defp writeback_manual_attention(project) do
@@ -1896,6 +1925,14 @@ defmodule SymphonyElixir.Hub.RuntimeLedger do
   defp normalize_time(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp normalize_time(value) when is_binary(value), do: normalize_optional_string(value)
   defp normalize_time(_value), do: nil
+
+  defp valid_datetime?(%DateTime{}), do: true
+
+  defp valid_datetime?(value) when is_binary(value) do
+    match?({:ok, %DateTime{}, _offset}, DateTime.from_iso8601(value))
+  end
+
+  defp valid_datetime?(_value), do: false
 
   defp normalize_integer(value) when is_integer(value) and value >= 0, do: value
 

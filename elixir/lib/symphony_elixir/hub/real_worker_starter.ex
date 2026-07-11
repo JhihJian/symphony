@@ -15,12 +15,14 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
 
   @runner_env_key :hub_worker_start_runner
   @start_timeout_ms 30_000
+  @retry_delay_ms 30_000
 
   @type start_result :: %{
           required(:status) => String.t(),
           optional(:reason) => String.t(),
           optional(:error_summary) => String.t(),
           optional(:failure_status) => String.t(),
+          optional(:due_at) => String.t(),
           optional(:session_id) => String.t(),
           optional(:worker_host) => String.t() | nil,
           optional(:workspace_path) => String.t() | nil,
@@ -55,7 +57,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
       ack_result(request, issue, runtime, worker, now)
     else
       {:error, reason} ->
-        failure_result(request, reason)
+        failure_result(request, reason, now)
     end
   end
 
@@ -251,7 +253,7 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
     }
   end
 
-  defp failure_result(request, reason) do
+  defp failure_result(request, reason, now) do
     status = failure_status(reason)
 
     %{
@@ -262,7 +264,14 @@ defmodule SymphonyElixir.Hub.RealWorkerStarter do
       worker_host: optional_string(request, :worker_host),
       workspace_path: optional_string(request, :workspace_path)
     }
+    |> maybe_put_retry_due_at(status, now)
   end
+
+  defp maybe_put_retry_due_at(result, "retry_queued", %DateTime{} = now) do
+    Map.put(result, :due_at, now |> DateTime.add(@retry_delay_ms, :millisecond) |> iso8601())
+  end
+
+  defp maybe_put_retry_due_at(result, _status, _now), do: result
 
   defp failure_status({:worker_spawn_failed, _reason}), do: "retry_queued"
   defp failure_status({:worker_start_timeout, _timeout_ms}), do: "retry_queued"

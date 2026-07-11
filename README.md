@@ -514,14 +514,14 @@ been archived or removed, host-service probe treats `systemctl is-enabled` retur
 inactive/disabled rather than unknown ownership. The legacy
 `symphony@<project>.service` path is retained only for migration compatibility and rollback, not as
 the formal runtime.
-Passing `--hub-scheduler` adds the first opt-in Hub-owned tick loop baseline: startup and completed
-ticks schedule the next safe refresh from the Hub poll plan, provider backoff, and unresolved
-runtime-ledger lifecycle state, and `/refresh` coalesces with a running or queued tick instead of
-starting a concurrent one. Paused projects and projects blocked by activation/cutover gates do not
-drive an immediate next tick; when no project can become due by time/backoff alone, Hub falls back
-to the default scheduler interval. This scheduler summary is exposed as `hub_scheduler` and
-`hub_runtime.scheduler`; it is still not the final durable Hub scheduler, provider writeback
-executor, distributed lock, or migration of existing `symphony@project.service` instances.
+启用 `--hub-scheduler` 后，Hub 会比较项目轮询计划、provider backoff、最早有效重试时间和
+实时 worker 状态来安排下一轮。只有活动 attempt 和待确认 start intent 使用 1 秒
+`runtime_reconciliation`；未来重试按最早 `due_at` 等待，人工处理不会触发短循环，缺失或
+格式错误的历史重试时间使用 30 秒有界错误退避并持续暴露诊断。实时 reconciliation 只执行
+worker handoff/lifecycle，不扫描 provider；Host Service Probe 默认缓存 30 秒。调度状态变化
+采用局部快照更新，`/api/v1/state` 对 Runtime 已生成的安全快照使用等价快速投影，避免空闲时
+反复重建整套审计、回放、闭环和设备视图。`hub_scheduler` 与 `hub_runtime.scheduler` 会暴露
+执行原因、间隔、耗时、最早重试时间、非法重试数和探测次数。
 
 ---
 
