@@ -65,6 +65,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_error_backoff_ms 30_000
   @scheduler_default_delay_ms 30_000
   @activation_probe_interval_ms 30_000
+  @snapshot_refresh_interval_ms 300_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -85,6 +86,8 @@ defmodule SymphonyElixir.Hub.Runtime do
           required(:activation_probe_checked_at) => DateTime.t(),
           required(:activation_probe_interval_ms) => pos_integer(),
           required(:activation_probe_count) => non_neg_integer(),
+          required(:snapshot_refreshed_at) => DateTime.t(),
+          required(:snapshot_refresh_interval_ms) => pos_integer(),
           required(:operator_acknowledgements) => term(),
           required(:cutover_operation_requests) => term(),
           required(:cutover_audit_history_entries) => term(),
@@ -572,6 +575,7 @@ defmodule SymphonyElixir.Hub.Runtime do
 
       worker_start_starter = Keyword.get(opts, :worker_start_starter, worker_start_starter())
       activation_probe_interval_ms = positive_integer(Keyword.get(opts, :activation_probe_interval_ms)) || @activation_probe_interval_ms
+      snapshot_refresh_interval_ms = positive_integer(Keyword.get(opts, :snapshot_refresh_interval_ms)) || @snapshot_refresh_interval_ms
       activation_preflight = build_activation_preflight(registry, activation_probe, loaded_at)
       activation_probe_count = if is_function(activation_probe, 1), do: 1, else: 0
       scheduler = Map.put(scheduler, :activation_probe_count, activation_probe_count)
@@ -639,6 +643,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         activation_probe_checked_at: loaded_at,
         activation_probe_interval_ms: activation_probe_interval_ms,
         activation_probe_count: activation_probe_count,
+        snapshot_refreshed_at: loaded_at,
+        snapshot_refresh_interval_ms: snapshot_refresh_interval_ms,
         operator_acknowledgements: operator_acknowledgements,
         cutover_operation_requests: cutover_operation_requests,
         cutover_audit_history_entries: cutover_audit_history_entries,
@@ -1358,6 +1364,19 @@ defmodule SymphonyElixir.Hub.Runtime do
     |> Enum.sort()
   end
 
+  defp activation_preflight_identity(preflight) do
+    stable_projection_identity(preflight)
+  end
+
+  defp stable_projection_identity(value) when is_map(value) do
+    value
+    |> Enum.reject(fn {key, _value} -> to_string(key) in ["checked_at", "generated_at", "updated_at"] end)
+    |> Map.new(fn {key, item} -> {key, stable_projection_identity(item)} end)
+  end
+
+  defp stable_projection_identity(value) when is_list(value), do: Enum.map(value, &stable_projection_identity/1)
+  defp stable_projection_identity(value), do: value
+
   defp run_reconciliation_tick(state, requested_at) do
     started_tick = running_tick(requested_at)
 
@@ -1555,38 +1574,7 @@ defmodule SymphonyElixir.Hub.Runtime do
       )
       |> Map.put(:operations, tick_operations())
 
-    snapshot =
-      build_snapshot(state.config_path, state.loaded_at, state.registry,
-        now: finished_at,
-        poll_facts: poll_facts,
-        activation_preflight: state.activation_preflight,
-        cutover_gate: state.cutover_gate,
-        activation_probe: state.activation_probe,
-        operator_acknowledgements: state.operator_acknowledgements,
-        cutover_operation_requests: state.cutover_operation_requests,
-        cutover_audit_history_entries: state.cutover_audit_history_entries,
-        manual_attention_closeouts: state.manual_attention_closeouts,
-        cutover_execution_authorization_requests: state.cutover_execution_authorization_requests,
-        cutover_execution_outcome_closeouts: state.cutover_execution_outcome_closeouts,
-        cutover_replay_requests: state.cutover_replay_requests,
-        provider_queue: provider_queue,
-        provider_executor: state.provider_executor,
-        writeback_executor: state.writeback_executor,
-        worker_start_starter: state.worker_start_starter,
-        runtime_ledger: runtime_ledger,
-        candidate_intake: candidate_intake,
-        dispatch_planning: dispatch_planning,
-        dispatch_plan_application: dispatch_plan_application,
-        worker_start_handoff: worker_start_handoff,
-        worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
-        cutover_execution_outcome_ledger: state.cutover_execution_outcome_ledger,
-        cutover_execution_outcome_closeout: state.cutover_execution_outcome_closeout,
-        cutover_replay_request_audit: state.cutover_replay_request_audit,
-        tick: tick,
-        scheduler: state.scheduler
-      )
-
-    state = %{
+    next_state = %{
       state
       | poll_facts: poll_facts,
         provider_queue: provider_queue,
@@ -1596,18 +1584,59 @@ defmodule SymphonyElixir.Hub.Runtime do
         dispatch_plan_application: dispatch_plan_application,
         worker_start_handoff: worker_start_handoff,
         worker_lifecycle_reconciliation: worker_lifecycle_reconciliation,
-        cutover_execution_authorization_ledger: snapshot.hub_cutover_execution_authorization_ledger,
-        cutover_authorization_consumption_guard: snapshot.hub_cutover_authorization_consumption_guard,
-        cutover_execution_outcome_ledger: snapshot.hub_cutover_execution_outcome_ledger,
-        cutover_execution_outcome_closeout: snapshot.hub_cutover_execution_outcome_closeout,
-        cutover_replay_decision: snapshot.hub_cutover_replay_decision,
-        cutover_replay_request_audit: snapshot.hub_cutover_replay_request_audit,
-        cutover_closure_chain: snapshot.hub_cutover_closure_chain,
-        cutover_closure_conclusion: snapshot.hub_cutover_closure_conclusion,
-        cutover_closure_report_packet: snapshot.hub_cutover_closure_report_packet,
-        tick: tick,
-        snapshot: snapshot
+        tick: tick
     }
+
+    state =
+      if full_poll_snapshot_required?(state, next_state, result_summaries, finished_at) do
+        snapshot =
+          build_snapshot(next_state.config_path, next_state.loaded_at, next_state.registry,
+            now: finished_at,
+            poll_facts: next_state.poll_facts,
+            activation_preflight: next_state.activation_preflight,
+            cutover_gate: next_state.cutover_gate,
+            activation_probe: next_state.activation_probe,
+            operator_acknowledgements: next_state.operator_acknowledgements,
+            cutover_operation_requests: next_state.cutover_operation_requests,
+            cutover_audit_history_entries: next_state.cutover_audit_history_entries,
+            manual_attention_closeouts: next_state.manual_attention_closeouts,
+            cutover_execution_authorization_requests: next_state.cutover_execution_authorization_requests,
+            cutover_execution_outcome_closeouts: next_state.cutover_execution_outcome_closeouts,
+            cutover_replay_requests: next_state.cutover_replay_requests,
+            provider_queue: next_state.provider_queue,
+            provider_executor: next_state.provider_executor,
+            writeback_executor: next_state.writeback_executor,
+            worker_start_starter: next_state.worker_start_starter,
+            runtime_ledger: next_state.runtime_ledger,
+            candidate_intake: next_state.candidate_intake,
+            dispatch_planning: next_state.dispatch_planning,
+            dispatch_plan_application: next_state.dispatch_plan_application,
+            worker_start_handoff: next_state.worker_start_handoff,
+            worker_lifecycle_reconciliation: next_state.worker_lifecycle_reconciliation,
+            cutover_execution_outcome_ledger: next_state.cutover_execution_outcome_ledger,
+            cutover_execution_outcome_closeout: next_state.cutover_execution_outcome_closeout,
+            cutover_replay_request_audit: next_state.cutover_replay_request_audit,
+            tick: next_state.tick,
+            scheduler: next_state.scheduler
+          )
+
+        %{
+          next_state
+          | cutover_execution_authorization_ledger: snapshot.hub_cutover_execution_authorization_ledger,
+            cutover_authorization_consumption_guard: snapshot.hub_cutover_authorization_consumption_guard,
+            cutover_execution_outcome_ledger: snapshot.hub_cutover_execution_outcome_ledger,
+            cutover_execution_outcome_closeout: snapshot.hub_cutover_execution_outcome_closeout,
+            cutover_replay_decision: snapshot.hub_cutover_replay_decision,
+            cutover_replay_request_audit: snapshot.hub_cutover_replay_request_audit,
+            cutover_closure_chain: snapshot.hub_cutover_closure_chain,
+            cutover_closure_conclusion: snapshot.hub_cutover_closure_conclusion,
+            cutover_closure_report_packet: snapshot.hub_cutover_closure_report_packet,
+            snapshot_refreshed_at: finished_at,
+            snapshot: snapshot
+        }
+      else
+        refresh_poll_snapshot(next_state, finished_at)
+      end
 
     {state, tick}
   end
@@ -1719,21 +1748,29 @@ defmodule SymphonyElixir.Hub.Runtime do
   defp run_async_tick(state, requested_at, _reason) do
     case load_registry(state.config_path) do
       {:ok, registry} ->
+        previous_activation_preflight = state.activation_preflight
+        previous_registry = state.registry
         state = maybe_refresh_activation_probe(state, registry, requested_at)
         activation_preflight = state.activation_preflight
 
         cutover_gate =
-          build_cutover_gate(
-            registry,
-            requested_at,
-            activation_preflight,
-            state.provider_executor,
-            state.writeback_executor,
-            state.worker_start_starter,
-            state.activation_probe,
-            state.operator_acknowledgements,
-            state.scheduler
-          )
+          if registry_probe_identity(previous_registry) != registry_probe_identity(registry) or
+               activation_preflight_identity(previous_activation_preflight) !=
+                 activation_preflight_identity(activation_preflight) do
+            build_cutover_gate(
+              registry,
+              requested_at,
+              activation_preflight,
+              state.provider_executor,
+              state.writeback_executor,
+              state.worker_start_starter,
+              state.activation_probe,
+              state.operator_acknowledgements,
+              state.scheduler
+            )
+          else
+            state.cutover_gate
+          end
 
         state
         |> Map.merge(%{loaded_at: requested_at, registry: registry, activation_preflight: activation_preflight, cutover_gate: cutover_gate})
@@ -1859,10 +1896,82 @@ defmodule SymphonyElixir.Hub.Runtime do
     %{
       state
       | snapshot: snapshot,
+        snapshot_refreshed_at: now,
         cutover_closure_chain: snapshot.hub_cutover_closure_chain,
         cutover_closure_conclusion: snapshot.hub_cutover_closure_conclusion,
         cutover_closure_report_packet: snapshot.hub_cutover_closure_report_packet
     }
+  end
+
+  defp full_poll_snapshot_required?(previous_state, next_state, result_summaries, now) do
+    DateTime.diff(now, previous_state.snapshot_refreshed_at, :millisecond) >=
+      previous_state.snapshot_refresh_interval_ms or
+      next_state.runtime_ledger != previous_state.runtime_ledger or
+      Enum.any?(result_summaries, &(status_string(value(&1, :status)) != "success")) or
+      registry_probe_identity(next_state.registry) !=
+        registry_probe_identity(value(previous_state.snapshot, :hub_project_registry) || %{}) or
+      activation_preflight_identity(next_state.activation_preflight) !=
+        activation_preflight_identity(value(previous_state.snapshot, :hub_activation_preflight) || %{}) or
+      stable_projection_identity(next_state.cutover_gate) !=
+        stable_projection_identity(value(previous_state.snapshot, :hub_cutover_gate) || %{})
+  end
+
+  defp refresh_poll_snapshot(state, now) do
+    poll_plan =
+      PollCoordinator.build_plan(state.registry,
+        now: now,
+        facts: state.poll_facts,
+        queue: state.provider_queue,
+        activation_preflight: state.activation_preflight,
+        cutover_gate: poll_cutover_gate(state.provider_executor, state.cutover_gate)
+      )
+
+    scheduler =
+      normalize_scheduler(
+        state.scheduler,
+        poll_plan,
+        state.runtime_ledger,
+        state.worker_start_handoff,
+        state.worker_lifecycle_reconciliation,
+        now
+      )
+
+    snapshot =
+      state.snapshot
+      |> Map.put(:hub_scheduler, scheduler)
+      |> Map.put(:hub_activation_preflight, state.activation_preflight)
+      |> Map.put(:hub_cutover_gate, state.cutover_gate)
+      |> Map.put(:hub_project_registry, registry_summary(state.registry))
+      |> Map.put(:hub_poll_coordination, poll_plan)
+      |> Map.put(:hub_candidate_intake, state.candidate_intake)
+      |> Map.put(:hub_dispatch_planning, state.dispatch_planning)
+      |> Map.put(:hub_dispatch_plan_application, state.dispatch_plan_application)
+      |> Map.put(:hub_worker_start_handoff, state.worker_start_handoff)
+      |> Map.put(:hub_worker_lifecycle_reconciliation, state.worker_lifecycle_reconciliation)
+      |> Map.put(:hub_dispatch_boundary, state.runtime_ledger)
+      |> Map.update(:hub_runtime, %{}, fn runtime ->
+        runtime
+        |> Map.put(:generated_at, iso8601(now))
+        |> Map.put(:loaded_at, iso8601(state.loaded_at))
+        |> Map.put(:scheduler, scheduler)
+        |> Map.put(:activation_preflight, state.activation_preflight)
+        |> Map.put(:cutover_gate, state.cutover_gate)
+        |> Map.put(:poll_tick, state.tick)
+        |> Map.put(:candidate_intake, CandidateIntake.tick_summary(state.candidate_intake))
+        |> Map.put(:dispatch_planning, DispatchPlanning.tick_summary(state.dispatch_planning))
+        |> Map.put(:dispatch_plan_application, DispatchPlanApplication.tick_summary(state.dispatch_plan_application))
+        |> Map.put(:worker_start_handoff, WorkerStartHandoff.tick_summary(state.worker_start_handoff))
+        |> Map.put(
+          :worker_lifecycle_reconciliation,
+          WorkerLifecycleReconciliation.tick_summary(state.worker_lifecycle_reconciliation)
+        )
+        |> Map.put(:registry, registry_summary(state.registry))
+      end)
+      |> Map.update(:hub_device_observability, %{}, fn device ->
+        Map.update(device, :overview, %{}, &Map.put(&1, :scheduler, scheduler_device_overview(scheduler)))
+      end)
+
+    %{state | snapshot: snapshot}
   end
 
   defp refresh_scheduler_snapshot(state, now) do

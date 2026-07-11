@@ -1286,6 +1286,9 @@ Runtime entrypoint:
   配置身份变化时必须立即失效，探测失败仍按 fail-closed 的 unknown/manual-attention 语义处理。
 - Scheduler 状态变化应局部更新已发布快照；没有 ledger 变化的 reconciliation 不应反复构建
   完整审计、回放、闭环和设备投影。
+- 成功且没有 runtime ledger、配置、activation、cutover 或错误状态变化的 poll tick 应更新
+  poll facts、候选、计划、handoff、lifecycle 和 scheduler 动态子快照，并复用昂贵审计、闭环和
+  设备投影。默认完整投影刷新周期为 5 分钟；业务状态或安全边界变化必须立即刷新。
 - Scheduler observability SHOULD be exposed as a safe summary, for example under `hub_scheduler` and
   `hub_runtime.scheduler`, including enabled/disabled state, idle/scheduled/running/coalesced/failed
   status, last tick started/finished/duration/reason/operations, next tick due time/delay/reason,

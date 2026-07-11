@@ -3021,6 +3021,72 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "successful idle polls reuse expensive projections while updating live poll state" do
+    root = tmp_root("hub-runtime-scheduler-idle-projection-cache")
+    hub_path = Path.join(root, "HUB.yaml")
+
+    try do
+      write_project!(root, "alpha",
+        tracker_kind: "memory",
+        workspace_root: Path.join([root, "workspaces", "alpha"]),
+        poll_interval_ms: 100
+      )
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          migration_state: hub_managed
+      """)
+
+      provider_executor = fn request, _opts ->
+        ProviderGovernance.result(request, :success, result_summary: %{issue_count: 0, candidates: []})
+      end
+
+      runtime_name = Module.concat(__MODULE__, :SchedulerIdleProjectionCacheRuntime)
+
+      start_supervised!(
+        {Runtime,
+         name: runtime_name,
+         config_path: hub_path,
+         scheduler_enabled: true,
+         provider_executor: provider_executor,
+         operator_acknowledgements:
+           cutover_acknowledgements!(hub_path,
+             provider_executor: provider_executor,
+             scheduler_enabled: true
+           )},
+        id: :hub_runtime_scheduler_idle_projection_cache
+      )
+
+      assert eventually(fn ->
+               scheduler = Runtime.snapshot(runtime_name, 1_000).hub_scheduler
+               scheduler.counts.run_count >= 1 and scheduler.status == "scheduled"
+             end)
+
+      first = Runtime.snapshot(runtime_name, 1_000)
+      first_run_count = first.hub_scheduler.counts.run_count
+      first_closure = first.hub_cutover_closure_chain
+      first_poll_fact_count = length(first.hub_poll_coordination.facts)
+
+      assert eventually(
+               fn ->
+                 scheduler = Runtime.snapshot(runtime_name, 1_000).hub_scheduler
+                 scheduler.counts.run_count > first_run_count and scheduler.status == "scheduled"
+               end,
+               100
+             )
+
+      second = Runtime.snapshot(runtime_name, 1_000)
+      assert second.hub_cutover_closure_chain == first_closure
+      assert length(second.hub_poll_coordination.facts) > first_poll_fact_count
+      assert second.hub_candidate_intake.counts.candidate_count == 0
+      assert second.hub_scheduler.next_delay_ms > 0
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "scheduler waits for a future retry instead of entering one-second reconciliation" do
     root = tmp_root("hub-runtime-scheduler-future-retry")
     hub_path = Path.join(root, "HUB.yaml")
