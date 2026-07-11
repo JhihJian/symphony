@@ -1762,6 +1762,7 @@ defmodule SymphonyElixir.Hub.Runtime do
         last_error: nil,
         last_operations: Map.get(tick_summary, :operations, tick_operations()),
         project_summaries: scheduler_project_summaries(tick_state, finished_at),
+        activation_probe_count: tick_state.activation_probe_count,
         earliest_retry_due_at: schedule.earliest_retry_due_at,
         invalid_retry_count: schedule.invalid_retry_count,
         realtime_count: schedule.realtime_count

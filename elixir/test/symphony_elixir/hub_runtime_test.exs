@@ -3168,6 +3168,42 @@ defmodule SymphonyElixir.HubRuntimeTest do
     end
   end
 
+  test "manual refresh records each activation probe execution" do
+    root = tmp_root("hub-runtime-activation-probe-count")
+    hub_path = Path.join(root, "HUB.yaml")
+    parent = self()
+
+    try do
+      write_project!(root, "alpha", tracker_kind: "memory", workspace_root: Path.join([root, "workspaces", "alpha"]))
+
+      File.write!(hub_path, """
+      projects:
+        - project_id: alpha
+          workflow_path: alpha/WORKFLOW.md
+          dispatch_enabled: false
+      """)
+
+      activation_probe = fn _registry ->
+        send(parent, :activation_probe_called)
+        %{status: "ok", source: "host_service_probe", projects: %{}}
+      end
+
+      runtime_name = Module.concat(__MODULE__, :ActivationProbeCountRuntime)
+
+      start_supervised!(
+        {Runtime, name: runtime_name, config_path: hub_path, activation_probe: activation_probe},
+        id: :hub_runtime_activation_probe_count
+      )
+
+      assert_receive :activation_probe_called, 1_000
+      assert %{poll_tick: %{status: "completed"}} = Runtime.request_refresh(runtime_name)
+      assert_receive :activation_probe_called, 1_000
+      assert Runtime.snapshot(runtime_name, 100).hub_scheduler.counts.activation_probe_count == 2
+    after
+      File.rm_rf(root)
+    end
+  end
+
   test "scheduler next tick uses provider backoff and isolates provider failures" do
     root = tmp_root("hub-runtime-scheduler-backoff")
     hub_path = Path.join(root, "HUB.yaml")
