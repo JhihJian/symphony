@@ -1613,17 +1613,45 @@ defmodule SymphonyElixir.Hub.Runtime do
           value(fact, :project_id) == project_id
       end)
 
-    is_nil(previous) or
-      {
-        status_string(value(previous, :status)),
-        value(previous, :config_fingerprint),
-        stable_projection_identity(value(previous, :result_summary) || %{})
-      } !=
-        {
-          status_string(value(result_fact, :status)),
-          value(result_fact, :config_fingerprint),
-          stable_projection_identity(value(result_fact, :result_summary) || %{})
+    is_nil(previous) or poll_result_identity(previous) != poll_result_identity(result_fact)
+  end
+
+  defp poll_result_identity(fact) do
+    status = status_string(value(fact, :status))
+    summary = value(fact, :result_summary) || %{}
+
+    result_identity =
+      if status == "success" do
+        %{
+          boundary: value(summary, :boundary),
+          executor: value(summary, :executor),
+          provider_kind: value(summary, :provider_kind),
+          provider_scope_key: value(summary, :provider_scope_key),
+          candidates:
+            summary
+            |> list_value(:candidates)
+            |> Enum.map(&candidate_result_identity/1)
+            |> Enum.sort()
         }
+      else
+        stable_projection_identity(summary)
+      end
+
+    {status, value(fact, :config_fingerprint), result_identity}
+  end
+
+  defp candidate_result_identity(candidate) do
+    {
+      value(candidate, :project_id),
+      value(candidate, :provider_scope_key),
+      value(candidate, :provider_issue_id),
+      value(candidate, :provider_local_id),
+      value(candidate, :id),
+      value(candidate, :identifier),
+      value(candidate, :url),
+      value(candidate, :title),
+      value(candidate, :current_stage)
+    }
   end
 
   defp runtime_projection_required?(state) do

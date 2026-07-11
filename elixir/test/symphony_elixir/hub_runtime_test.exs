@@ -3043,7 +3043,16 @@ defmodule SymphonyElixir.HubRuntimeTest do
       """)
 
       provider_executor = fn request, _opts ->
-        ProviderGovernance.result(request, :success, result_summary: %{issue_count: 0, candidates: []})
+        ProviderGovernance.result(request, :success,
+          result_summary: %{
+            issue_count: 0,
+            candidates: [],
+            execution_outcome: %{
+              generated_at: DateTime.utc_now(),
+              outcome_id: "volatile-#{System.unique_integer([:positive])}"
+            }
+          }
+        )
       end
 
       runtime_name = Module.concat(__MODULE__, :SchedulerIdleProjectionCacheRuntime)
