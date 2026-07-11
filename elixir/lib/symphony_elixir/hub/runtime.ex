@@ -64,6 +64,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_unresolved_delay_ms 1_000
   @scheduler_error_backoff_ms 30_000
   @scheduler_default_delay_ms 30_000
+  @stable_poll_interval_ms 60_000
   @activation_probe_interval_ms 60_000
   @snapshot_refresh_interval_ms 600_000
   @empty_codex_totals %{
@@ -1459,6 +1460,8 @@ defmodule SymphonyElixir.Hub.Runtime do
         required?: false
       )
 
+    runtime_work_pending? = runtime_projection_required?(state)
+
     {poll_facts, provider_queue, result_summaries, intake_sources, poll_results_changed?} =
       Enum.reduce(executable_entries, {state.poll_facts, state.provider_queue, [], [], false}, fn entry, {facts, queue, summaries, intake_sources, changed?} ->
         attempt = PollCoordinator.attempt_fact(entry, attempted_at: requested_at)
@@ -1490,7 +1493,23 @@ defmodule SymphonyElixir.Hub.Runtime do
             backoff_until: result.backoff_until
           )
 
-        changed? = changed? or poll_result_changed?(facts, result_fact)
+        result_changed? = poll_result_changed?(facts, result_fact)
+
+        result_fact =
+          if not result_changed? and not runtime_work_pending? and
+               status_string(value(result_fact, :status)) == "success" do
+            PollCoordinator.result_fact(entry, result,
+              attempt_id: attempt.attempt_id,
+              finished_at: finished_at,
+              poll_interval_ms: max(entry.poll_interval_ms, @stable_poll_interval_ms),
+              retry_after_ms: result.retry_after_ms,
+              backoff_until: result.backoff_until
+            )
+          else
+            result_fact
+          end
+
+        changed? = changed? or result_changed?
         facts = trim_poll_facts([result_fact, attempt | facts])
         summary = poll_result_summary(result, attempt, result_fact, finished_at)
         intake_source = poll_intake_source(entry, request, result, attempt, result_fact, finished_at)

@@ -517,7 +517,8 @@ registry、不执行 provider candidate scan，也不刷新 Host Service Probe�
 变化的 reconciliation 不重建完整审计、回放、闭环和设备投影。成功且没有 ledger 变化的
 空闲 poll 继续更新 poll facts、候选、计划和 scheduler 子快照，完整审计、闭环和设备投影默认
 每 10 分钟刷新一次；provider 候选结果与上一轮一致且没有 active/pending/retry 时，候选、计划和
-worker 边界结果也直接复用。配置、activation、cutover 或错误状态变化会立即触发完整刷新。Runtime 生成的安全快照带内部
+worker 边界结果也直接复用，下一次真实 provider 扫描间隔自适应延长到至少 60 秒。结果发生变化、
+账本出现实时工作或项目原始轮询周期更长时，仍遵循对应业务周期。配置、activation、cutover 或错误状态变化会立即触发完整刷新。Runtime 生成的安全快照带内部
 契约标记，Presenter 可直接复用已清洗的 Hub 子快照，同时仍对 legacy/string-key 快照执行原有
 兼容投影。若 `/refresh` 在自动 tick 运行或排队时到达，请求仍会合并而不会并发执行第二轮。
 escript 内嵌 `+sbwt none +sbwtdcpu none +sbwtdio none`，用于降低长驻 Hub 在间歇轮询间隔中的

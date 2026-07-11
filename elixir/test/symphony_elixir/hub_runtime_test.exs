@@ -3097,7 +3097,9 @@ defmodule SymphonyElixir.HubRuntimeTest do
       assert second.hub_dispatch_planning == first_dispatch_planning
       assert length(second.hub_poll_coordination.facts) > first_poll_fact_count
       assert second.hub_candidate_intake.counts.candidate_count == 0
-      assert second.hub_scheduler.next_delay_ms > 0
+      assert second.hub_scheduler.next_reason == "next_project_due"
+      assert second.hub_scheduler.next_delay_ms >= 55_000
+      assert second.hub_scheduler.next_delay_ms <= 60_000
     after
       File.rm_rf(root)
     end

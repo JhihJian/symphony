@@ -522,7 +522,8 @@ worker handoff/lifecycle，不扫描 provider；Host Service Probe 默认缓存 
 采用局部快照更新，`/api/v1/state` 对 Runtime 已生成的安全快照使用等价快速投影，避免空闲时
 反复重建整套审计、回放、闭环和设备视图。成功且没有 ledger 变化的空闲 poll 只更新实时
 poll/调度子快照；provider 候选结果与上次一致时复用候选和计划结果。昂贵全投影默认每 10 分钟
-刷新一次。`hub_scheduler` 与 `hub_runtime.scheduler` 会暴露
+刷新一次；同项目结果连续稳定且账本没有 active/pending/retry 时，下一次真实 provider 扫描
+间隔自适应延长到至少 60 秒。`hub_scheduler` 与 `hub_runtime.scheduler` 会暴露
 执行原因、间隔、耗时、最早重试时间、非法重试数和探测次数。真实 worker 在 start
 acknowledgement 后由独立生命周期监控器继续跟踪：正常结束会释放 active attempt，异常结束
 会生成带有效 `due_at` 的 retry；已结束 worker 不会长期冒充实时状态维持 1 秒循环。
