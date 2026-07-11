@@ -65,7 +65,7 @@ defmodule SymphonyElixir.Hub.Runtime do
   @scheduler_error_backoff_ms 30_000
   @scheduler_default_delay_ms 30_000
   @activation_probe_interval_ms 60_000
-  @snapshot_refresh_interval_ms 300_000
+  @snapshot_refresh_interval_ms 600_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
